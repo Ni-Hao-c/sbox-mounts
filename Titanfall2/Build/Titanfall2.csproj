@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>Sandbox.Mounting.Titanfall2</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <SboxEngineRoot Condition="'$(SboxEngineRoot)' == ''">$(FACEPUNCH_ENGINE)</SboxEngineRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Code/**/*.cs" />
+    <Reference Include="Sandbox.Engine;Sandbox.System;Sandbox.Filesystem;Sandbox.Mounting;Sandbox.Reflection">
+      <HintPath>$(SboxEngineRoot)/bin/managed/%(Identity).dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="ValidateEngine" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(SboxEngineRoot)' == ''" Text="Set SboxEngineRoot or FACEPUNCH_ENGINE to an official s&amp;box installation." />
+    <Error Condition="!Exists('$(SboxEngineRoot)/bin/managed/Sandbox.Engine.dll')" Text="SboxEngineRoot must contain bin/managed/Sandbox.Engine.dll." />
+  </Target>
+</Project>
