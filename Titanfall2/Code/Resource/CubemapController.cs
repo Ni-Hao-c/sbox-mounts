@@ -26,6 +26,7 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 
 	internal int ConfigureCustom( IReadOnlyList<Texture> textures, IReadOnlyList<Vector3> positions, BBox mapBounds, byte[] sourceVtf = null )
 	{
+		ReleaseRuntime();
 		if ( sourceVtf is not null ) EncodedCubemapVtf = Convert.ToBase64String( sourceVtf );
 		ProbePositions = positions.ToArray();
 		SourceBounds = mapBounds;
@@ -36,11 +37,9 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 		{
 			var radius = CalculateProbeRadius( positions, index, mapBounds );
 			var name = $"titanfall2_cubemap_{index:D3}";
-			var probe = Scene.GetComponentsInChildren<EnvmapProbe>()
-				.FirstOrDefault( p => p.GameObject.Parent == GameObject && p.GameObject.Name == name );
-			var probeObject = probe?.GameObject ?? new GameObject( GameObject, false, name );
+			var probeObject = CreateHelper( name );
 			probeObject.WorldPosition = positions[index];
-			probe ??= probeObject.AddComponent<EnvmapProbe>();
+			var probe = probeObject.AddComponent<EnvmapProbe>();
 			probe.Mode = EnvmapProbe.EnvmapProbeMode.CustomTexture;
 			probe.Texture = _ownedTextures[index];
 			probe.Projection = SceneCubemap.ProjectionMode.Sphere;
@@ -55,6 +54,9 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 
 	internal void ConfigureDelayedFallback( Vector3 position, BBox mapBounds )
 	{
+		ReleaseRuntime();
+		EncodedCubemapVtf = null;
+		ProbePositions = [];
 		UseFallback = true;
 		FallbackPosition = position;
 		SourceBounds = mapBounds;
@@ -66,7 +68,15 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 
 	protected override Task OnLoad( LoadingContext context )
 	{
-		if ( _ownedTextures.Count > 0 ) return Task.CompletedTask;
+		RestoreRuntime();
+		return Task.CompletedTask;
+	}
+
+	protected override void OnEnabled() => RestoreRuntime();
+
+	void RestoreRuntime()
+	{
+		if ( _ownedTextures.Count > 0 || _probeObjects.Count > 0 || _fallbackPending ) return;
 		if ( !string.IsNullOrEmpty( EncodedCubemapVtf ) )
 		{
 			try
@@ -85,8 +95,17 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 			}
 		}
 		else if ( UseFallback ) ConfigureDelayedFallback( FallbackPosition, SourceBounds );
-		return Task.CompletedTask;
 	}
+
+	GameObject CreateHelper( string name ) => new( GameObject, false, name )
+	{
+		// Only source VTF/positions are serialized. Each clone reconstructs these
+		// helpers, so disabled or destroyed instances cannot retain another's probes.
+		Flags = GameObjectFlags.NotSaved | GameObjectFlags.Hidden | GameObjectFlags.NotNetworked
+	};
+
+	internal int RuntimeTextureCount => _ownedTextures.Count;
+	internal int RuntimeProbeCount => _probeObjects.Count;
 
 	protected override void OnUpdate()
 	{
@@ -94,7 +113,7 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 		_fallbackPending = false;
 		var size = _fallbackBounds.Size;
 		var radius = Math.Clamp( size.Length * 0.5f, 1024f, 8192f );
-		var probeObject = new GameObject( GameObject, false, "titanfall2_cubemap_fallback" );
+		var probeObject = CreateHelper( "titanfall2_cubemap_fallback" );
 		probeObject.WorldPosition = _fallbackPosition;
 		var probe = probeObject.AddComponent<EnvmapProbe>();
 		probe.Mode = EnvmapProbe.EnvmapProbeMode.Realtime;
@@ -111,9 +130,13 @@ public sealed class Titanfall2CubemapController : Component, Component.DontExecu
 		Log.Info( $"Titanfall 2 delayed 128px fallback environment probe created at {_fallbackPosition}." );
 	}
 
-	protected override void OnDestroy()
+	protected override void OnDisabled() => ReleaseRuntime();
+	protected override void OnDestroy() => ReleaseRuntime();
+
+	void ReleaseRuntime()
 	{
 		_fallbackPending = false;
+		_fallbackDelay.Reset();
 		// Destroy immediately: GameObject.Destroy only queues deletion, so the probes
 		// would stay in the SceneWorld for the rest of the frame and keep sampling the
 		// textures disposed below them.

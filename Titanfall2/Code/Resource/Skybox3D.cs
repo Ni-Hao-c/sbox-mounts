@@ -153,7 +153,10 @@ public sealed class Titanfall2Skybox3D : Component, Component.DontExecuteOnServe
 			_fogKey = Guid.NewGuid().ToString( "N" );
 			FogBySky[_fogKey] = new( FogDensity, FogBaseColor, FogDirectionalColor, FogDirection, FogHeight );
 			// Public Skybox3D owns the isolated scene and its native bridge.
-			var content = new Scene();
+			// This is a serialized template, not a running world. In particular, do
+			// not queue callbacks into an outer SceneLoader batch and destroy their
+			// scene before that batch executes. The official Skybox3D enables its copy.
+			var content = new Scene { Enabled = false };
 			try
 			{
 				using ( content.Push() )

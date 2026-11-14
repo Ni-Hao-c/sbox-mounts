@@ -25,6 +25,7 @@ partial class MapLoader(
 	// no disk loader. Keep their native resources alive for that same cache lifetime;
 	// otherwise closing the last scene lets GC turn a later reopen into error models.
 	WorldBuildResult _cachedWorldBuild;
+	internal object LastBuildStatistics { get; private set; }
 
 	// Match the lifetime of the SceneFile registered by the official loader.
 	protected override void OnSceneUnloaded() => DiscardWorldBuild();
@@ -61,10 +62,12 @@ partial class MapLoader(
 
 	void BuildSceneCore()
 	{
+		LastBuildStatistics = null;
 		// The normal addon compiler registers component types for the active context.
 		Host.BeginMapBuild( Game.ActiveScene );
 		Host.ReleaseSceneResourcesBeforeBuild( this );
 		var timer = System.Diagnostics.Stopwatch.StartNew();
+		var textureStart = RpakTextureDecoder.GetStatistics();
 		// Authoritative rBSP collision is always parsed. The render-geometry fallback is
 		// only built when that collision is missing or incomplete.
 		var server = Application.IsDedicatedServer;
@@ -110,6 +113,7 @@ partial class MapLoader(
 			return (result, null);
 		}
 		Log.Info( $"Titanfall 2 BSP read/parse {timer.Elapsed.TotalSeconds:0.00}s ({Path})." );
+		var parseSeconds = timer.Elapsed.TotalSeconds;
 		var collisionSummary = parsed.WorldCollision.SourcePrimitiveCount > 0
 			? $"{parsed.WorldCollision.PrimitiveCount}/{parsed.WorldCollision.SourcePrimitiveCount} player-solid primitives, "
 				+ $"{parsed.WorldCollision.WaterPrimitiveCount} water "
@@ -130,6 +134,7 @@ partial class MapLoader(
 		_cachedWorldBuild = server ? new WorldBuildResult( [], [], [], [], [], null, [] )
 			: BuildWorldModel( parsed, createFallbackCollision: !hasOriginalWorldCollision );
 		var worldBuild = _cachedWorldBuild;
+		var worldBuildSeconds = timer.Elapsed.TotalSeconds - parseSeconds;
 		if ( worldBuild is null )
 		{
 			Log.Warning( $"Titanfall 2 BSP contains no usable world geometry: {Path}" );
@@ -307,6 +312,25 @@ partial class MapLoader(
 			+ $"{dynamicPropCount} dynamic props, {particleCount} particle systems queued, "
 			+ $"{audioCount} audio sources)" );
 		Log.Info( $"Titanfall 2 map spawn points created: {Path} ({spawnCount})" );
+		var textureEnd = RpakTextureDecoder.GetStatistics();
+		LastBuildStatistics = new
+		{
+			MapPath = Path,
+			ParseSeconds = parseSeconds,
+			WorldBuildSeconds = worldBuildSeconds,
+			SceneAssemblySeconds = timer.Elapsed.TotalSeconds - parseSeconds - worldBuildSeconds,
+			TotalImportSeconds = timer.Elapsed.TotalSeconds,
+			SourceWorldMeshes = parsed.World.Meshes.Count,
+			Aggregates = worldBuild.WorldAggregates?.Count ?? 0,
+			Fragments = worldBuild.WorldAggregates?.Sum( aggregate => aggregate.Fragments.Count ) ?? 0,
+			MaterialRows = worldBuild.WorldMaterialSources?.Length ?? 0,
+			WorldCollisionTriangles = parsed.WorldCollision.TriangleCount,
+			RpakTexturesCreated = textureEnd.Created - textureStart.Created,
+			RpakTextureBytesUploaded = textureEnd.UploadedBytes - textureStart.UploadedBytes,
+			RpakTextureFailures = textureEnd.Failed - textureStart.Failed,
+			Prefetch = _materialPrefetch?.GetStatistics()
+		};
+		Log.Info( $"Titanfall 2 import statistics: {System.Text.Json.JsonSerializer.Serialize( LastBuildStatistics )}" );
 	}
 
 	static Vector3 ToSandbox( System.Numerics.Vector3 value ) => new( value.X, value.Y, value.Z );

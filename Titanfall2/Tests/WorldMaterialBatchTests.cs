@@ -5,6 +5,31 @@ using Sandbox;
 public class WorldMaterialBatchTests
 {
 	[TestMethod]
+	public void SparseFragmentIndexPreservesCellOrderBoundsAndMaterialPages()
+	{
+		var first = new MapMeshGroup { Bounds = new BBox( new Vector3( -4 ), new Vector3( 2 ) ) };
+		first.Vertices.Add( new() { Position = new Vector3( 1, 2, 3 ) } );
+		first.Indices.AddRange( [0, 0, 0] );
+		var second = new MapMeshGroup();
+		second.Vertices.Add( new() { Position = new Vector3( 9, 8, 7 ) } );
+		second.Indices.AddRange( [0, 0, 0] );
+		var key = new WorldMaterialKey( "wall", 1 );
+		var otherPage = new WorldMaterialKey( "wall", 2 );
+		var cells = new Dictionary<WorldRenderCell, Dictionary<WorldMaterialKey, MapMeshGroup>>
+		{
+			[new( 4, 0, 0 )] = new() { [key] = first, [otherPage] = second },
+			[new( -2, 0, 0 )] = new() { [key] = second, [new( "empty", 0 )] = new() }
+		};
+		var index = Titanfall2WorldMaterialBatch.IndexFragments( cells );
+		Assert.AreEqual( 2, index.Count );
+		CollectionAssert.AreEqual( new[] { first, second }, index[key] );
+		Assert.AreSame( second, index[otherPage].Single() );
+		Assert.AreEqual( new BBox( new Vector3( -4 ), new Vector3( 2 ) ), first.Bounds );
+		Assert.AreEqual( new Vector3( 1, 2, 3 ), first.Vertices[0].Position );
+		Assert.AreEqual( 3, first.Indices.Count );
+	}
+
+	[TestMethod]
 	public void RetailRockDetailNormalsRemainSampledOnTheirOwnUvChannel()
 	{
 		var descriptor = new Titanfall2MaterialDescriptor

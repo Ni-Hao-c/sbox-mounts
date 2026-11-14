@@ -11,6 +11,8 @@ sealed class Titanfall2TexturePreparationBudget
 	internal long CapacityBytes { get; }
 	long _bytes;
 	long _peakBytes;
+	long _payloads;
+	long _totalBytes;
 
 	internal Titanfall2TexturePreparationBudget( long capacityBytes )
 	{
@@ -21,10 +23,14 @@ sealed class Titanfall2TexturePreparationBudget
 	internal long RetainedBytes => Interlocked.Read( ref _bytes );
 	internal long PeakBytes => Interlocked.Read( ref _peakBytes );
 	internal bool HasCapacity => RetainedBytes < CapacityBytes;
+	internal long PayloadCount => Interlocked.Read( ref _payloads );
+	internal long TotalBytes => Interlocked.Read( ref _totalBytes );
 
 	internal bool Reserve( long bytes )
 	{
 		ArgumentOutOfRangeException.ThrowIfNegative( bytes );
+		Interlocked.Increment( ref _payloads );
+		Interlocked.Add( ref _totalBytes, bytes );
 		var current = Interlocked.Add( ref _bytes, bytes );
 		long peak;
 		do { peak = Interlocked.Read( ref _peakBytes ); }

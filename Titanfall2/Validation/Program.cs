@@ -13,6 +13,7 @@ static class Program
 {
 	const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
 	static readonly List<object> Results = [];
+	static string _reportDirectory;
 	sealed record ConfigSnapshot( string Path, byte[] Bytes, DateTime LastWriteUtc );
 
 	static ConfigSnapshot[] SaveConfig()
@@ -54,15 +55,21 @@ static class Program
 	static void Main( string[] args )
 	{
 		var report = Path.GetFullPath( args[0] );
+		_reportDirectory = Path.GetDirectoryName( report );
 		var config = SaveConfig();
 		try
 		{
 			var app = new TestAppSystem();
 			app.Init();
+			// TestAppSystem has no game package data directory. Supply one inside
+			// this run's output so derived-cache behavior is exercised as in a game.
+			var dataDirectory = Path.Combine( _reportDirectory, "data" );
+			System.IO.Directory.CreateDirectory( dataDirectory );
+			GlobalContext.Current.FileData = new LocalFileSystem( dataDirectory );
 			CheckDeploymentRegistration();
 			CheckMountTypesAfterGameLibraryReset();
-			var assets = Path.Combine( Path.GetDirectoryName( typeof(Titanfall2Mount).Assembly.Location )!, "Assets" );
-			if (System.IO.Directory.Exists(assets)) EngineFileSystem.AddAssetPath("tf2_validation", assets);
+			var assets = Path.Combine( Path.GetDirectoryName( typeof( Titanfall2Mount ).Assembly.Location )!, "Assets" );
+			if ( System.IO.Directory.Exists( assets ) ) EngineFileSystem.AddAssetPath( "tf2_validation", assets );
 			var module = typeof( Titanfall2Mount ).Assembly;
 			foreach ( var other in AppDomain.CurrentDomain.GetAssemblies().Where( a => a != module && a.GetName().Name == module.GetName().Name ) )
 				Game.TypeLibrary.RemoveAssembly( other );
@@ -75,7 +82,14 @@ static class Program
 			CheckPublicSkyboxLifecycle();
 			CheckOfficialSceneUnload();
 			CheckRejectedLoadingTransaction();
+			if ( Graphics.IsAvailable ) CheckCubemapLifecycle();
 			if ( args.Length > 1 ) CheckMapReload( args[1], args.Length > 2 ? args[2] : "sp_boomtown_start" );
+			if ( args.Length > 1 )
+			{
+				var cache = Titanfall2ProcessedCache.GetStatistics();
+				Results.Add( new { Test = "DerivedCacheWrites", Snapshot = cache } );
+				Check( cache.Writes > 0 && cache.WriteFailures == 0, "Derived cache did not write successfully." );
+			}
 			var commandType = typeof( CommandList );
 			Results.Add( new
 			{
@@ -96,6 +110,43 @@ static class Program
 			RestoreConfig( config );
 			EngineGlobal.Plat_ExitProcess( 1 );
 		}
+	}
+
+	static void CheckCubemapLifecycle()
+	{
+		var bytes = new byte[80 + 6 * 8];
+		void U32( int offset, uint value ) => System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian( bytes.AsSpan( offset ), value );
+		void U16( int offset, ushort value ) => System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian( bytes.AsSpan( offset ), value );
+		U32( 0, 0x00465456 ); U32( 4, 7 ); U32( 8, 2 ); U32( 12, 80 );
+		U16( 16, 4 ); U16( 18, 4 ); U32( 20, 0x4000 ); U16( 24, 1 ); U16( 26, ushort.MaxValue );
+		U32( 52, 13 ); bytes[56] = 1;
+		for ( var face = 0; face < 6; face++ ) { U16( 80 + face * 8, 0xF800 ); U16( 82 + face * 8, 0xF800 ); }
+		var scene = new Scene();
+		try
+		{
+			using var scope = scene.Push();
+			Check( VtfTextureDecoder.TryCreateCubeFrames( bytes, out var textures, out var error ), error );
+			var controller = scene.CreateObject().AddComponent<Titanfall2CubemapController>();
+			controller.ConfigureCustom( textures, [Vector3.Zero], BBox.FromPositionAndSize( Vector3.Zero, new Vector3( 256 ) ), bytes );
+			Check( controller.RuntimeTextureCount == 1 && controller.RuntimeProbeCount == 1, "Initial cubemap preparation failed." );
+			Check( !controller.GameObject.Serialize().ToJsonString().Contains( "titanfall2_cubemap_000" ), "Runtime probe helper was serialized." );
+			controller.Enabled = false;
+			Check( controller.RuntimeTextureCount == 0 && controller.RuntimeProbeCount == 0, "Disabled cubemap retained GPU resources." );
+			controller.Enabled = true;
+			Check( controller.RuntimeTextureCount == 1 && controller.RuntimeProbeCount == 1, "Re-enabled cubemap did not restore source data." );
+			var clone = controller.GameObject.Clone().GetComponent<Titanfall2CubemapController>();
+			for ( var i = 0; i < 60 && clone.RuntimeTextureCount == 0; i++ )
+			{
+				scene.GameTick( 1.0 / 60 ); EngineLoop.RunAsyncTasks();
+			}
+			Check( clone.RuntimeTextureCount == 1 && clone.RuntimeProbeCount == 1, "Cloned cubemap did not own exactly one helper." );
+			var field = typeof( Titanfall2CubemapController ).GetField( "_ownedTextures", PrivateInstance );
+			Check( !ReferenceEquals( ((List<Texture>)field.GetValue( controller ))[0], ((List<Texture>)field.GetValue( clone ))[0] ), "Cubemap clones shared a disposable texture." );
+			controller.GameObject.DestroyImmediate();
+			Check( clone.RuntimeTextureCount == 1 && clone.RuntimeProbeCount == 1, "Destroying one cubemap instance affected its clone." );
+			Results.Add( new { Test = "CubemapDisableRestoreAndClone" } );
+		}
+		finally { scene.Destroy(); }
 	}
 
 	static void CheckMountTypesAfterGameLibraryReset()
@@ -189,11 +240,16 @@ static class Program
 	{
 		using var host = new MountHost( new Configuration { SteamIntegration = new InstalledGame( gameDirectory ) } );
 		typeof( Sandbox.Mounting.Directory ).GetField( "_system", BindingFlags.Static | BindingFlags.NonPublic )!.SetValue( null, host );
-		host.Initialize( typeof( Titanfall2Mount ), new LocalFileSystem( Path.GetDirectoryName( typeof(Titanfall2Mount).Assembly.Location )!, true ) );
+		// The host writes mount thumbnails into the project filesystem. Game files
+		// supplied by InstalledGame remain read-only; only this fixture output is writable.
+		host.Initialize( typeof( Titanfall2Mount ), new LocalFileSystem( Path.GetDirectoryName( typeof( Titanfall2Mount ).Assembly.Location )! ) );
 		host.Mount( "titanfall2" ).GetAwaiter().GetResult();
 		var mount = (Titanfall2Mount)host.GetSource( "titanfall2" );
+		Check( mount is not null && mount.IsInstalled && mount.IsMounted, "Fixture mount did not initialize/mount the installed game." );
 		var loader = mount.GetByPath( $"mount://titanfall2/maps/{map}.bsp.world.scene" );
+		Check( loader is not null, "Mounted map scene was not indexed." );
 		var file = (SceneFile)loader.GetOrCreate().GetAwaiter().GetResult();
+		Results.Add( new { Test = "MapImportStatistics", Snapshot = ((MapLoader)loader).LastBuildStatistics } );
 		int? instances = null, collisions = null;
 		for ( var cycle = 0; cycle < 2; ++cycle )
 		{
@@ -217,6 +273,9 @@ static class Program
 				}
 				Results.Add( new { Test = "MapLoadingOutcome", cycle, Snapshot = props.GetCompiledSceneStatistics() } );
 				Check( props.ResourcesPrepared && props.ResidentCollisionsReady, "Loaded map is not ready." );
+				var tables = scene.GetAllComponents<Titanfall2WorldMaterialTableController>().ToArray();
+				Check( tables.Length > 0 && tables.All( table => typeof( Titanfall2WorldMaterialTableController ).GetField( "_buffer", PrivateInstance ).GetValue( table ) is not null ),
+					"World material table did not restore its GPU buffer." );
 				Check( owner.NativeObjectCount > 0, "Loaded scene has no native prop objects." );
 				Check( instances is null || instances == owner.NativeObjectCount, "Reload changed native prop object count." );
 				Check( collisions is null || collisions == props.ResidentCollisionCount, "Reload changed collision count." );
@@ -245,6 +304,10 @@ static class Program
 					EngineLoop.RunAsyncTasks();
 				}
 				Results.Add( new { Test = "MapLoadRenderReload", cycle, Snapshot = props.GetCompiledSceneStatistics() } );
+				using var bitmap = target.GetBitmap();
+				var screenshot = Path.Combine( _reportDirectory, $"{map}-cycle-{cycle}.png" );
+				File.WriteAllBytes( screenshot, bitmap.ToPng() );
+				Results.Add( new { Test = "MapScreenshot", cycle, screenshot, WorldMaterialTables = tables.Length } );
 			}
 			finally { scene.Destroy(); }
 			Check( owner is not null && !owner.IsPrepared && owner.Lights is null && owner.NativeObjectCount == 0,
@@ -276,7 +339,7 @@ static class Program
 
 	static void CheckPublicSkyboxLifecycle()
 	{
-		var content = new Scene();
+		var content = new Scene { Enabled = false };
 		SceneFile file;
 		try
 		{

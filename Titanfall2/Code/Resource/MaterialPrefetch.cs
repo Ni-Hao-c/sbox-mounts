@@ -10,9 +10,6 @@ using System.Threading;
 sealed class Titanfall2MaterialPrefetch : IDisposable
 {
 	static readonly Sandbox.Diagnostics.Logger Log = new( "Titanfall2Prefetch" );
-	const long BudgetBytes = 128L * 1024 * 1024;
-	// Number of materials whose textures are prepared ahead of consumption.
-	const int Window = 4;
 	readonly Titanfall2Mount _host;
 	readonly Queue<string> _pending;
 	readonly Dictionary<string, Task> _jobs = new( StringComparer.OrdinalIgnoreCase );
@@ -21,15 +18,19 @@ sealed class Titanfall2MaterialPrefetch : IDisposable
 	readonly Titanfall2TexturePreparationBudget _budget;
 	long _waitTicks;
 	readonly ConcurrentDictionary<int, byte> _workers = new();
+	readonly ConcurrentDictionary<Titanfall2TextureLoader, byte> _uniqueTextures = new();
 	int _preparedMaterials;
+	int _uniqueTextureCount;
 	volatile bool _disposed;
 
-	internal Titanfall2MaterialPrefetch( Titanfall2Mount host, IEnumerable<string> materials, long budgetBytes = BudgetBytes )
+	internal Titanfall2MaterialPrefetch( Titanfall2Mount host, IEnumerable<string> materials, long? budgetBytes = null, int? window = null )
 	{
 		_host = host;
-		_budget = new( budgetBytes );
+		_budget = new( budgetBytes ?? Titanfall2StreamingSettings.TexturePrefetchMb * 1024L * 1024 );
+		var slots = window ?? Titanfall2StreamingSettings.MaterialPrefetchWindow;
+		ArgumentOutOfRangeException.ThrowIfNegativeOrZero( slots );
 		_pending = new Queue<string>( materials.Distinct( StringComparer.OrdinalIgnoreCase ) );
-		for ( var i = 0; i < Window; i++ ) StartNext();
+		for ( var i = 0; i < slots; i++ ) StartNext();
 	}
 
 	void StartNext()
@@ -49,11 +50,26 @@ sealed class Titanfall2MaterialPrefetch : IDisposable
 	}
 
 	internal long RetainedBytes => _budget.RetainedBytes;
+	internal object GetStatistics() => new
+	{
+		_budget.CapacityBytes,
+		_budget.RetainedBytes,
+		_budget.PeakBytes,
+		_budget.PayloadCount,
+		_budget.TotalBytes,
+		UniqueTextures = _uniqueTextureCount,
+		PreparedMaterials = _preparedMaterials,
+		MainThreadWaitSeconds = _waitTicks / (double)System.Diagnostics.Stopwatch.Frequency
+	};
 
 	internal bool PrepareTexture( Titanfall2TextureLoader loader )
 	{
 		if ( _disposed || !_budget.HasCapacity ) return false;
-		_textures.Add( loader );
+		if ( _uniqueTextures.TryAdd( loader, 0 ) )
+		{
+			Interlocked.Increment( ref _uniqueTextureCount );
+			_textures.Add( loader );
+		}
 		return loader.Prepare( _budget.Reserve, _budget.Release );
 	}
 
@@ -86,10 +102,12 @@ sealed class Titanfall2MaterialPrefetch : IDisposable
 		_pending.Clear();
 		_cancel.Dispose();
 		Log.Info( $"Titanfall 2 material prefetch: {_preparedMaterials} material jobs on {_workers.Count} worker threads; "
+			+ $"{_budget.PayloadCount} payloads, {_budget.TotalBytes / (1024.0 * 1024.0):0.0} MiB prepared; "
 			+ $"retained peak {_budget.PeakBytes / (1024.0 * 1024.0):0.0} MiB, target {_budget.CapacityBytes / (1024.0 * 1024.0):0.0} MiB "
 			+ $"(in-flight textures may exceed target), remaining {RetainedBytes} bytes; "
 			+ $"main wait {_waitTicks / (double)System.Diagnostics.Stopwatch.Frequency:0.00}s; GPU creation on main thread." );
 		_workers.Clear();
+		_uniqueTextures.Clear();
 	}
 }
 

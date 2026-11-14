@@ -49,6 +49,9 @@ public class TexturePreparationTests
 		Assert.IsTrue( pool.PrepareTexture( loader ) );
 		Assert.AreEqual( 1, source.Reads );
 		Assert.AreEqual( 4L, pool.RetainedBytes );
+		var statistics = System.Text.Json.JsonSerializer.Serialize( pool.GetStatistics() );
+		StringAssert.Contains( statistics, "\"PayloadCount\":1" );
+		StringAssert.Contains( statistics, "\"UniqueTextures\":1" );
 		Assert.IsFalse( pool.PrepareTexture( new Titanfall2TextureLoader( new BytesSource( 4 ) ) ) );
 		Assert.AreEqual( 8L, pool.RetainedBytes );
 		pool.Dispose();
@@ -69,7 +72,16 @@ public class TexturePreparationTests
 			budget.Release( 5 );
 		} );
 		Assert.AreEqual( 20L, budget.PeakBytes );
+		Assert.AreEqual( 20L, budget.TotalBytes );
+		Assert.AreEqual( 4L, budget.PayloadCount );
 		Assert.AreEqual( 0L, budget.RetainedBytes );
 		Assert.IsTrue( budget.HasCapacity );
+	}
+
+	[TestMethod]
+	public void InvalidPrefetchLimitsFailBeforeStartingJobs()
+	{
+		Assert.ThrowsException<ArgumentOutOfRangeException>( () => new Titanfall2MaterialPrefetch( null, [], 0 ) );
+		Assert.ThrowsException<ArgumentOutOfRangeException>( () => new Titanfall2MaterialPrefetch( null, [], window: 0 ) );
 	}
 }

@@ -52,6 +52,24 @@ static class Titanfall2WorldMaterialBatch
 	internal sealed record Result( IReadOnlyList<MountedAggregate> Aggregates,
 		IReadOnlyList<WorldMaterialKey> Keys, Resources Owned );
 
+	// Walk the sparse cells once. Looking up every material in every cell turns a
+	// large map into O(materials * cells) work, even though most pairs are absent.
+	// Keep cell insertion order so fragment descriptors and draw ranges stay stable.
+	internal static Dictionary<WorldMaterialKey, List<MapMeshGroup>> IndexFragments(
+		Dictionary<WorldRenderCell, Dictionary<WorldMaterialKey, MapMeshGroup>> cells )
+	{
+		var result = new Dictionary<WorldMaterialKey, List<MapMeshGroup>>();
+		foreach ( var groups in cells.Values )
+			foreach ( var (key, group) in groups )
+			{
+				if ( group.Vertices.Count == 0 || group.Indices.Count == 0 ) continue;
+				if ( !result.TryGetValue( key, out var fragments ) )
+					result.Add( key, fragments = [] );
+				fragments.Add( group );
+			}
+		return result;
+	}
+
 	internal static Result Build(
 		Dictionary<WorldRenderCell, Dictionary<WorldMaterialKey, MapMeshGroup>> cells,
 		IReadOnlyDictionary<WorldMaterialKey, Material> materials,
@@ -63,9 +81,11 @@ static class Titanfall2WorldMaterialBatch
 		var keys = new Dictionary<int, WorldMaterialKey>();
 		var aggregates = new List<MountedAggregate>();
 		var aggregateKeys = new List<WorldMaterialKey>();
+		var fragmentIndex = IndexFragments( cells );
 		foreach ( var (key, material) in materials.OrderBy( pair => pair.Key.MaterialName, StringComparer.OrdinalIgnoreCase )
 			.ThenBy( pair => pair.Key.LightmapPage ) )
 		{
+			if ( !fragmentIndex.TryGetValue( key, out var fragments ) ) continue;
 			var table = eligible( key ) && material.ShaderName == "shaders/titanfall2_world_lightmapped.shader";
 			if ( table )
 			{
@@ -79,17 +99,17 @@ static class Titanfall2WorldMaterialBatch
 					tables.Add( key.LightmapPage, batch );
 					keys.Add( key.LightmapPage, key );
 				}
-				foreach ( var (_, groups) in cells )
+				foreach ( var group in fragments )
 				{
-					if ( !groups.TryGetValue( key, out var group ) || group.Vertices.Count == 0 || group.Indices.Count == 0 ) continue;
-					batch.Add( group.Vertices.Select( vertex => TitanfallWorldMaterialVertex.From( vertex, id ) ).ToList(), group.Indices, group.Bounds );
+					var vertices = new List<TitanfallWorldMaterialVertex>( group.Vertices.Count );
+					foreach ( var vertex in group.Vertices ) vertices.Add( TitanfallWorldMaterialVertex.From( vertex, id ) );
+					batch.Add( vertices, group.Indices, group.Bounds );
 				}
 			}
 			else
 			{
 				var batch = new MountedGeometryGroup<TitanfallMapVertex>( material );
-				foreach ( var (_, groups) in cells )
-					if ( groups.TryGetValue( key, out var group ) ) batch.Add( group.Vertices, group.Indices, group.Bounds );
+				foreach ( var group in fragments ) batch.Add( group.Vertices, group.Indices, group.Bounds );
 				var built = MountedAggregateBuilder.Build( new[] { batch }, $"{resourceName}/ordinary_{aggregates.Count}" );
 				aggregates.AddRange( built );
 				aggregateKeys.AddRange( Enumerable.Repeat( key, built.Count ) );

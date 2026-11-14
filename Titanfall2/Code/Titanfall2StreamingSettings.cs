@@ -18,6 +18,8 @@ static class Titanfall2StreamingSettings
 	// on memory-constrained clients; dedicated servers and pure-world maps always stay resident.
 	public static readonly bool ResidentWorld = GetBool( "SBOX_TITANFALL2_RESIDENT_WORLD", true );
 	public static int TextureMaxDimension => Titanfall2GraphicsSettings.Current.TextureMaxDimension;
+	public static readonly int TexturePrefetchMb = GetInt( "SBOX_TITANFALL2_TEXTURE_PREFETCH_MB", 128, 8, 1024 );
+	public static readonly int MaterialPrefetchWindow = GetInt( "SBOX_TITANFALL2_MATERIAL_PREFETCH_WINDOW", 4, 1, 16 );
 
 	// Upload the two largest lightmap channels as 16-bit textures: SkyB as BGR565 and RealTimeB as
 	// BGRA4444. The shader keeps sampling float4, so only precision changes (retail RealTimeB is

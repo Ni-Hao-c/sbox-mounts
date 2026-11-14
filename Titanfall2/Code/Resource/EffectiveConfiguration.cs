@@ -36,6 +36,8 @@ static class Titanfall2EffectiveConfiguration
 			Titanfall2StreamingSettings.PropBatchClusterCells,
 			Titanfall2StreamingSettings.ResidentWorld,
 			Titanfall2StreamingSettings.ProcessedCache,
+			Titanfall2StreamingSettings.TexturePrefetchMb,
+			Titanfall2StreamingSettings.MaterialPrefetchWindow,
 			Titanfall2StreamingSettings.FpsPreset
 		}
 	};
