@@ -34,18 +34,20 @@ lighting approximations and leaf partitioning are not substituted for Titanfall 
   Optional model/BSP arrays previously caused derived-cache writes to fail and fall
   back to repeated original imports. Non-empty layout and truncation checks remain.
 
-## Local engine prerequisite
+## Official engine prerequisite
 
-The local test engine temporarily registers mount component assemblies in the current
-game type library and during each Game.InitTypeLibrary rebuild. Assets are registered
-before mount source initialization and static constructors. This is a local workaround
-for Facepunch/sbox-public#12368, not an official engine capability or a sandbox allow-list
-change. The mount still uses the official compiler and public runtime APIs.
+Use Facepunch/sbox-public commit `3e80ced851c1d02cc808dc3851bbeb745d646c2f`
+or a descendant containing its mount registration fixes. Upstream resolved
+[issue #12368](https://github.com/Facepunch/sbox-public/issues/12368) by enrolling
+exposed DLL mount types in both menu and game libraries, restoring them during
+Game.InitTypeLibrary rebuilds, and mounting Assets before source initialization.
+The follow-up fixes also roll back failed registrations and refresh JSON upgraders.
 
-The two engine files and the generated patch are backed up separately. When upstream
-provides the lifecycle contract, review and remove this patch before updating; do not
-blindly reset local engine changes. The workaround still needs a broader audit of
-simultaneously live contexts/hot reload before being treated as an upstream solution.
+The temporary local engine registration patch has been reverted. No mount-specific
+runtime engine changes or sandbox allow-list changes are required by this package.
+The mount continues to use the official compiler and public runtime APIs. Keep the
+old branch and patch as historical recovery points, rather than applying them on top
+of the official implementation.
 
 ## Validation
 
@@ -53,7 +55,8 @@ simultaneously live contexts/hot reload before being treated as an upstream solu
 builds the sandboxed package, runs mount tests and processes its shaders/content.
 
 `Validation/validate.ps1 -RuntimeRoot <game> -PackageDirectory <package> -Graphics`
-checks deployed module identity, registration after library reset, scene/render lifetime,
+checks deployed module identity, automatic registration before fixture enrollment and
+after two library resets, scene/render lifetime,
 cubemap disable/re-enable/clone ownership and failed-load rollback.
 
 Add `-GameDirectory <Titanfall2 install> -MapName mp_angel_city` for two native scene

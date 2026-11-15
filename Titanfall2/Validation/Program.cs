@@ -152,11 +152,19 @@ static class Program
 	static void CheckMountTypesAfterGameLibraryReset()
 	{
 		var assembly = Sandbox.Mounting.Directory.Get( "titanfall2" ).GetType().Assembly;
-		Game.InitTypeLibrary();
 		var names = new[] { "Titanfall2WorldMaterialTableController", "Titanfall2HeightFog", "Titanfall2StaticPropStreamer", "Titanfall2SkyboxDrawSettings" };
-		var missing = names.Where( name => Game.TypeLibrary.GetType( assembly.GetType( name, true ) ) is null ).ToArray();
-		Results.Add( new { Test = "MountTypesAfterGameLibraryReset", Missing = missing } );
-		Check( missing.Length == 0, "Game type-library reset lost mount components: " + string.Join( ", ", missing ) );
+		// Exercise discovery and both rebuilds before the fixture enrolls its separate
+		// referenced copy of the mount assembly for the remaining lifecycle tests.
+		for ( var cycle = 0; cycle <= 2; cycle++ )
+		{
+			if ( cycle > 0 ) Game.InitTypeLibrary();
+			var missing = names.Where( name => Game.TypeLibrary.GetType( assembly.GetType( name, true ) ) is null ).ToArray();
+			var menu = GlobalContext.Menu?.TypeLibrary;
+			var menuMissing = menu is null ? [] : names.Where( name => menu.GetType( assembly.GetType( name, true ) ) is null ).ToArray();
+			Results.Add( new { Test = "MountTypesAfterGameLibraryReset", cycle, Missing = missing, MenuLibraryAvailable = menu is not null, MenuMissing = menuMissing } );
+			Check( missing.Length == 0, "Game type-library reset lost mount components: " + string.Join( ", ", missing ) );
+			Check( menuMissing.Length == 0, "Menu type library lost mount components: " + string.Join( ", ", menuMissing ) );
+		}
 	}
 
 	static void CheckDeploymentRegistration()
