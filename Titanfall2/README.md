@@ -10,14 +10,18 @@
 <a id="en-layout"></a>
 ## Code layout
 
-Like the SourceEngine mount, indexing and mount lifecycle live in the mount, binary readers in `Formats`, and resource construction and runtime components in `Resource`.
+Like the SourceEngine mount, indexing and mount lifecycle live in the mount, binary readers in `Formats`, resource loaders in `Resource`, and runtime components in `Components`. Map construction is grouped under `Resource/Map`. Collision and rendering helpers have their own directories.
 
 | Path | Responsibility |
 | --- | --- |
 | [Code/GameMount.cs](Code/GameMount.cs), [Code/Content/](Code/Content) | Installation discovery, immutable content snapshots, resource registration and shutdown. |
 | [Code/Formats/](Code/Formats) | VPK/LZHAM, RPAK/StarPak/DXBC, rBSP, MDL53/VTX/VVD/VPHY, Miles/BCF, PCF, VMT, VTF and scripts. Some texture readers also contain main-thread creation entry points. |
-| [Code/Resource/](Code/Resource) | Map/model/material/texture/sound loaders, collision, particles, navigation, environment and post-processing. `Map.cs` and its partial files assemble scenes. |
-| [MountedScenePerfKit.cs](Code/Resource/MountedScenePerfKit.cs) | Reusable world aggregation, instance batches and culling in `Sandbox.Mounting.PerfKit`. |
+| [Code/Resource/](Code/Resource) | Model/material/texture/sound loaders and related conversion helpers. |
+| [Code/Resource/Map/](Code/Resource/Map) | Map loading/import/cache and grouped `Geometry`, `Entities`, `Lighting` builders. |
+| [Code/Components/](Code/Components) | Runtime map, prop, particle, audio, navigation, lighting and post-processing components. |
+| [Code/Collision/](Code/Collision) | Contents masks, source metadata, trace queries and diagnostics. |
+| [Code/Rendering/](Code/Rendering) | Aggregate/instance drawing helpers, probe/local-light buffers and material-table layouts. |
+| [MountedScenePerfKit.cs](Code/Rendering/MountedScenePerfKit.cs) | Reusable world aggregation, instance batches and culling in `Sandbox.Mounting.PerfKit`. |
 | [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs) | Mount configuration from the data filesystem. |
 | [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs) | Player texture quality policy. |
 | [Assets/shaders/](Assets/shaders) | Mount shaders, named `titanfall2_*`. |
@@ -49,9 +53,9 @@ mount://titanfall2/maps/mp_angel_city.bsp.world.scene
 
 The full scene includes world geometry/collision, environment, props, particles, audio, spawn points, dynamic props and a spectator camera. The pure-world scene omits spawns, cameras and dynamic props, does not force navigation on, and keeps all prop collision resident.
 
-Add [Titanfall2Map](Code/Resource/Titanfall2Map.cs) to embed a map in another scene, similarly to `MapInstance`. `MapName` accepts the map name with optional `.bsp`/`.bsp.scene`; `PureWorld` selects the world scene. `SpawnSpectatorCamera` supplies a camera above the first spawn if none exists, except in pure-world mode. `LoadInEditor` is off by default because large maps preload many props. `GetAvailableMaps()` lists mounted names. Imported objects are unsaved children; the component destroys only its own objects and remaps IDs when cloning scene JSON.
+Add [Titanfall2Map](Code/Components/Map/Titanfall2Map.cs) to embed a map in another scene, similarly to `MapInstance`. `MapName` accepts the map name with optional `.bsp`/`.bsp.scene`; `PureWorld` selects the world scene. `SpawnSpectatorCamera` supplies a camera above the first spawn if none exists, except in pure-world mode. `LoadInEditor` is off by default because large maps preload many props. `GetAvailableMaps()` lists mounted names. Imported objects are unsaved children; the component destroys only its own objects and remaps IDs when cloning scene JSON.
 
-Wait for `ttf2_map_ready` on `worldspawn` before placing players. [Titanfall2WorldReady](Code/Resource/WorldReady.cs) requires complete resident prop collision, shaped world physics bodies and every contents group in the collision manifest. It clears readiness on load/enable and revokes it if resources disappear; physics scans are throttled to 0.25 seconds. Corrupt prop data cannot publish readiness. Preparation completion, successful rendering resources and complete collision are separate states.
+Wait for `ttf2_map_ready` on `worldspawn` before placing players. [Titanfall2WorldReady](Code/Components/Map/WorldReady.cs) requires complete resident prop collision, shaped world physics bodies and every contents group in the collision manifest. It clears readiness on load/enable and revokes it if resources disappear; physics scans are throttled to 0.25 seconds. Corrupt prop data cannot publish readiness. Preparation completion, successful rendering resources and complete collision are separate states.
 
 ### Rendering and props
 
@@ -63,7 +67,7 @@ Props preload during loading and live until scene destruction. Native instance b
 
 World collision uses rBSP CM brushes/tricolls, grouped by original contents. Groups without player-solid bits become triggers. Clients warn and fall back to filtered render geometry if CM is incomplete; dedicated servers require complete CM. Prop collision prefers VPHY hulls, then hitboxes, then render meshes; meshes above 8192 triangles use a bounds hull. Effective contents combine sprp solid type, MDL contents and the remove mask; zero means no collision. Ordinary scenes default to resident collision. With `RESIDENT_WORLD=0`, props activate within 1536 units and release beyond 2560; pure-world scenes and servers remain resident.
 
-Objects carry `ttf2_contents`, `ttf2_content_<bit>` and applicable `playerclip`, `titanclip`, `nograpple`, `nowallrun` tags. [Titanfall2CollisionQueries.Run](Code/Resource/CollisionQueries.cs) accepts `Titanfall2TraceMask`, such as `Shot`; masks use retail constants. `titanfall2_collision_look [distance=512] [radius=0]` inspects collision source, contents, shapes and tags without changing them.
+Objects carry `ttf2_contents`, `ttf2_content_<bit>` and applicable `playerclip`, `titanclip`, `nograpple`, `nowallrun` tags. [Titanfall2CollisionQueries.Run](Code/Collision/CollisionQueries.cs) accepts `Titanfall2TraceMask`, such as `Shot`; masks use retail constants. `titanfall2_collision_look [distance=512] [radius=0]` inspects collision source, contents, shapes and tags without changing them.
 
 [Titanfall2Surface](Code/Resource/Surface.cs) normalizes surfaceprop names, applies aliases (`concrete` → `dirt`, `tile` → `ceramic`) and falls back to `default`, warning once per unknown name. MDL model surfaces apply to bodies and bone surfaces to hitboxes; VMT `$surfaceprop` becomes `PhysicsSurfaceProperties`. World CM and unparsed RPAK surface names retain engine defaults.
 
@@ -71,7 +75,7 @@ Objects carry `ttf2_contents`, `ttf2_content_<bit>` and applicable `playerclip`,
 
 ### Navigation and audio
 
-[Titanfall2DeferredNavMeshBuilder](Code/Resource/DeferredNavMeshBuilder.cs) shares navigation state across mounted maps in a scene and restores host settings when the last map leaves. On-demand generation skips the whole-map load pass and requests tagged world collision tiles around players, agents and agent targets (default radius 2048). It leaves navigation disabled if the host disabled it, unless `DEFERRED_NAVMESH=1` requests navigation for a full scene. `NAVMESH_STATIC_PROPS=1` adds prop collision and makes it resident. Link costs and path searches remain the official engine's responsibility.
+[Titanfall2DeferredNavMeshBuilder](Code/Components/Navigation/DeferredNavMeshBuilder.cs) shares navigation state across mounted maps in a scene and restores host settings when the last map leaves. On-demand generation skips the whole-map load pass and requests tagged world collision tiles around players, agents and agent targets (default radius 2048). It leaves navigation disabled if the host disabled it, unless `DEFERRED_NAVMESH=1` requests navigation for a full scene. `NAVMESH_STATIC_PROPS=1` adds prop collision and makes it resident. Link costs and path searches remain the official engine's responsibility.
 
 Map audio reads `_snd.ent`: `ambient_generic` creates bounded point sources (default cap 12, fallback radius 1024), and `trigger_soundscape` creates spherical soundscape triggers. Playback needs `Sound.Listener`. Managed decoding supports mono/stereo and downmixes 4/6 channels to stereo; 3/5/7 channels fail with a diagnostic. The native Miles event interpreter is unavailable; `Titanfall2SoundEventPlayer` remains a warning-only compatibility component. Use mounted `.vsnd`, `Sound` or `Soundscape` instead.
 
@@ -176,7 +180,7 @@ The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CP
 | `NORTHSTAR_PROFILE` | Existing `R2Northstar` under game install, otherwise retail | Relative game-filesystem profile containing `mods/`, `packages/`, `enabledmods.json`. Explicit empty string disables it. Launcher source directories are not profiles. |
 | `NORTHSTAR_MAP` | Unset | Fixed map context, e.g. `mp_angel_city`, for conditional RPAK/VPK content; publishes only that map's scenes. Unset `MapOnly` packages preload according to declared maps and emit diagnostics. Change in a new process. |
 
-`CACHE_PATH` cannot select an arbitrary directory: cache stays in `FileSystem.Data/cache/titanfall2/processed`. `GPU_STATIC_SCENE`, `GPU_MIXED_PROPS`, `GPU_STATIC_SCENE_MB` and `GPU_VIEW_SLOTS` cannot enable GPU MDI in this version. Logging is implemented in [Titanfall2Log.cs](Code/Titanfall2Log.cs), cache in [ProcessedCache.cs](Code/Resource/ProcessedCache.cs).
+`CACHE_PATH` cannot select an arbitrary directory: cache stays in `FileSystem.Data/cache/titanfall2/processed`. `GPU_STATIC_SCENE`, `GPU_MIXED_PROPS`, `GPU_STATIC_SCENE_MB` and `GPU_VIEW_SLOTS` cannot enable GPU MDI in this version. Logging is implemented in [Titanfall2Log.cs](Code/Titanfall2Log.cs), cache in [ProcessedCache.cs](Code/Content/ProcessedCache.cs).
 
 Use `titanfall2_content_stats`, `titanfall2_content_list "models/" 0 100` and `titanfall2_content_explain "models/example.mdl"`. For RPAK queries pass virtual resource names and `matl`/`txtr` types. Listing scripts does not execute them. Import statistics report phase timings, aggregates/fragments/material rows, RPAK upload deltas and prefetch peaks; these are load metrics, not frame/GPU timings.
 
@@ -294,8 +298,12 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 |------|------|
 | [GameMount.cs](Code/GameMount.cs)、[Content/](Code/Content) | 安装检测、固定内容快照、资源注册与卸载。 |
 | [Formats/](Code/Formats) | 容器和格式解析（部分纹理解码文件也包含主线程创建入口）：`Bsp`、`Mdl`、`Miles`、`Pcf`、`Rpak`、`Scripts`、`Vmt`、`Vpk`、`Vtf`。VPK 的 LZHAM 压缩块和 Miles 的 Bink Audio 流都由这里的纯 C# 解码器处理。 |
-| [Resource/](Code/Resource) | 资源加载器和场景组件：地图、模型、材质、纹理、声音、粒子、静态道具、碰撞、导航、环境和后处理。 |
-| [MountedScenePerfKit.cs](Code/Resource/MountedScenePerfKit.cs) | 通用世界聚合、实例批次与剔除工具，命名空间为 `Sandbox.Mounting.PerfKit`。 |
+| [Resource/](Code/Resource) | 模型、材质、纹理、声音加载器及转换工具。 |
+| [Resource/Map/](Code/Resource/Map) | 地图加载、解析缓存与导入；几何、实体、光照构建分别归入 `Geometry`、`Entities`、`Lighting`。 |
+| [Components/](Code/Components) | 地图、静态道具、粒子、音频、导航、光照和后处理运行时组件。 |
+| [Collision/](Code/Collision) | contents 掩码、来源元数据、射线查询和诊断。 |
+| [Rendering/](Code/Rendering) | 世界聚合、实例批次、局部光缓冲及材质表布局。 |
+| [MountedScenePerfKit.cs](Code/Rendering/MountedScenePerfKit.cs) | 通用世界聚合、实例批次与剔除工具，命名空间为 `Sandbox.Mounting.PerfKit`。 |
 | [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs) | 从 `FileSystem.Data/titanfall2.settings.json` 读取配置。 |
 | [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs) | 玩家纹理质量与导入策略。 |
 
@@ -320,12 +328,12 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 
 ## 地图加载
 
-每张地图注册两个场景，都由 [Resource/Map.cs](Code/Resource/Map.cs) 中的 `MapLoader` 构建：
+每张地图注册两个场景，都由 [Resource/Map/Map.cs](Code/Resource/Map/Map.cs) 中的 `MapLoader` 构建：
 
 - `mount://titanfall2/maps/<map>.bsp.scene` 是完整场景。它包含世界几何、碰撞、环境、静态道具、粒子、地图音频、出生点、动态道具和一个旁观相机，可以直接打开运行。
 - `mount://titanfall2/maps/<map>.bsp.world.scene` 是纯世界场景。它不创建出生点、相机和动态道具，不强制开启导航，并把所有静态道具碰撞常驻在物理世界中。它适合加载进游戏自己的场景。
 
-在自己的场景里使用地图时，添加 `Titanfall2Map` 组件（[Resource/Titanfall2Map.cs](Code/Resource/Titanfall2Map.cs)），用法与 Hammer 地图的 `MapInstance` 相同：
+在自己的场景里使用地图时，添加 `Titanfall2Map` 组件（[Components/Map/Titanfall2Map.cs](Code/Components/Map/Titanfall2Map.cs)），用法与 Hammer 地图的 `MapInstance` 相同：
 
 - `MapName` 是地图名，例如 `mp_angel_city`。末尾的 `.bsp`、`.bsp.scene` 会被去掉。
 - `PureWorld` 选择加载 `.world.scene`。
@@ -354,7 +362,7 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 
 ## 静态道具
 
-`Titanfall2StaticPropStreamer`（[Resource/StaticPropStreamer.cs](Code/Resource/StaticPropStreamer.cs)）在加载画面期间预加载地图中的全部静态道具，之后它们一直保留到场景销毁。
+`Titanfall2StaticPropStreamer`（[Components/StaticProps/StaticPropStreamer.cs](Code/Components/StaticProps/StaticPropStreamer.cs)）在加载画面期间预加载地图中的全部静态道具，之后它们一直保留到场景销毁。
 
 - **实例化**：相同模型的道具按 4×4 个 512 单位的单元分组，合并成一个实例批次绘制。
 - **LOD**：静态实例模型解码批次使用的前四档 MDL/VTX LOD，模型其余 LOD 槽位复用最深的可用档。实例批次按每个实例到相机的距离选级（1536 / 4096 / 8192 单位切到 LOD1 / 2 / 3），按级分组绘制。
@@ -378,7 +386,7 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 - 每个置位的 contents 位对应一个 `ttf2_content_<bit>`
 - 可读标签 `playerclip`、`titanclip`、`nograpple`、`nowallrun`
 
-用原始掩码做射线检测时，调用 `Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Shot )`（[Resource/CollisionQueries.cs](Code/Resource/CollisionQueries.cs)）。`Titanfall2Contents` 和 `Titanfall2TraceMask` 枚举（[Resource/CollisionContents.cs](Code/Resource/CollisionContents.cs)）使用零售版脚本中的常量值。
+用原始掩码做射线检测时，调用 `Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Shot )`（[Collision/CollisionQueries.cs](Code/Collision/CollisionQueries.cs)）。`Titanfall2Contents` 和 `Titanfall2TraceMask` 枚举（[Collision/CollisionContents.cs](Code/Collision/CollisionContents.cs)）使用零售版脚本中的常量值。
 
 控制台命令 `titanfall2_collision_look [距离=512] [半径=0]` 从当前相机发出射线或球体扫描，以 JSON 输出命中物体的碰撞来源、contents、形状和标签。它只读取，不修改碰撞。
 
@@ -405,7 +413,7 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 
 ## 导航
 
-`Titanfall2DeferredNavMeshBuilder`（[Resource/DeferredNavMeshBuilder.cs](Code/Resource/DeferredNavMeshBuilder.cs)）接管挂载地图的导航网格生成。
+`Titanfall2DeferredNavMeshBuilder`（[Components/Navigation/DeferredNavMeshBuilder.cs](Code/Components/Navigation/DeferredNavMeshBuilder.cs)）接管挂载地图的导航网格生成。
 
 默认的按需模式下：
 
@@ -462,7 +470,7 @@ dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- build-mount --pr
 <a id="zh-configuration"></a>
 ## 配置
 
-挂载后端与诊断覆盖集中在 [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs)，玩家画质适配在 [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs)。内容配置在首次挂载时读取；日志和缓存目录分别见 [Titanfall2Log.cs](Code/Titanfall2Log.cs) 和 [Resource/ProcessedCache.cs](Code/Resource/ProcessedCache.cs)。
+挂载后端与诊断覆盖集中在 [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs)，玩家画质适配在 [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs)。内容配置在首次挂载时读取；日志和缓存目录分别见 [Titanfall2Log.cs](Code/Titanfall2Log.cs) 和 [Content/ProcessedCache.cs](Code/Content/ProcessedCache.cs)。
 
 ### 玩家画质设置
 
@@ -593,7 +601,7 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 代码分三层，依赖方向只能从上到下：
 
 1. **Formats**（[Formats/](Code/Formats)）：容器与二进制格式读取。大部分解析输出普通 .NET 数据；当前 RPAK/VTF 纹理文件仍同时包含引擎纹理创建方法，调用方必须区分 CPU 读取与主线程创建入口。
-2. **Resource**（[Resource/](Code/Resource)）：资源加载器和场景组件。这一层把解析结果转换成 `Texture`、`Material`、`Model`、`SoundFile` 和场景对象。
+2. **Resource / Components**（[Resource/](Code/Resource)、[Components/](Code/Components)）：资源加载器与运行时组件分目录维护，把解析结果转换成 `Texture`、`Material`、`Model`、`SoundFile` 和场景对象。
 3. **场景**：`MapLoader.BuildScene` 把组件装配成可序列化的场景。
 
 线程规则：
@@ -685,7 +693,7 @@ BSP 自身的 ENTITIES lump 很小，但总是包含 `worldspawn`，以及分区
 
 #### 就绪信号
 
-`Titanfall2WorldReady`（[Resource/WorldReady.cs](Code/Resource/WorldReady.cs)）在 `worldspawn` 上维护标签 `ttf2_map_ready`：
+`Titanfall2WorldReady`（[Components/Map/WorldReady.cs](Code/Components/Map/WorldReady.cs)）在 `worldspawn` 上维护标签 `ttf2_map_ready`：
 
 - 标签在 `OnLoad` 和 `OnEnabled` 时清除。
 - 发布条件：
@@ -716,7 +724,7 @@ BSP 自身的 ENTITIES lump 很小，但总是包含 `worldspawn`，以及分区
 
 #### contents 和检测掩码
 
-`Titanfall2Contents` 和 `Titanfall2TraceMask`（[Resource/CollisionContents.cs](Code/Resource/CollisionContents.cs)）的值取自零售版 client.dll 的脚本常量。常用值：
+`Titanfall2Contents` 和 `Titanfall2TraceMask`（[Collision/CollisionContents.cs](Code/Collision/CollisionContents.cs)）的值取自零售版 client.dll 的脚本常量。常用值：
 
 | 名称 | 值 |
 |------|----|
@@ -858,7 +866,7 @@ solid 类型不为 0 时，有效 contents 由 `Titanfall2CollisionSource.Static
 
 ### 显示管线
 
-`Titanfall2Tonemapping`（[Resource/Tonemapping.cs](Code/Resource/Tonemapping.cs)）挂在一个无限范围、优先级 -100 的 `PostProcessVolume` 上，所以游戏自己的后处理体积可以覆盖它。函数定义在 `titanfall2_display.hlsl`。
+`Titanfall2Tonemapping`（[Components/PostProcessing/Tonemapping.cs](Code/Components/PostProcessing/Tonemapping.cs)）挂在一个无限范围、优先级 -100 的 `PostProcessVolume` 上，所以游戏自己的后处理体积可以覆盖它。函数定义在 `titanfall2_display.hlsl`。
 
 #### 曝光
 
@@ -933,7 +941,7 @@ solid 类型不为 0 时，有效 contents 由 `Titanfall2CollisionSource.Static
 - 解码保真度：与零售 Miles 运行时对比，94.07% 的样本逐位相同，100% 在 ±2 LSB 以内（最大 2 LSB，平均 0.059 LSB）。这点差异来自零售 `binkawin64.dll` 自身的浮点与取整管线，在不复制 RAD 实现的前提下不可消除；用 FFmpeg 作为第三个 oracle 交叉验证，本实现比 FFmpeg 更接近零售。听感与零售一致。
 - 声道：单/双声道逐样本对比；4/6 声道流先按原始声道解码，再在解码过程中折叠为双声道（Miles 近似：中心 0.7071、环绕 0.5、省略 LFE；4 声道另做 1/√2 等功率归一化），始终向 `SoundFile.FromPcm` 交付与旧包相同的 2 声道 PCM。4/6 声道电平与零售一致（RMS 比 0.999–1.000），波形相关系数中位数 1.0；3/5/7 声道布局返回失败并给出消息。
 - 声音事件（Miles 事件解释器）依赖零售 Miles 运行时，属于原生代码，已随原生桥移除：`Titanfall2SoundEventPlayer`（组件名 `titanfall2_sound_event`）保留为兼容占位、不再播放；`CreateSoundEventSession` / `Titanfall2SoundEventSession` / `Titanfall2SoundEventHandle` 不再提供。`sound/<name>.vsnd` 样本、点声源和 soundscape 仍正常工作。
-- 地图音频（[Resource/MapAudio.cs](Code/Resource/MapAudio.cs)）来自 `_snd.ent`：
+- 地图音频（[Components/Audio/MapAudio.cs](Code/Components/Audio/MapAudio.cs)）来自 `_snd.ent`：
   - `ambient_generic` 生成点声源。零售地图的 `radius` 都是 0，因此使用默认半径 1024。
   - `trigger_soundscape` 生成球形 `SoundscapeTrigger`。
   - 播放依赖场景中的 `Sound.Listener`。
@@ -951,7 +959,7 @@ solid 类型不为 0 时，有效 contents 由 `Titanfall2CollisionSource.Static
 
 ### 流式加载预算
 
-这些数值是 [Resource/StaticPropStreamer.cs](Code/Resource/StaticPropStreamer.cs) 中的常量：
+这些数值是 [Components/StaticProps/StaticPropStreamer.cs](Code/Components/StaticProps/StaticPropStreamer.cs) 中的常量：
 
 | 阶段 | 预算 |
 |------|------|
@@ -1027,9 +1035,9 @@ LOD、PVS、距离和阴影处理回到既有原生批次路径；不能沿用�
 
 ### 局部调色与 Bloom 分支
 
-局部颜色校正使用 [ColorCorrectionDefinition.cs](Code/Resource/ColorCorrectionDefinition.cs) 中的全局、距离和 brush volume 权重，并按相机维护进入/离开的连续淡化。原始 32³ LUT 由挂载持有，场景保存定义与资源路径；[ColorCorrection.cs](Code/Resource/ColorCorrection.cs) 在需要时创建每相机的组合纹理，释放时清理自己的 GPU 资源。
+局部颜色校正使用 [ColorCorrectionDefinition.cs](Code/Components/PostProcessing/ColorCorrectionDefinition.cs) 中的全局、距离和 brush volume 权重，并按相机维护进入/离开的连续淡化。原始 32³ LUT 由挂载持有，场景保存定义与资源路径；[ColorCorrection.cs](Code/Components/PostProcessing/ColorCorrection.cs) 在需要时创建每相机的组合纹理，释放时清理自己的 GPU 资源。
 
-[Tonemapping.Bloom.cs](Code/Resource/Tonemapping.Bloom.cs) 分别保留基础、wide 和 streak 的预过滤、强度及指数。wide 默认强度 0.2、预指数 2、后指数 0.7；streak 默认强度 0.5、阈值 5、前后指数 1；基础后指数为 1。这些是组件属性，与 JSON 覆盖项分开。wide 使用更低分辨率的宽模糊，streak 使用多轮水平扩散；它们不构成零售画面逐像素一致性的证明。
+[Tonemapping.Bloom.cs](Code/Components/PostProcessing/Tonemapping.Bloom.cs) 分别保留基础、wide 和 streak 的预过滤、强度及指数。wide 默认强度 0.2、预指数 2、后指数 0.7；streak 默认强度 0.5、阈值 5、前后指数 1；基础后指数为 1。这些是组件属性，与 JSON 覆盖项分开。wide 使用更低分辨率的宽模糊，streak 使用多轮水平扩散；它们不构成零售画面逐像素一致性的证明。
 
 <a id="zh-limitations"></a>
 ## 已知限制
