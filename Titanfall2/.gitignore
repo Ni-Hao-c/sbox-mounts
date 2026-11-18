@@ -6,13 +6,12 @@
 .vs/*
 .vscode/*
 *.csproj
-!Tests/*.csproj
-!Validation/*.csproj
-# Local build helpers are kept outside version control.
+# Local build, test and validation helpers are kept outside version control.
 /Build/
+/Tests/
+/Validation/
 obj
 bin
-Tests/TestResults/
 Properties/*
 code/obj/*
 code/Properties/*
