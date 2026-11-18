@@ -120,7 +120,7 @@ The official pipeline compiles sandboxed C#, shaders and content into `Titanfall
 | Shadow low / medium / high / very high | Directional component permits four cascades; engine quality clamps to 1 / 2 / 3 / 4 and controls resolution, distance and contact shadows. | Normal engine quality updates, without rebuilding the map. |
 | AA, render scale, upscaling, native post-processing | Existing engine implementations and quality controls. | Normal engine behavior. |
 
-Priority is explicit JSON override, then applicable legacy `FPS_PRESET` restrictions, then player/engine settings. Only `TEXTURE_MAX` overrides texture resolution; FPS presets do not. Shadow overrides are ceilings under the engine quality ceiling. A menu FPS cap does not select a preset. TF2 height/directional fog, godrays, particles and refractive water do not automatically follow similarly named native quality controls. If render settings are unavailable, texture policy falls back to 1024.
+Explicit JSON overrides take priority over player/engine settings. `TEXTURE_MAX` overrides texture resolution. Shadow overrides are ceilings under the engine quality ceiling. TF2 height/directional fog, godrays, particles and refractive water do not automatically follow similarly named native quality controls. If render settings are unavailable, texture policy falls back to 1024.
 
 The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CPU prefetch budget is soft, not a VRAM limit; in-flight reads can exceed it and peak usage is logged. Workers stop new reads without waiting for GPU consumption, avoiding synchronous-import deadlocks.
 
@@ -134,7 +134,7 @@ The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CP
 | `CACHE_MB` | 2048 | 128–8192 | Derived-cache disk budget in MiB. |
 | `TEXTURE_MAX` | Player quality | 64–16384 | Maximum source dimension; missing/empty/invalid follows player quality. Explicit 512 is available for low-memory use. |
 | `LIGHTMAP_16BIT` | On | On/off | Single-level SkyB BGR565 and RealTimeB BGRA4444 reduce lightmap channels from 17 to 13 B/texel. BGR565 uses R high/B low; RGB565 is not interchangeable. Mipped RealTimeB stays RGBA8888 due to lower-mip corruption with native BGRA4444. Off restores RGBA8888. |
-| `LIGHTMAP_MIPS` | Off; on for preset ≥120 | On/off | L0–L2 for SkyA/SkyB/RealTimeB, with four coverage-dilation steps before mip generation. Uploads smallest mip first. Slightly softer chart edges and additional memory. |
+| `LIGHTMAP_MIPS` | Off | On/off | L0–L2 for SkyA/SkyB/RealTimeB, with four coverage-dilation steps before mip generation. Uploads smallest mip first. Slightly softer chart edges and additional memory. |
 
 ### Props and submission granularity
 
@@ -144,7 +144,6 @@ The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CP
 | `PROP_RENDER_DISTANCE` | 8192 | 0–65536 | Per-instance distance culling; 0 disables it, large landmarks are exempt. |
 | `PROP_AUTHORED_FADE_SCALE` | 1 | 0.25–16 | Multiplier for authored fades. |
 | `PROP_SHADOWS` | On | On/off | Dynamic shadows for props of radius at least 48. |
-| `FPS_PRESET` | 0 | 0–240 | Legacy work/detail preset, not an FPS guarantee. 0/60 keep defaults; ≥120 selects shadow distance 1024, cascade ceiling 1, LOD scale 0.5, cells 4096, clusters 8, render distance 6144, lightmap mips on, contact shadows/godrays off. Explicit settings win. |
 | `PROP_SHADOW_DISTANCE` | 0 | 0–65536 | 0 disables distance gating. Native batches change shadow flags with hysteresis, at most 32 per frame. No GPU MDI route is enabled. |
 | `PROP_LOD_SCALE` | 1 | 0.1–4 | Multiplies 1536/4096/8192 LOD distances; smaller values reduce distant detail. |
 | `BATCH_CLUSTER` | 4 | 1/2/4/8/16 | Prop cells per batch axis; larger clusters reduce submitted objects but coarsen PVS/shadow decisions. Intermediate values snap down. |
@@ -158,10 +157,10 @@ The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CP
 | `BSP_LIGHTMAPS` | On | On/off | Baked world lighting, prop probes and local lights; off uses native lighting for diagnosis. |
 | `MAP_SHADOWS` | On | On/off | World directional CSM shadows. |
 | `SHADOW_GEOMETRY` | On | On/off | Dedicated opaque depth geometry per world cell; alpha-tested materials keep their own shadow shaders. Off lets the original aggregates cast. |
-| `SHADOW_CASCADES` | 4 | 1–4 | Component ceiling under player quality; forced to 1 with map shadows off or default aggressive preset. |
-| `CONTACT_SHADOWS` | On | On/off | Native screen-space contact shadows; aggressive preset defaults off. |
+| `SHADOW_CASCADES` | 4 | 1–4 | Component ceiling under player quality; forced to 1 with map shadows off. |
+| `CONTACT_SHADOWS` | On | On/off | Native screen-space contact shadows. |
 | `EXPOSURE_EV` | 0 | -5–5 | Exposure compensation in stops. |
-| `GODRAYS` | On | On/off | Additive distance-faded cards; aggressive preset defaults off. |
+| `GODRAYS` | On | On/off | Additive distance-faded cards. |
 | `MAP_AUDIO` | On | On/off | Ambient point sources and soundscapes. |
 | `AUDIO_VOLUME` | 0.7 | 0.05–2 | Ambient map volume. |
 | `NAVMESH_ON_DEMAND` | On | On/off | Generate nearby tagged world tiles if host navigation is enabled. Off restores whole-map generation, historically around 1.5–2 minutes extra on large maps; not a timing guarantee. |
@@ -267,7 +266,7 @@ The cache at `FileSystem.Data/cache/titanfall2/processed` stores `map`, `model`,
 
 Stable resident scenes do not rebuild collision queues merely because the camera moves; lost owned bodies trigger recovery. Failed collision resources cannot publish readiness. Prefetch counts each unique payload once, retains the overshoot payload for main-thread consumption, returns all accounting on upload/cancel, and never waits for GPU consumption. It is a CPU-data policy, not a resolution or VRAM controller.
 
-Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3,044 draws, 3.2M triangles, including 2,717 prop batches, with approximately 1.5 ms C# Update work. These are historical context only. Preset names and fewer draws do not establish a frame-rate gain; compare fixed camera/resolution/focus in one process and record both whole-frame and GPU time.
+Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3,044 draws, 3.2M triangles, including 2,717 prop batches, with approximately 1.5 ms C# Update work. These are historical context only. Fewer draws do not establish a frame-rate gain; compare fixed camera/resolution/focus in one process and record both whole-frame and GPU time.
 
 <a id="en-limitations"></a>
 ## Limitations
@@ -475,7 +474,7 @@ dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- build-mount --pr
 | 阴影低 / 中 / 高 / 极高 | 地图方向光默认允许 4 级级联，引擎质量配置实际限制为 1 / 2 / 3 / 4 级，并控制分辨率、距离和接触阴影 | 引擎按其画质设置即时应用，不必重建地图 |
 | 抗锯齿、渲染比例、超分、原生后处理 | 使用引擎已有实现与质量配置 | 按引擎设置的生效方式 |
 
-优先级：JSON 单项配置覆盖 > 显式旧 `FPS_PRESET` 的相关限制 > 玩家设置 / 引擎质量配置。纹理只受 `TEXTURE_MAX` 显式覆盖，`FPS_PRESET` 不改变它。阴影覆盖是组件上限，仍受引擎全局质量上限裁剪。菜单中的帧率上限不会自动变成旧 `FPS_PRESET`。
+JSON 单项配置覆盖优先于玩家设置 / 引擎质量配置。纹理可通过 `TEXTURE_MAX` 显式覆盖。阴影覆盖是组件上限，仍受引擎全局质量上限裁剪。
 
 TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定义折射水面也不使用原生水面质量实现；这次没有把这些内容错误绑定到同名的菜单选项。烘焙光照、曝光标定、碰撞、导航、GPU/CPU 后端、缓存预算及内容优先级保持各自职责。专用服务器或不兼容引擎无法取得画质对象时，纹理回退为 1024，显式覆盖仍有效。
 
@@ -514,7 +513,7 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 | `CACHE_MB` | 2048 | 128–8192 | 处理缓存的磁盘预算（MB） |
 | `TEXTURE_MAX` | 跟随玩家纹理设置 | 64–16384 | 显式覆盖贴图最大边长；未设置、空值或非法数值时跟随玩家设置。低显存可显式设 512 |
 | `LIGHTMAP_16BIT` | 开 | 开/关 | 默认单级光照页使用 SkyB（BGR565）与 RealTimeB（BGRA4444）：光照片 17→13 B/px。SkyB 使用原生上传验证过的 BGR565（R 高位、B 低位），不能替换为会返回有效但数据失真的 RGB565。多级 mip 下 RealTimeB 使用 RGBA8888，避开原生 BGRA4444 下级 mip 失真。设 0 全部回到 RGBA8888 |
-| `LIGHTMAP_MIPS` | 关（120 档为开） | 开/关 | 给 SkyA / SkyB / RealTimeB 生成 L0–L2 mip 链，生成前先按几何覆盖率把图集 chart 向外 dilate 4 步，避免 mip 把 chart 外的空洞混进来。按原生 API 要求以最小 mip 在前上传；RealTimeB 多级页使用 RGBA8888。代价是远景 chart 边缘略糊和额外显存占用 |
+| `LIGHTMAP_MIPS` | 关 | 开/关 | 给 SkyA / SkyB / RealTimeB 生成 L0–L2 mip 链，生成前先按几何覆盖率把图集 chart 向外 dilate 4 步，避免 mip 把 chart 外的空洞混进来。按原生 API 要求以最小 mip 在前上传；RealTimeB 多级页使用 RGBA8888。代价是远景 chart 边缘略糊和额外显存占用 |
 
 ### 静态 prop
 
@@ -527,18 +526,17 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 
 ### 帧率与提交粒度
 
-这 4 个值控制每帧要提交多少渲染对象、多少三角形进阴影和深度通道。默认值等于"功能打开但不激进"；想减少提交工作时再逐项调整；预设名称不是帧率保证。
+以下独立配置控制每帧提交的渲染对象数量、阴影和深度通道的三角形数量。减少提交工作时应逐项调整并测量实际帧时间。
 
 | 变量 | 默认 | 范围 | 作用 |
 | --- | --- | --- | --- |
-| `FPS_PRESET` | 0 | 0–240 | 旧性能覆盖预设，不读取玩家帧率上限。0 与 60 不加额外限制；120 改为阴影距离 1024、级联上限 1、LOD 缩放 0.5、cell 4096、批次簇 8、绘制距离 6144，并关掉接触阴影与 Godray。任何一个变量显式设置时都优先于预设 |
 | `PROP_SHADOW_DISTANCE` | 0 | 0–65536 | 道具方向光阴影距离。0 关闭距离门控，保留原批次的投影资格。CPU 参照路径按批次门控，每帧最多改 32 次标志；当前官方沙箱版本不启用 GPU MDI 路径 |
 | `PROP_LOD_SCALE` | 1 | 0.1–4 | 乘到静态 prop 的 LOD 切换距离（1536/4096/8192）上。小于 1 更早切到低模，减少前向与深度通道三角形 |
 | `BATCH_CLUSTER` | 4 | 1/2/4/8/16 | 多少个 prop cell（512 单位）合成一个实例批次。越大提交对象越少，但 PVS 和阴影按批次聚合，粒度变粗 |
 | `WORLD_CELL_SIZE` | 2048 | 512–8192 | 世界几何的空间 cell 边长。越大 fragment/draw 越少，视锥剔除越粗 |
 | `WORLD_MATERIAL_TABLE` | 开 | 开/关 | 世界材质表：同一 lightmap 页的兼容不透明材质共享原生 aggregate 提交材质，保留原空间片段、边界和三角形范围。动画、cutout 及其他 shader 走原路径；一个 scene 只支持一个使用材质表的世界。可减少 CPU 提交，材质间接读取可能增加 GPU 成本，不能按 draw 降幅推算 FPS 收益。设为 0 恢复原路径 |
 
-旧性能预设与提交预算见本页技术参考的“流式加载预算”。比较性能时使用同一进程、固定机位、同一相机，并记录 `draws`/`triangles`/`objects`。
+提交预算见本页技术参考的“流式加载预算”。比较性能时使用同一进程、固定机位、同一相机，并记录 `draws`/`triangles`/`objects`。
 
 ### 光照与画面
 
@@ -547,7 +545,7 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 | `BSP_LIGHTMAPS` | 开 | 开/关 | 使用地图烘焙的 lightmap、光照探针和本地光。关掉后改用 s&box 原生光照，只用于排查不支持的地图 |
 | `MAP_SHADOWS` | 开 | 开/关 | 让导入的世界几何参与方向光级联阴影（CSM） |
 | `SHADOW_GEOMETRY` | 开 | 开/关 | 按世界 cell 创建专用不透明阴影几何；alpha-tested 材质保留自己的阴影 shader。设 0 让原 aggregate 投影 |
-| `SHADOW_CASCADES` | 4（由引擎按玩家画质裁剪） | 1–4 | 方向光组件的级联上限。`MAP_SHADOWS=0` 时强制为 1；旧 120 fps 预设用 1。显式设置仍不能超过引擎全局质量允许的级联数 |
+| `SHADOW_CASCADES` | 4（由引擎按玩家画质裁剪） | 1–4 | 方向光组件的级联上限。`MAP_SHADOWS=0` 时强制为 1。显式设置仍不能超过引擎全局质量允许的级联数 |
 | `CONTACT_SHADOWS` | 开 | 开/关 | s&box 屏幕空间接触阴影 |
 | `EXPOSURE_EV` | 0 | -5–5 | 在零售曝光标定上再加的曝光补偿（档） |
 | `GODRAYS` | 开 | 开/关 | 显示 godray 光束面片。它们随相机距离淡入，移动时可能闪烁；设为 0 可关闭 |
@@ -975,13 +973,6 @@ solid 类型不为 0 时，有效 contents 由 `Titanfall2CollisionSource.Static
 
 每帧的成本主要不是这些预算，而是**一次性创建、之后每帧被渲染线程提交的对象数**：`mp_angel_city` 实测 2,840 个渲染对象、3,044 draw、3.2M 三角形，其中 2,717 个是静态道具实例批次。C# 每帧回调（`Titanfall2StaticPropStreamer` 的三条流式通道合计 5.5 ms 预算）只占 `Update` 的 1.5 ms 量级。
 
-因此调帧率改的是"提交多少"：`SBOX_TITANFALL2_FPS_PRESET` 一档设好下面几项，单项变量显式设置时优先于预设。
-
-| 预设 | 说明 |
-|------|------|
-| `0` / `60` | 默认档：阴影距离 0（门控关闭 = 整批投影，与旧行为一致）、LOD 缩放 1、cell 2048、批次簇 4 |
-| `120` | 阴影距离 1024、LOD 缩放 0.5、cell 4096、批次簇 8、绘制距离 6144，并关掉接触阴影与 Godray |
-
 单项旋钮：`PROP_SHADOW_DISTANCE`（道具批次投影距离，0 = 关闭门控）、`PROP_LOD_SCALE`（乘到 1536/4096/8192 三个 LOD 切换距离）、`WORLD_CELL_SIZE`（世界几何 cell 边长，越大 fragment 越少、剔除越粗）、`BATCH_CLUSTER`（多少个 prop cell 合成一个实例批次）。
 
 阴影门控不在可见性 sweep 里，而是独立 pass：只在相机移动 512 单位或换 PVS cell 时重算，重算只把差异排队，`ApplyPendingShadowChanges` 每帧最多写 32 次 `Flags.CastShadows`。一次 sweep 内批量翻转一百多个批次的标志会让整片实例在 shadow pass 进出，走动时表现为一顿一顿；这个上限是为此加的。阈值按 256 单位粗桶比较，关闭距离 D 与恢复距离 D×0.5 之间留足回滞。`Flags.CastShadows` 的切换走引擎原生的 `ChangeFlags` + `NotifyChanged(Flags)`，与 `LineRenderer`、`MeshComponent` 的运行时切换同一条路径。
@@ -1024,7 +1015,7 @@ LOD、PVS、距离和阴影处理回到既有原生批次路径；不能沿用�
 - `Titanfall2GraphicsSettings` 负责把已保存的玩家纹理质量转为不可变导入策略；挂载时读取一次，监听 `RenderSettings.OnVideoSettingsChanged`，卸载时取消订阅。后台解码只读原子发布的快照，不访问视频设置 Cookie。
 - 独立运行使用公开 `Application.RenderSettings`；菜单/编辑器的该入口为 null，仅在挂载连接阶段集中访问既有托管 singleton。取不到时回退 1K，不引入对菜单/编辑器程序集的依赖，不改引擎源码。
 - RPAK 缓存键和 mip 选择使用同一个局部分辨率快照，避免保存设置与 worker 解码交错时污染磁盘缓存。VTF 2D/cubemap 同样在单次解码入口固定策略。
-- 方向光默认组件上限恢复为原生支持的 4 级，由引擎质量配置裁剪；不复制原生阴影、后处理、抗锯齿或超分控制器。显式兼容覆盖与旧性能预设保留。
+- 方向光默认组件上限恢复为原生支持的 4 级，由引擎质量配置裁剪；不复制原生阴影、后处理、抗锯齿或超分控制器。支持通过独立配置项显式覆盖。
 - 删除无人调用的 `ITitanfall2TextureSource` / `TryCreateTexture` / RPAK 直接创建包装，正式链路统一为 source → CPU decode/cache → 主线程 upload。
 - 质量改变不会销毁可见场景资源或强制切图。现有纹理在正常离图释放后重建；编辑器缓存仍遵守原有资源所有权规则。TF2 自定义水面、高度雾和粒子需要独立的效果质量设计，不能仅按菜单名称绑定。
 
