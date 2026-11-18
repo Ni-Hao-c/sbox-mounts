@@ -69,13 +69,11 @@ Objects carry `ttf2_contents`, `ttf2_content_<bit>` and applicable `playerclip`,
 
 [Titanfall2DecalFactory](Code/Resource/Decals.cs) exposes `TryCreateDefinition`, `Spawn` and `RotationForNormal`. `titanfall2_decal <material> [size=32] [depth=8]` places a decal at the crosshair. Native decals use albedo/normal/emissive textures and color alpha, without the original layer blending, LUT or separate opacity semantics. Static BSP decals remain geometry.
 
-### Navigation, audio and export
+### Navigation and audio
 
 [Titanfall2DeferredNavMeshBuilder](Code/Resource/DeferredNavMeshBuilder.cs) shares navigation state across mounted maps in a scene and restores host settings when the last map leaves. On-demand generation skips the whole-map load pass and requests tagged world collision tiles around players, agents and agent targets (default radius 2048). It leaves navigation disabled if the host disabled it, unless `DEFERRED_NAVMESH=1` requests navigation for a full scene. `NAVMESH_STATIC_PROPS=1` adds prop collision and makes it resident. Link costs and path searches remain the official engine's responsibility.
 
 Map audio reads `_snd.ent`: `ambient_generic` creates bounded point sources (default cap 12, fallback radius 1024), and `trigger_soundscape` creates spherical soundscape triggers. Playback needs `Sound.Listener`. Managed decoding supports mono/stereo and downmixes 4/6 channels to stereo; 3/5/7 channels fail with a diagnostic. The native Miles event interpreter is unavailable; `Titanfall2SoundEventPlayer` remains a warning-only compatibility component. Use mounted `.vsnd`, `Sound` or `Soundscape` instead.
-
-`titanfall2_export_model <mounted-model-path> [relative-output-root]` exports DMX/VMDL under `FileSystem.Data/exports/titanfall2/Assets/` by default. Copy results into an addon's Assets manually. `TryExportModelToPath` also requires a path in the writable data filesystem, not an arbitrary installation path.
 
 <a id="en-development"></a>
 ## Development
@@ -176,11 +174,10 @@ The following tables omit `SBOX_TITANFALL2_`. On/off values are booleans. The CP
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `VERBOSE_LOG` | Off | Detailed load logs, warnings and over-budget timings. |
-| `EXPORT_ROOT` | Unset | Export root relative to the writable data filesystem. |
 | `NORTHSTAR_PROFILE` | Existing `R2Northstar` under game install, otherwise retail | Relative game-filesystem profile containing `mods/`, `packages/`, `enabledmods.json`. Explicit empty string disables it. Launcher source directories are not profiles. |
 | `NORTHSTAR_MAP` | Unset | Fixed map context, e.g. `mp_angel_city`, for conditional RPAK/VPK content; publishes only that map's scenes. Unset `MapOnly` packages preload according to declared maps and emit diagnostics. Change in a new process. |
 
-`CACHE_PATH` cannot select an arbitrary directory: cache stays in `FileSystem.Data/cache/titanfall2/processed`. `GPU_STATIC_SCENE`, `GPU_MIXED_PROPS`, `GPU_STATIC_SCENE_MB` and `GPU_VIEW_SLOTS` cannot enable GPU MDI in this version. Logging is implemented in [Titanfall2Log.cs](Code/Titanfall2Log.cs), cache in [ProcessedCache.cs](Code/Resource/ProcessedCache.cs), export in [ModelExporter.cs](Code/Resource/ModelExporter.cs).
+`CACHE_PATH` cannot select an arbitrary directory: cache stays in `FileSystem.Data/cache/titanfall2/processed`. `GPU_STATIC_SCENE`, `GPU_MIXED_PROPS`, `GPU_STATIC_SCENE_MB` and `GPU_VIEW_SLOTS` cannot enable GPU MDI in this version. Logging is implemented in [Titanfall2Log.cs](Code/Titanfall2Log.cs), cache in [ProcessedCache.cs](Code/Resource/ProcessedCache.cs).
 
 Use `titanfall2_content_stats`, `titanfall2_content_list "models/" 0 100` and `titanfall2_content_explain "models/example.mdl"`. For RPAK queries pass virtual resource names and `matl`/`txtr` types. Listing scripts does not execute them. Import statistics report phase timings, aggregates/fragments/material rows, RPAK upload deltas and prefetch peaks; these are load metrics, not frame/GPU timings.
 
@@ -419,10 +416,6 @@ Historical CPU-batch measurements on Angel City recorded 2,840 render objects, 3
 
 宿主场景没有开启导航时，挂载不会修改它。`SBOX_TITANFALL2_DEFERRED_NAVMESH=1` 让完整场景主动开启导航。`SBOX_TITANFALL2_NAVMESH_STATIC_PROPS=1` 把静态道具碰撞也加入导航输入，同时让道具碰撞常驻。同一场景中的多张挂载地图共享导航状态，最后一张地图移除时恢复宿主的设置。
 
-## 模型导出
-
-`titanfall2_export_model <mount模型路径> [数据目录内相对输出路径]` 生成 DMX/VMDL，默认写入 `FileSystem.Data/exports/titanfall2/Assets/`。可将输出手动复制到目标 addon's Assets 继续编辑；沙箱挂载不能直接写入任意项目目录。`TryExportModelToPath` 的参数也必须属于可写的数据文件系统。
-
 ## 处理缓存
 
 派生数据写入 `FileSystem.Data/cache/titanfall2/processed`，预算由配置项 `SBOX_TITANFALL2_CACHE_MB` 控制。缓存包括地图解析数据、模型、贴图、材质描述和道具淡出距离；原生 Model、Texture、SceneObject 不序列化到缓存。
@@ -459,7 +452,7 @@ dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- build-mount --pr
 
 ## 官方引擎接入
 
-安装内容通过 `InitializeContext.GetFileSystem(1237970)` 返回的只读文件系统读取。缓存、导出和设置通过 `FileSystem.Data`。Northstar profile 只能位于同一游戏文件系统内，配置值使用相对路径。
+安装内容通过 `InitializeContext.GetFileSystem(1237970)` 返回的只读文件系统读取。缓存和设置通过 `FileSystem.Data`。Northstar profile 只能位于同一游戏文件系统内，配置值使用相对路径。
 
 普通道具使用现有 `MountedInstanceBatch`，特殊材质仍使用原生对象，保留 LOD、PVS、距离和阴影策略。旧 GPU MDI 提交与 `GpuSceneCompatibility` 已移除，`GPU_STATIC_SCENE` 无法启用；保留的纯布局工具和 shader 不代表运行时使用 MDI。帧率影响需要固定机位实测。
 
@@ -470,7 +463,7 @@ dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- build-mount --pr
 <a id="zh-configuration"></a>
 ## 配置
 
-挂载后端与诊断覆盖集中在 [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs)，玩家画质适配在 [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs)。内容配置在首次挂载时读取；日志、缓存目录和导出目录分别见 [Titanfall2Log.cs](Code/Titanfall2Log.cs)、[Resource/ProcessedCache.cs](Code/Resource/ProcessedCache.cs) 和 [Resource/ModelExporter.cs](Code/Resource/ModelExporter.cs)。
+挂载后端与诊断覆盖集中在 [Titanfall2StreamingSettings.cs](Code/Titanfall2StreamingSettings.cs)，玩家画质适配在 [Titanfall2GraphicsSettings.cs](Code/Titanfall2GraphicsSettings.cs)。内容配置在首次挂载时读取；日志和缓存目录分别见 [Titanfall2Log.cs](Code/Titanfall2Log.cs) 和 [Resource/ProcessedCache.cs](Code/Resource/ProcessedCache.cs)。
 
 ### 玩家画质设置
 
@@ -500,7 +493,7 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 
 配置在首次使用时读取，修改后重启。数值按英文小数点解析并夹到范围；开关的 `1/true/yes/on` 表示开。玩家画质仍通过公开 `Application.RenderSettings` 读取；菜单/编辑器没有该对象时使用回退。
 
-`GPU_STATIC_SCENE`、`GPU_MIXED_PROPS`、`GPU_STATIC_SCENE_MB` 和 `GPU_VIEW_SLOTS` 在此版本不启用 GPU MDI。`CACHE_PATH` 不再支持任意目录；固定使用 `FileSystem.Data/cache/titanfall2/processed`。`NORTHSTAR_PROFILE` 与 `EXPORT_ROOT` 分别是游戏文件系统和数据文件系统内的相对路径。
+`GPU_STATIC_SCENE`、`GPU_MIXED_PROPS`、`GPU_STATIC_SCENE_MB` 和 `GPU_VIEW_SLOTS` 在此版本不启用 GPU MDI。`CACHE_PATH` 不再支持任意目录；固定使用 `FileSystem.Data/cache/titanfall2/processed`。`NORTHSTAR_PROFILE` 是游戏文件系统内的相对路径。
 
 下表省略了 `SBOX_TITANFALL2_` 前缀。
 
@@ -575,12 +568,11 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 | `DEFERRED_NAVMESH` | 关 | 开/关 | 宿主没有开启 NavMesh 时，由挂载为完整地图场景开启，并在加载后生成 |
 | `NAVMESH_STATIC_PROPS` | 关 | 开/关 | 静态 prop 的碰撞也参与导航网格 |
 
-### 诊断与导出
+### 诊断
 
 | 变量 | 默认 | 范围 | 作用 |
 | --- | --- | --- | --- |
 | `VERBOSE_LOG` | 关 | 开/关 | 输出详细加载日志、全部警告和超出预算的耗时记录（spike） |
-| `EXPORT_ROOT` | 无 | 路径 | `titanfall2_export_model` 命令的默认导出目录 |
 
 ### Northstar 内容会话
 
