@@ -1,2 +1,19 @@
 # Local package builds and native validation captures.
 /artifacts/
+
+# Managed build output and test results in any mount project.
+**/[Bb]in/
+**/[Oo]bj/
+**/TestResults/
+*.trx
+
+# Compiled engine resources and local editor caches.
+*.*_c
+*.los
+**/.sbox/
+**/.vs/
+
+# Local scratch directories and incomplete temporary files.
+**/.tmp/
+**/.build-temp/
+*.tmp

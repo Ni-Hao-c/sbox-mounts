@@ -75,7 +75,7 @@
   首次启动因系统 TEMP 目录拒绝访问而失败，改用本次产物目录下 `.build-temp` 后运行成功。
 - 官方测试日志：`D:\sbox\_codex-build\tf2-official-update-20261118-engine-tests.log`。
 - 构建日志：`D:\sbox\_codex-build\tf2-official-update-20261118.log`。
-- 测试明细：`Titanfall2\Tests\TestResults\migration.trx`。
+- 原始测试明细：`Titanfall2\Tests\TestResults\migration.trx`（验证后已按清理要求删除，结果摘要保留在外部构建日志中）。
 - 产物：`D:\sbox\_codex-build\tf2-official-update-20261118\Titanfall2`。
 - `package.local.titanfall2.dll` SHA256：
   `1E2B63263C23268465A515E9EF9F4E832B586BE17C7EA2E50BD21226C2A64666`。
