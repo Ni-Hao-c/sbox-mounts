@@ -21,6 +21,7 @@ partial class MapLoader
 					Parent = World,
 					IsStatic = true
 				};
+				sky.Tags.Add( "source1_skybox2d" );
 				var component = sky.AddComponent<SkyBox2D>();
 				component.SkyIndirectLighting = false;
 				component.SkyMaterial = owner._skyMaterial;

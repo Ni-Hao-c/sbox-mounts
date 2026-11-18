@@ -5,9 +5,9 @@
 #include "source1/frames.hlsl"
 #include "source1/uv.hlsl"
 
-BoolAttribute( bWantsFBCopyTexture, true );
+BoolAttribute( bWantsFBCopyTexture, !S_SOURCE_SCREENSPACE );
 BoolAttribute( renderbackfaces, F_RENDER_BACKFACES != 0 );
-RenderState( DepthEnable, true );
+RenderState( DepthEnable, !S_SOURCE_SCREENSPACE );
 RenderState( DepthFunc, GREATER_EQUAL );
 RenderState( DepthWriteEnable, F_SOURCE_DEPTH_WRITE != 0 );
 RenderState( BlendEnable, true );
@@ -22,7 +22,11 @@ SamplerState g_sFlow < Attribute( "g_tSourceFlowSampler" ); Filter( ANISO ); Add
 SamplerState g_sCoreColor < Attribute( "g_tSourceCoreColorSampler" ); Filter( ANISO ); AddressU( WRAP ); AddressV( WRAP ); >;
 SamplerState g_sCube < Attribute( "g_tEnvCubeSampler" ); Filter( TRILINEAR ); AddressU( CLAMP ); AddressV( CLAMP ); AddressW( CLAMP ); >;
 SamplerState g_sClamp < Filter( TRILINEAR ); AddressU( CLAMP ); AddressV( CLAMP ); >;
-Texture2D g_tSourceScene < Attribute( "FrameBufferCopyTexture" ); SrgbRead( false ); >;
+#if S_SOURCE_SCREENSPACE
+	Texture2D g_tSourceScene < Attribute( "ColorBuffer" ); SrgbRead( true ); >;
+#else
+	Texture2D g_tSourceScene < Attribute( "FrameBufferCopyTexture" ); SrgbRead( false ); >;
+#endif
 
 CreateInputTexture2D( SourceNormal, Linear, 8, "None", "_normal", "Source 1", Default4( 0.5, 0.5, 1, 1 ) );
 CreateInputTexture2D( SourceNormal2, Linear, 8, "None", "_normal", "Source 1", Default4( 0.5, 0.5, 1, 1 ) );
@@ -82,14 +86,22 @@ float g_flSourceEffectRuntime < Default( 1 ); >;
 
 float3 SourceScene( float2 uv )
 {
+	#if S_SOURCE_SCREENSPACE
+	return g_tSourceScene.SampleLevel( g_sClamp, saturate( uv ), 0 ).rgb;
+	#else
 	return g_tSourceScene.SampleLevel( g_sClamp, saturate( uv ) * g_vFrameBufferCopyInvSizeAndUvScale.zw, 0 ).rgb;
+	#endif
 }
 
 float4 MainPs( PixelInput i ) : SV_Target0
 {
 	float2 uv = SourceUv( i.vTextureCoords.xy, g_vSourceNormalTransformU, g_vSourceNormalTransformV, g_vSourceNormalScroll, g_vSourceNormalProxyU, g_vSourceNormalProxyV );
 	float3 positionWs = i.vPositionWithOffsetWs + g_vHighPrecisionLightingOffsetWs.xyz;
+	#if S_SOURCE_SCREENSPACE
+	float3 view = float3( 0, 0, 1 );
+	#else
 	float3 view = normalize( g_vCameraPositionWs.xyz - positionWs );
+	#endif
 	#if S_SOURCE_AFTERSHOCK
 	{
 		float time = lerp( g_flSourceEffectTime, g_flTime, g_flSourceEffectRuntime );

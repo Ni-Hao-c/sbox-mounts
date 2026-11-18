@@ -13,6 +13,10 @@ internal sealed class BspPhysicsMesh
 }
 
 internal sealed record BspPhysicsHull( List<Vector3> Vertices, string SurfaceName, bool MixedSurfaces, bool PassAudio );
+internal sealed record BspPhysicsFluid( Vector4 Plane, Vector3 Velocity, string SurfaceName )
+{
+	public readonly List<BspPhysicsHull> Hulls = [];
+}
 internal partial class BspFile
 {
 	internal const int ContentsClip = 0x30000;
@@ -50,7 +54,7 @@ internal partial class BspFile
 		}
 	}
 
-	public (List<BspPhysicsHull> Hulls, List<BspPhysicsMesh> Meshes, bool VirtualTerrain) ParsePhysicsGeometry( int requestedModel = 0 )
+	public (List<BspPhysicsHull> Hulls, List<BspPhysicsMesh> Meshes, bool VirtualTerrain) ParsePhysicsGeometry( int requestedModel = 0, List<BspPhysicsFluid> fluids = null )
 	{
 		var hulls = new List<BspPhysicsHull>();
 		var meshes = new List<BspPhysicsMesh>();
@@ -80,7 +84,8 @@ internal partial class BspFile
 				throw new InvalidDataException( "Invalid BSP physics solid count." );
 			if ( modelIndex == requestedModel )
 			{
-				var (skipSolids, passAudioSolids, usesVirtualTerrain, solidSurfaces, materialTable) = ParsePhysicsKeydata( PhysCollideData, dataEnd, keydataSize, solidCount, CONTENTS_WATER | CONTENTS_SLIME );
+				var fluidSolids = fluids is null ? null : new Dictionary<int, BspPhysicsFluid>();
+				var (skipSolids, passAudioSolids, usesVirtualTerrain, solidSurfaces, materialTable) = ParsePhysicsKeydata( PhysCollideData, dataEnd, keydataSize, solidCount, CONTENTS_WATER | CONTENTS_SLIME, fluidSolids );
 				virtualTerrain |= usesVirtualTerrain;
 				for ( int s = 0; s < solidCount; s++ )
 				{
@@ -90,7 +95,15 @@ internal partial class BspFile
 					ValidateRange( pos, solidSize, dataEnd, "Physics solid data" );
 					if ( solidSize == 0 )
 						throw new InvalidDataException( "Empty BSP physics solid." );
-					if ( !skipSolids.Contains( s ) )
+					if ( fluidSolids is not null && fluidSolids.TryGetValue( s, out var fluid ) )
+					{
+						var fluidMeshes = new List<BspPhysicsMesh>();
+						ParseIvpSolid( PhysCollideData, pos, solidSize, fluid.Hulls, fluidMeshes, IVP_TO_HL, fluid.SurfaceName, materialTable, false, fluid: true );
+						if ( fluidMeshes.Count != 0 || fluid.Hulls.Count == 0 )
+							throw new InvalidDataException( "BSP fluid collision must contain convex volumes." );
+						fluids.Add( fluid );
+					}
+					else if ( !skipSolids.Contains( s ) )
 						ParseIvpSolid( PhysCollideData, pos, solidSize, hulls, meshes, IVP_TO_HL, solidSurfaces.GetValueOrDefault( s, "default" ), materialTable, passAudioSolids.Contains( s ) );
 					pos += solidSize;
 				}
@@ -105,7 +118,7 @@ internal partial class BspFile
 		return (hulls, meshes, virtualTerrain);
 	}
 
-	internal static (HashSet<int> SkipSolids, HashSet<int> PassAudioSolids, bool VirtualTerrain, Dictionary<int, string> SolidSurfaces, Dictionary<byte, string> MaterialTable) ParsePhysicsKeydata( byte[] data, int offset, int length, int solidCount, int contentsMask )
+	internal static (HashSet<int> SkipSolids, HashSet<int> PassAudioSolids, bool VirtualTerrain, Dictionary<int, string> SolidSurfaces, Dictionary<byte, string> MaterialTable) ParsePhysicsKeydata( byte[] data, int offset, int length, int solidCount, int contentsMask, Dictionary<int, BspPhysicsFluid> fluids = null )
 	{
 		var skip = new HashSet<int>();
 		var passAudio = new HashSet<int>();
@@ -144,6 +157,24 @@ internal partial class BspFile
 			ValidateRange( index, 1, solidCount, "Physics keydata solid index" );
 			if ( block.Values.TryGetValue( "surfaceprop", out var surface ) )
 				solidSurfaces[index] = surface;
+			if ( block.Name.Equals( "fluid", StringComparison.OrdinalIgnoreCase ) )
+			{
+				skip.Add( index );
+				if ( fluids is not null )
+				{
+					var parameters = new VmtParameters( block.Values, "BSP fluid" );
+					var plane = parameters.Components( "surfaceplane" );
+					if ( plane.Length != 4 )
+						throw new InvalidDataException( "BSP fluid has no valid surface plane." );
+					var normal = new Vector3( plane[0], plane[1], plane[2] );
+					float lengthNormal = normal.Length;
+					if ( lengthNormal < 0.0001f )
+						throw new InvalidDataException( "BSP fluid has an invalid normal." );
+					if ( !fluids.TryAdd( index, new BspPhysicsFluid( new Vector4( normal / lengthNormal, plane[3] / lengthNormal ),
+						parameters.Vector( "currentvelocity", Vector3.Zero ), parameters.String( "surfaceprop", "water" ) ) ) )
+						throw new InvalidDataException( "BSP fluid has a duplicate solid index." );
+				}
+			}
 			if ( block.Values.TryGetValue( "contents", out var contentsValue ) )
 			{
 				if ( !int.TryParse( contentsValue, out int contents ) )
@@ -158,7 +189,7 @@ internal partial class BspFile
 		return (skip, passAudio, virtualTerrain, solidSurfaces, materialTable);
 	}
 
-	internal void ParseIvpSolid( byte[] data, int blobStart, int blobSize, List<BspPhysicsHull> hulls, List<BspPhysicsMesh> meshes, float scale, string surface, Dictionary<byte, string> materialTable, bool passAudio )
+	internal void ParseIvpSolid( byte[] data, int blobStart, int blobSize, List<BspPhysicsHull> hulls, List<BspPhysicsMesh> meshes, float scale, string surface, Dictionary<byte, string> materialTable, bool passAudio, bool fluid = false )
 	{
 		int blobEnd = blobStart + blobSize;
 		int pos = blobStart;
@@ -216,7 +247,7 @@ internal partial class BspFile
 				}
 				else
 				{
-					ExtractLedgeHull( data, ledgePos, blobStart, blobEnd, hulls, meshes, scale, surface, materialTable, passAudio );
+					ExtractLedgeHull( data, ledgePos, blobStart, blobEnd, hulls, meshes, scale, surface, materialTable, passAudio, fluid );
 				}
 			}
 			else
@@ -277,7 +308,7 @@ internal partial class BspFile
 		mesh.Indices.AddRange( indices );
 	}
 
-	internal void ExtractLedgeHull( byte[] data, int ledgePos, int blobStart, int blobEnd, List<BspPhysicsHull> hulls, List<BspPhysicsMesh> meshes, float scale, string surface, Dictionary<byte, string> materialTable, bool passAudio )
+	internal void ExtractLedgeHull( byte[] data, int ledgePos, int blobStart, int blobEnd, List<BspPhysicsHull> hulls, List<BspPhysicsMesh> meshes, float scale, string surface, Dictionary<byte, string> materialTable, bool passAudio, bool fluid = false )
 	{
 		int cPointOffset = BitConverter.ToInt32( data, ledgePos );
 		short nTriangles = BitConverter.ToInt16( data, ledgePos + 12 );
@@ -308,6 +339,12 @@ internal partial class BspFile
 		{
 			int vp = ResolvePhysicsOffset( poolBase, idx * 16, 16, blobStart, blobEnd );
 			vertices.Add( ReadPhysicsVertex( data, vp, scale ) );
+		}
+
+		if ( fluid )
+		{
+			hulls.Add( new( vertices, surface, false, false ) );
+			return;
 		}
 
 		int brushIndex = BitConverter.ToInt32( data, ledgePos + 4 );

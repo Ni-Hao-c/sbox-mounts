@@ -31,10 +31,7 @@ internal sealed partial class MapLoader : SceneLoader<BaseMount>
 
 	protected override void BuildScene()
 	{
-		_waterModels.Clear();
-		_worldPhysics.Clear();
-		_worldMaterials.Clear();
-		_vertexLitMaterials.Clear();
+		OnSceneUnloaded();
 		using var import = Host.BeginMapImport( FullPath );
 		var bsp = import.Data;
 		if ( skybox && bsp.SkyCamera is null )
@@ -49,6 +46,25 @@ internal sealed partial class MapLoader : SceneLoader<BaseMount>
 			_lighting = null;
 		}
 	}
+
+	protected override void OnSceneUnloaded()
+	{
+		// A live scene still renders the probes through these exact wrappers, so leave those to the GC
+		if ( _probeTextures is not null && !LiveScenes.Any( scene => scene.GetComponentsInChildren<LightProbeVolume>( true ).Any( UsesProbeTextures ) ) )
+			_probeTextures.Dispose();
+		_probeTextures = null;
+		_worldModels.Clear();
+		_propModels.Clear();
+		_waterModels.Clear();
+		_worldPhysics.Clear();
+		_worldMaterials.Clear();
+		_vertexLitMaterials.Clear();
+		_lightmapPages.Clear();
+		_faceSurfaces = null;
+	}
+
+	private bool UsesProbeTextures( LightProbeVolume volume ) =>
+		_probeTextures.Contains( volume.Texture ) || _probeTextures.Contains( volume.IndicesTexture ) || _probeTextures.Contains( volume.ScalarsTexture );
 
 	private void BuildMapScene( BspFile bsp )
 	{
@@ -82,11 +98,11 @@ internal sealed partial class MapLoader : SceneLoader<BaseMount>
 			renderer.Enabled = true;
 		}
 
-		BuildWater( geometry );
+		var atmosphere = BuildFog( bsp, world );
+		BuildWater( bsp, geometry, atmosphere );
 		BuildWorldPhysics( bsp, geometry );
 		AddShadowBlocker( BuildShadowModel( bsp, 0 ), geometry );
 		BuildEntities( bsp, world );
-		BuildFog( bsp, world );
 		BuildLightProbes( bsp, world );
 		BuildSkybox3D( bsp, world );
 	}

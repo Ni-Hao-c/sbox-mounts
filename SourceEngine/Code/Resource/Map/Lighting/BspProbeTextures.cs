@@ -2,9 +2,9 @@ using System;
 
 namespace Source1;
 
-internal sealed class BspProbeTextures( string resourcePrefix )
+internal sealed class BspProbeTextures( string resourcePrefix ) : IDisposable
 {
-	private readonly List<Texture> textures = [];
+	private readonly HashSet<Texture> textures = [];
 	private readonly Dictionary<(ImageFormat Format, ulong Value), Texture> constants = [];
 	public int Count => textures.Count;
 	public long ByteCount { get; private set; }
@@ -44,6 +44,17 @@ internal sealed class BspProbeTextures( string resourcePrefix )
 			constants.Add( (format, value), texture );
 		ByteCount += data.Length;
 		return texture;
+	}
+
+	public bool Contains( Texture texture ) => textures.Contains( texture );
+
+	public void Dispose()
+	{
+		foreach ( var texture in textures )
+			texture.Dispose();
+		textures.Clear();
+		constants.Clear();
+		ByteCount = 0;
 	}
 
 	private static bool IsConstant( ReadOnlySpan<byte> data, int stride )

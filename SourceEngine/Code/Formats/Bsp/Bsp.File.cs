@@ -62,6 +62,7 @@ internal partial class BspFile
 		Entities = ReadEntities( ReadRaw( stream, fileStart, lumps[0] ) );
 		ReadSkyboxAreas( stream, fileStart, lumps );
 		ReadLeafAmbient( stream, fileStart, lumps );
+		ReadWater( stream, fileStart, lumps );
 		StaticProps = ReadStaticProps( stream, fileStart, lumps[35] );
 		ReadCollisionBrushes( stream, fileStart, lumps );
 		ReadPropLighting( stream, fileStart, lumps );

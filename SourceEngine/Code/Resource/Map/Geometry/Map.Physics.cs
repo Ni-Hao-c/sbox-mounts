@@ -8,7 +8,9 @@ partial class MapLoader
 {
 	void BuildWorldPhysics( BspFile bsp, GameObject world, bool skybox = false, int modelIndex = 0, bool staticCollider = true )
 	{
-		var (hulls, meshes, virtualTerrain) = bsp.ParsePhysicsGeometry( modelIndex );
+		var fluids = new List<BspPhysicsFluid>();
+		var (hulls, meshes, virtualTerrain) = bsp.ParsePhysicsGeometry( modelIndex, skybox ? null : fluids );
+		BuildWaterPhysics( fluids, world, modelIndex );
 		if ( skybox )
 			bsp.FilterSkyboxPhysics( hulls, meshes );
 		var bodies = new Dictionary<(Surface Surface, bool PassAudio), PhysicsBodyBuilder>();

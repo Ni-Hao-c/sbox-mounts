@@ -6,6 +6,7 @@ internal sealed class SourceMaterial : IDisposable
 {
 	public VmtFile Source { get; }
 	internal object Scope { get; }
+	internal string ContentRoot { get; }
 	private readonly Lazy<SourceMaterialBuilder> builder;
 	private readonly object buildLock = new();
 	private bool disposed;
@@ -14,6 +15,7 @@ internal sealed class SourceMaterial : IDisposable
 	{
 		Source = source;
 		Scope = scope;
+		ContentRoot = BaseMount.GetContentRoot( path, "materials" );
 		builder = new( () => new SourceMaterialBuilder( mount, path, source ) );
 	}
 
@@ -34,12 +36,12 @@ internal sealed class SourceMaterial : IDisposable
 		return new SourceMaterial( mount, path, source, scope );
 	}
 
-	public Material CreateMaterial( string name, bool mapSurface = false )
+	public Material CreateMaterial( string name, bool mapSurface = false, bool screenOverlay = false )
 	{
 		lock ( buildLock )
 		{
 			ObjectDisposedException.ThrowIf( disposed, this );
-			return builder.Value.CreateMaterial( name, mapSurface );
+			return builder.Value.CreateMaterial( name, mapSurface, screenOverlay );
 		}
 	}
 

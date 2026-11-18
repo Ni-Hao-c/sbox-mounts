@@ -10,7 +10,7 @@ internal sealed partial class SourceMaterialBuilder
 		material.SetFeature( "F_SOURCE_WATER", water ? 1 : 0 );
 		material.SetFeature( "F_RENDER_BACKFACES", parameters.Boolean( "$nocull" ) ? 1 : 0 );
 		var aboveWater = parameters.Boolean( "$abovewater", true );
-		var normal = parameters.String( "$normalmap", water ? "dev/water_normal" : parameters.String( "$bumpmap" ) );
+		var normal = parameters.String( "$normalmap", water ? null : parameters.String( "$bumpmap" ) );
 		SurfaceTexture normalTexture = null;
 		if ( !string.IsNullOrWhiteSpace( normal ) )
 		{
@@ -21,29 +21,35 @@ internal sealed partial class SourceMaterialBuilder
 		(animation ?? new TextureAnimation( 0 )).Bind( material, normalTexture );
 		Bind( "$normalmap2", "$bumpframe2", "g_tNormal2", "g_flSourceHasNormal2" );
 		Bind( "$refracttinttexture", "$refracttinttextureframe", "g_tSourceTint", "g_flSourceHasTint" );
-		var environment = parameters.String( "$envmap", water && aboveWater ? "env_cubemap" : null );
+		// SHADER_PARAM texture defaults are tool hints. CShaderSystem leaves absent textures undefined.
+		var environment = parameters.String( "$envmap" );
 		var sceneReflection = environment?.Equals( "env_cubemap", StringComparison.OrdinalIgnoreCase ) == true;
 		if ( !string.IsNullOrWhiteSpace( environment ) && !sceneReflection )
-			Bind( "$envmap", "$envmapframe", "g_tSourceEnvCube", "g_flSourceHasEnvCube" );
+		{
+			LoadEnvironmentTexture( environment, parameters.Integer( "$envmapframe" ) ).Bind( material, "g_tSourceEnvCube" );
+			material.Set( "g_flSourceHasEnvCube", true );
+		}
 		material.Set( "g_flSourceSceneReflection", sceneReflection );
 		SetColor( "g_vSourceRefractTint", parameters.Vector( "$refracttint", Vector3.One ) );
-		SetColor( "g_vSourceReflectTint", parameters.Vector( "$reflecttint", parameters.Vector( "$envmaptint", Vector3.One ) ) );
+		SetColor( "g_vSourceReflectTint", parameters.Vector( "$reflecttint", water ? Vector3.One : parameters.Vector( "$envmaptint", Vector3.One ) ) );
+		// DrawCheapWater uploads REFLECTTINT without gamma conversion (unlike the expensive pass).
+		material.Set( "g_vSourceCheapReflectTint", parameters.Vector( "$reflecttint", Vector3.One ) );
 		SetColor( "g_vSourceFogColor", parameters.Vector( "$fogcolor", water ? new Vector3( 1, 0, 0 ) : Vector3.Zero ) );
 		material.Set( "g_flSourceRefractAmount", parameters.Float( "$refractamount", water ? 0.0f : 0.02f ) );
-		material.Set( "g_flSourceReflectAmount", parameters.Float( "$reflectamount", water ? 0.8f : 1 ) );
+		material.Set( "g_flSourceReflectAmount", parameters.Float( "$reflectamount", water ? 0 : 1 ) );
 		alpha.Bind( material );
 		material.Set( "g_flSourceFogStart", parameters.Float( "$fogstart" ) );
-		material.Set( "g_flSourceFogEnd", parameters.Float( "$fogend", 1000 ) );
+		material.Set( "g_flSourceFogEnd", parameters.Float( "$fogend" ) );
 		material.Set( "g_flSourceBlur", parameters.Float( "$bluramount" ) );
 		material.Set( "g_flSourceEnvAlphaMask", parameters.Boolean( "$normalmapalphaenvmapmask" ) );
 		material.Set( "g_flSourceFresnel", !parameters.Boolean( "$nofresnel" ) );
 		material.Set( "g_flSourceAboveWater", aboveWater );
 		material.Set( "g_flSourceCheapWater", water && parameters.Boolean( "$forcecheap" ) );
+		material.Set( "g_vSourceCheapWaterDistances", new Vector2( parameters.Float( "$cheapwaterstartdistance", 500 ), parameters.Float( "$cheapwaterenddistance", 1000 ) ) );
 		material.Set( "g_flSourceWaterBlend", parameters.Float( "$reflectblendfactor", 1 ) );
 		material.Set( "g_flSourceBlurRefract", water && parameters.Boolean( "$blurrefract" ) );
 		if ( water )
 		{
-			Log.Warning( $"{FullPath}: water uses native framebuffer refraction and cubemap reflections; Source planar views and underwater volume fog are not supported by engine components." );
 			foreach ( var key in new[]
 			{
 				"$flowmap",

@@ -35,8 +35,8 @@ internal sealed class SourceSurfaceLoader( SourceSurfaceDefinition definition ) 
 			},
 			SoundCollection = new()
 			{
-				FootLeft = Host.GetSurfaceSound( parameters.String( "stepleft" ) ),
-				FootRight = Host.GetSurfaceSound( parameters.String( "stepright" ) ),
+				FootLeft = Host.GetSurfaceFootstep( definition, "stepleft" ),
+				FootRight = Host.GetSurfaceFootstep( definition, "stepright" ),
 				Bullet = Host.GetSurfaceSound( parameters.String( "bulletimpact" ) ),
 				ImpactHard = Host.GetSurfaceSound( parameters.String( "impacthard" ) ),
 				ImpactSoft = Host.GetSurfaceSound( parameters.String( "impactsoft" ) ),

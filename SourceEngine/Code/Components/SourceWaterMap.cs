@@ -1,0 +1,42 @@
+using System;
+using Sandbox.Volumes;
+
+namespace Source1;
+
+[Hide]
+public sealed class SourceWaterMap : Component
+{
+	public struct Node
+	{
+		public Vector4 Plane { get; set; }
+		public int Front { get; set; }
+		public int Back { get; set; }
+	}
+
+	[Property] public List<Node> Nodes { get; set; } = [];
+	[Property] public int Root { get; set; } = -1;
+
+	public int FindWater( Vector3 position )
+	{
+		position = WorldTransform.PointToLocal( position );
+		int index = Root;
+		for ( int remaining = Nodes.Count + 1; index >= 0; remaining-- )
+		{
+			if ( remaining == 0 || index >= Nodes.Count )
+				throw new InvalidOperationException( "Invalid Source water BSP tree." );
+			var node = Nodes[index];
+			var distance = position.x * node.Plane.x + position.y * node.Plane.y + position.z * node.Plane.z - node.Plane.w;
+			index = distance >= 0 ? node.Front : node.Back;
+		}
+		return -index - 2;
+	}
+}
+
+[Hide]
+public sealed class SourceWaterVolume : PostProcessVolume, VolumeSystem.IVolume
+{
+	[Property] public SourceWaterMap Map { get; set; }
+	[Property] public int Water { get; set; }
+
+	bool VolumeSystem.IVolume.Test( Vector3 position ) => Map.IsValid() && Map.Active && Map.FindWater( position ) == Water;
+}

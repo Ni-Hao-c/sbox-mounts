@@ -34,6 +34,7 @@ partial class MapLoader
 			IsStatic = true
 		};
 		content.Tags.Add( "skybox" );
+		content.Tags.Add( "source1_skybox3d" );
 		var (surfaces, aggregates) = BuildWorldModel( bsp, skybox: true );
 		if ( surfaces is not null )
 			content.AddComponent<ModelRenderer>().Model = surfaces;
@@ -51,7 +52,7 @@ partial class MapLoader
 			renderer.Enabled = true;
 		}
 
-		BuildWater( content, skybox: true );
+		BuildWater( bsp, content, CreateFog( content, bsp.SkyCamera, bsp.Hdr, enabled: false ), skybox: true );
 		BuildWorldPhysics( bsp, content, skybox: true );
 		BuildEntities( bsp, content, skybox: true );
 		BuildLightProbes( bsp, content, skybox: true );

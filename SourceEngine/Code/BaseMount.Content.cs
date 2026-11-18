@@ -138,6 +138,12 @@ public abstract partial class BaseMount
 			? size : new Vector2( Math.Max( data.Width, 1 ), Math.Max( data.Height, 1 ) );
 	}
 
+	internal SourceMaterial GetMaterialSource( Material material )
+	{
+		lock ( indexLock )
+			return index.MaterialVariants.GetValueOrDefault( material )?.Source;
+	}
+
 	internal Material CreateMaterialVariant( Material original, string name, SourceMaterialOverrides bindings = null )
 	{
 		SourceMaterialVariant source;

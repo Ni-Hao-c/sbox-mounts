@@ -47,8 +47,10 @@ internal sealed partial class SourceMaterialBuilder
 		(transforms, alpha, animation) = GetMaterialProxies( vmt, shaderName, parameters );
 	}
 
-	internal Material CreateMaterial( string resourceName, bool mapSurface = false )
+	internal Material CreateMaterial( string resourceName, bool mapSurface = false, bool screenOverlay = false )
 	{
+		if ( screenOverlay && shaderName != "refract" )
+			throw new NotSupportedException( $"{FullPath}: underwater overlay shader '{shaderName}' is not supported." );
 		proxyProgram?.ResetInstructions();
 		var material = shaderName switch
 		{
@@ -56,7 +58,7 @@ internal sealed partial class SourceMaterialBuilder
 			"unlittwotexture" => CreateTwoTexture( parameters, transforms, animation, resourceName ),
 			"modulate" => CreateModulate( parameters, transforms, alpha, animation, resourceName ),
 			"teeth" => CreateTeeth( parameters, resourceName ),
-			"refract" or "core" => CreateRefract( shaderName == "core", resourceName ),
+			"refract" or "core" => CreateRefract( shaderName == "core", resourceName, screenOverlay: screenOverlay ),
 			"aftershock" => CreateRefract( false, resourceName, aftershock: true ),
 			"volumeclouds" => CreateVolumeClouds( resourceName ),
 			"monitorscreen" => CreateMonitor( resourceName, mapSurface ),
@@ -67,7 +69,7 @@ internal sealed partial class SourceMaterialBuilder
 			_ => throw new NotSupportedException( $"{FullPath}: unsupported Source material shader '{shaderName}'." )
 		};
 		BindProxyProgram( material );
-		material.Set( "g_bFogEnabled", !parameters.Boolean( "$nofog" ) );
+		material.Set( "g_bFogEnabled", !screenOverlay && !parameters.Boolean( "$nofog" ) );
 		material.Attributes.Set( "PhysicsSurfaceProperties", Host.GetSurfaceBindingName( parameters.String( "$surfaceprop", "default" ), FullPath ) );
 		UpdateProbeUsage( material );
 		return material;

@@ -103,6 +103,7 @@ internal partial class BspFile
 		if ( leafData.Length == 0 || leafData.Length % stride != 0 )
 			throw new InvalidDataException( "Invalid BSP leaf lump for 3D skybox classification." );
 		leaves = new BspLeaf[leafData.Length / stride];
+		leafWaterIds = new short[leaves.Length];
 		leafFaces = ReadLump<ushort>( stream, fileStart, lumps[16] );
 		for ( int i = 0; i < leaves.Length; i++ )
 		{
@@ -110,6 +111,7 @@ internal partial class BspFile
 			var leaf = new BspLeaf( BitConverter.ToInt32( leafData, offset ), BitConverter.ToUInt16( leafData, offset + 6 ) & 0x1ff, BitConverter.ToUInt16( leafData, offset + 20 ), BitConverter.ToUInt16( leafData, offset + 22 ), BitConverter.ToInt16( leafData, offset + 4 ), BitConverter.ToUInt16( leafData, offset + 6 ) >> 9, BitConverter.ToUInt16( leafData, offset + 24 ), BitConverter.ToUInt16( leafData, offset + 26 ), new BBox( new Vector3( BitConverter.ToInt16( leafData, offset + 8 ), BitConverter.ToInt16( leafData, offset + 10 ), BitConverter.ToInt16( leafData, offset + 12 ) ), new Vector3( BitConverter.ToInt16( leafData, offset + 14 ), BitConverter.ToInt16( leafData, offset + 16 ), BitConverter.ToInt16( leafData, offset + 18 ) ) ) );
 			ValidateRange( leaf.FirstFace, leaf.FaceCount, leafFaces.Length, "Leaf faces" );
 			leaves[i] = leaf;
+			leafWaterIds[i] = BitConverter.ToInt16( leafData, offset + 28 );
 		}
 
 		foreach ( var face in leafFaces )

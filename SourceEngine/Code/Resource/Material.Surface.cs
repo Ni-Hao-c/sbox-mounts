@@ -9,6 +9,8 @@ internal sealed partial class SourceMaterialBuilder
 		var name = resourceName ?? $"{FullPath}.vmat";
 		var warp = shader == "vortwarp";
 		var worldBlend = shader == "worldtwotextureblend";
+		var transition = shaderName == "worldvertextransition"
+			|| (shader == "lightmappedgeneric" && !string.IsNullOrWhiteSpace( parameters.String( "$basetexture2" ) ));
 		var unlit = shader == "unlitgeneric" || (warp && parameters.Boolean( "$unlit" ));
 
 		var modelSurface = shader is "vertexlitgeneric" or "unlitgeneric" or "vortwarp";
@@ -87,7 +89,7 @@ internal sealed partial class SourceMaterialBuilder
 		var translucent = framebuffer || additive || alpha.CanBeTranslucent || vertexAlpha
 			|| (parameters.Boolean( "$translucent" ) && hasOpacity);
 
-		var material = CreateShaderMaterial( $"shaders/source1/{shaderName}.shader", resourceName );
+		var material = CreateShaderMaterial( $"shaders/source1/{(transition ? "worldvertextransition" : shaderName)}.shader", resourceName );
 		material.Set( "g_flSourceReceiveDecals", !parameters.Boolean( "$nodecal" ) );
 		material.Set( "g_flSourceSeamlessScale", seamless );
 		animation.GetValueOrDefault().Bind( material, color );
@@ -176,7 +178,7 @@ internal sealed partial class SourceMaterialBuilder
 			bumpTransform.Bind( material, "Normal" );
 		detailTransform.Bind( material, "Detail", detailScale );
 		transforms.Get( "$envmapmasktransform", baseTransform ).Bind( material, "EnvMask" );
-		if ( shaderName == "worldvertextransition" )
+		if ( transition )
 			BindWorldTransition( material, color, normal );
 		if ( parameters.Boolean( "$distancealpha" ) )
 			Log.Trace( $"{name}: $distancealpha is not implemented by the surface shader." );

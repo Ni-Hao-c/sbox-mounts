@@ -88,6 +88,7 @@ partial class MapLoader
 				LocalRotation = Rotation.From( loader.ReadAngles( entity ) )
 			};
 			instance.Tags.Add( "world" );
+			instance.Tags.Add( "source1_entity" );
 			var prop = ReadProp( entity );
 			var visible = prop.Visible && (entity.Integer( "effects" ) & 32) == 0 && loader.IsEnabled( entity );
 			if ( model is not null )

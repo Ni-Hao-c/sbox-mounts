@@ -5,13 +5,13 @@ namespace Source1;
 
 partial class MapLoader
 {
-	private void BuildFog( BspFile bsp, GameObject world )
+	private Fog BuildFog( BspFile bsp, GameObject world )
 	{
 		var controller = SelectFogController( bsp.Entities );
 		if ( controller is null )
-			return;
+			return null;
 
-		CreateFog( world, controller, bsp.Hdr );
+		return CreateFog( world, controller, bsp.Hdr );
 	}
 
 	internal static MapEntity SelectFogController( IEnumerable<MapEntity> entities )

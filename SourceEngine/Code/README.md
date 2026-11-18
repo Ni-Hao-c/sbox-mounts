@@ -36,7 +36,7 @@ payloads; file contents are read lazily without whole-archive buffers or extract
 `Formats/Bsp`. `Resource` contains internal mount loaders and focused model/material
 builders; map construction is grouped under `Resource/Map` into geometry, lighting,
 sky and entity builders. BSP readers do not construct engine scenes. Only mount
-types are public. Model readers are temporary: the mounted loader caches the built
+types and map runtime components are public. Model readers are temporary: the mounted loader caches the built
 native model without retaining parsed MDL/VVD/VTX/PHY geometry. Material and texture
 source caches support variants and are retired with their content index.
 
@@ -130,8 +130,11 @@ Includes Source BSP versions 19-21, compressed lumps and embedded ZIP/LZMA paks.
 Maps register as scenes, for example `mount://gmod/maps/gm_construct.bsp.scene`.
 Opaque world geometry uses spatially grouped native aggregates, translucent
 surfaces retain ordinary renderers, and collision uses native physics resources,
-including displacement terrain and brush submodels. No runtime BSP visibility
-system or mount-specific runtime components are required.
+including displacement terrain and brush submodels. There is no runtime BSP visibility
+system. Water uses mount-specific components for capture views and underwater volume selection.
+Displacements use `WorldVertexTransition` to blend their two material layers with
+the BSP's painted vertex alpha and optional blend-modulation texture. Compiled
+`LightmappedGeneric` materials with `$basetexture2` use this path too.
 `func_lod` brushes retain their geometry and authored solidity (`Solid=0` is
 solid). Source distance fading is unsupported, so they remain visible.
 The missing distance behavior is diagnosed during import.
@@ -193,8 +196,39 @@ to false, which the renderer honors before probe lookup and per-draw binding.
 Baked props retain their imported lighting, dynamic lights, ambient
 occlusion and Source environment-map reflections without evaluating native probe
 lighting first. Leaf probe volumes remain available to normally lit dynamic models.
-Water uses native framebuffer refraction and cubemap reflections, not custom
-planar-view components or underwater volume fog.
+Horizontal BSP water retains its authored meshes, UVs and bottom-material faces.
+`SourceWater` supplies clipped planar reflection and refraction views through native
+command lists, retaining the VMT normal maps, tints and distortion. Refraction depth
+reconstructs the submerged path for water absorption. Atmospheric fog applies to the
+completed water blend, including planar reflections. Captures honor `$forcecheap`,
+`$forceexpensive`, reflection/refraction texture presence and sky reflection flags.
+Entity reflections are enabled by default and can be disabled on `SourceWater`.
+Compatible coplanar surfaces share a renderer while retaining their materials and UVs.
+Only the camera-facing side submits captures; orthographic and custom-projection
+cameras retain framebuffer/cubemap fallback.
+`SourceWaterMap` retains a pruned BSP tree for exact leaf-water membership.
+`SourceWaterVolume` selects native underwater fog from the volume's bottom material,
+without approximating the water region with a bounding box.
+`SourceUnderwater` draws the bottom material's `$underwateroverlay` inside the same
+region. Refract overlays retain their normal maps, scrolling, tint and blur, leaving
+later UI undistorted; other overlay shader types are reported as unsupported.
+`SourceWaterAudio` plays the authored `Player.AmbientUnderWater` sound while the camera
+is submerged and stops it on exit or disable. Sandbox retains ownership of the water
+DSP, whose `water.small` preset matches Source's preset 14.
+
+This is not pixel-exact Source water parity. Distance-based cheap-water transitions,
+Source's special near-waterline intersection handling, flow maps, base-texture water
+and lightmapped water fog remain unsupported. Water in child views, including 3D
+skyboxes, retains framebuffer/cubemap fallback rather than recursive planar captures.
+Compiled BSP `fluid` solids retain their convex collision shapes as water-tagged
+`PhysicsCollider` triggers. Fluids with matching planes and materials share one
+trigger. A disabled `BoxCollider` supplies bounds whose top matches the authored
+surface, without adding collision or replacing the BSP hulls. Sandbox's existing
+water loader uses that box and attaches its own `WaterVolume` for buoyancy and
+water effects; the mount does not add a second buoyancy component. The triggers
+also feed player swimming. Physics requires the host game's water support;
+Sandbox assumes horizontal water and does not apply Source currents or custom
+fluid density and damping.
 
 Map fog uses the native `Fog` component, selecting the last master
 `env_fog_controller` or the first controller when none is marked as master.
@@ -261,6 +295,11 @@ extra entity rotations or runtime-only renderer overrides.
 
 WAV/MP3 files are mounted directly; surface sound
 events retain their authored wave variants, volume, pitch and attenuation.
+Footstep slots use separate events with Source's running-step volume (0.5 by
+default, 0.55 for dirt, 0.7 for vents), rather than full sound-script volume.
+Surfaces sharing a sound script and footstep gain share the same event.
+The engine player controller owns footstep and landing playback and volume scaling.
+Impact, scrape, break and ambient events keep their authored volume.
 Unavailable wave references are reported once per sound during mounting.
 Available variants remain usable; a sound with no available waves leaves its
 surface slot empty without preventing the physical surface from loading.
@@ -334,8 +373,8 @@ both base layers and detail. Blend-modulation endpoints are clamped before
 This is not complete shader parity. Generic local lighting is evaluated per pixel
 rather than Source's non-bumped vertex-lighting path. Native light attenuation and
 probe filtering follow s&box. EyeRefract optics and the existing effect shaders
-remain partial implementations; Source's multipass planar water and destination-alpha
-refraction masks are not available through the current mount implementation.
+remain partial implementations; Source's destination-alpha refraction masks are not
+available through the current mount implementation.
 
 Models use the authored MDL bind pose, except non-static rigid props with one
 physics body and no constraints. These read frame zero of local animation zero,

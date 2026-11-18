@@ -73,6 +73,8 @@ partial class MapLoader
 			};
 			if ( isStatic )
 				instance.Tags.Add( "world" );
+			if ( prop.StaticPropIndex < 0 )
+				instance.Tags.Add( "source1_entity" );
 			var materialGroup = GetSkin( model, prop.Skin, path );
 			if ( useGameplay )
 			{
