@@ -26,11 +26,13 @@ public record struct Titanfall2ProjectileSettings
 	public string ModelPath { get; set; }
 	public string TrailEffect { get; set; }
 	public string TrailAttachment { get; set; }
+	public string ScriptTrailEffect { get; set; }
 	public string HazardEffect { get; set; }
 	public float FuseSeconds { get; set; }
 	public float HazardSeconds { get; set; }
 	public string ImpactTable { get; set; }
 	public string MountIdent { get; set; }
+	public bool ReducedEffects { get; set; }
 	public Color Tint { get; set; }
 	public Titanfall2ProjectileBehavior Behavior { get; set; }
 	public readonly bool Enabled => Speed > 0;
@@ -59,7 +61,7 @@ public sealed partial class Titanfall2Projectile : Component
 	Vector3 _stuckNormal = Vector3.Up;
 	Vector3 _stuckLocalNormal;
 	Surface _stuckSurface;
-	GameObject _trail;
+	readonly List<GameObject> _trails = [];
 
 	internal static Titanfall2Projectile Launch( Scene scene, Ray aim, Titanfall2ProjectileSettings settings,
 		float damage, float heavyDamage, GameObject attacker, GameObject weapon, GameObject ignore,
@@ -67,6 +69,9 @@ public sealed partial class Titanfall2Projectile : Component
 	{
 		if ( !Networking.IsHost || !scene.IsValid() || !aim.Position.IsFinite || !aim.Forward.IsFinite
 			|| aim.Forward.LengthSquared < 0.25f || !float.IsFinite( settings.Speed ) || settings.Speed <= 0 ) return null;
+		// Retail NPC bolts are created on the server. The additional client
+		// predicted-bolt callback is not run for an NPC attack.
+		if ( npcFired ) settings.ScriptTrailEffect = null;
 		using var scope = scene.Push();
 		var go = new GameObject( false, "TF2 Projectile" );
 		go.Tags.Add( "projectile" );
@@ -93,20 +98,20 @@ public sealed partial class Titanfall2Projectile : Component
 
 	protected override void OnStart()
 	{
-		if ( Application.IsDedicatedServer || Application.IsHeadless ) return;
+		if ( Application.IsDedicatedServer || Application.IsHeadless || Settings.ReducedEffects ) return;
 		var model = Titanfall2GameplayVisuals.GetModel( Settings.ModelPath );
 		var render = new GameObject( GameObject, false, "Projectile Visual" );
 		render.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
 		if ( model is { IsError: false } )
 		{
-			// The ARL/SMR visual mesh is authored nose-first on +Z in its bind pose.
+			// These retail missiles are authored nose-first on +Z in their bind pose.
 			// Keep flight in +X; rotate the model and its exhaust attachment together.
 			render.LocalRotation = ModelRotation( Settings.ModelPath );
 			var renderer = render.AddComponent<ModelRenderer>();
 			renderer.Model = model;
 			renderer.RenderType = ModelRenderer.ShadowRenderType.Off;
 		}
-		else if ( string.IsNullOrWhiteSpace( Settings.TrailEffect ) )
+		else if ( string.IsNullOrWhiteSpace( Settings.TrailEffect ) && string.IsNullOrWhiteSpace( Settings.ScriptTrailEffect ) )
 		{
 			// Model-less plasma/bullets need an emissive streak, not a lit error sphere.
 			// This local segment follows the actual host-simulated projectile on all peers.
@@ -126,16 +131,24 @@ public sealed partial class Titanfall2Projectile : Component
 		}
 		if ( !string.IsNullOrWhiteSpace( Settings.TrailEffect ) )
 		{
-			_trail = new GameObject( render, false, "Retail projectile trail" );
-			_trail.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+			var trail = CreateTrail( render, Settings.TrailEffect );
 			if ( model is { IsError: false } && !string.IsNullOrEmpty( Settings.TrailAttachment )
-				&& model.Attachments.GetTransform( Settings.TrailAttachment ) is { } exhaust ) _trail.LocalTransform = exhaust;
-			var plasma = _trail.AddComponent<Titanfall2PlasmaFlight>();
-			plasma.MountIdent = Settings.MountIdent;
-			plasma.EffectName = Settings.TrailEffect;
-			_trail.Enabled = true;
+				&& model.Attachments.GetTransform( Settings.TrailAttachment ) is { } exhaust ) trail.LocalTransform = exhaust;
 		}
+		if ( !string.IsNullOrWhiteSpace( Settings.ScriptTrailEffect ) ) CreateTrail( GameObject, Settings.ScriptTrailEffect );
 		render.Enabled = true;
+	}
+
+	GameObject CreateTrail( GameObject parent, string effectName )
+	{
+		var trail = new GameObject( parent, false, "Retail projectile trail" );
+		trail.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+		var plasma = trail.AddComponent<Titanfall2PlasmaFlight>();
+		plasma.MountIdent = Settings.MountIdent;
+		plasma.EffectName = effectName;
+		_trails.Add( trail );
+		trail.Enabled = true;
+		return trail;
 	}
 
 	protected override void OnFixedUpdate()
@@ -187,9 +200,15 @@ public sealed partial class Titanfall2Projectile : Component
 		if ( Velocity.LengthSquared > 1 ) WorldRotation = Rotation.LookAt( Velocity );
 	}
 
-	internal static Rotation ModelRotation( string path ) => path?.Replace( '\\', '/' )
-		.Contains( "/weapons/bullets/projectile_arl.mdl", StringComparison.OrdinalIgnoreCase ) == true
+	internal static Rotation ModelRotation( string path )
+	{
+		var name = path?.Replace( '\\', '/' );
+		return name?.Contains( "/weapons/bullets/projectile_arl.mdl", StringComparison.OrdinalIgnoreCase ) == true
+			|| name?.Contains( "/weapons/bullets/projectile_rocket_launcher_sram.mdl", StringComparison.OrdinalIgnoreCase ) == true
+			|| name?.Contains( "/weapons/bullets/projectile_rocket.mdl", StringComparison.OrdinalIgnoreCase ) == true
+			|| name?.Contains( "/weapons/bullets/projectile_rocket_large.mdl", StringComparison.OrdinalIgnoreCase ) == true
 			? Rotation.FromToRotation( Vector3.Up, Vector3.Forward ) : Rotation.Identity;
+	}
 
 	internal static Vector3 BounceVelocity( Vector3 velocity, Vector3 normal )
 	{
@@ -200,14 +219,17 @@ public sealed partial class Titanfall2Projectile : Component
 	[Rpc.Broadcast( NetFlags.HostOnly )]
 	void ReleaseTrail()
 	{
-		if ( !_trail.IsValid() ) return;
-		var trail = _trail; _trail = null;
-		trail.Parent = null;
-		if ( trail.GetComponent<Titanfall2PlasmaFlight>() is { } flight ) flight.Enabled = false;
-		foreach ( var emitter in trail.GetComponentsInChildren<ParticleEmitter>( true ) ) emitter.Enabled = false;
-		var cleanup = trail.GetOrAddComponent<TemporaryEffect>();
-		cleanup.DestroyAfterSeconds = 2;
-		cleanup.WaitForChildEffects = false;
+		foreach ( var trail in _trails )
+		{
+			if ( !trail.IsValid() ) continue;
+			trail.Parent = null;
+			if ( trail.GetComponent<Titanfall2PlasmaFlight>() is { } flight ) flight.Enabled = false;
+			foreach ( var emitter in trail.GetComponentsInChildren<ParticleEmitter>( true ) ) emitter.Enabled = false;
+			var cleanup = trail.GetOrAddComponent<TemporaryEffect>();
+			cleanup.DestroyAfterSeconds = 2;
+			cleanup.WaitForChildEffects = false;
+		}
+		_trails.Clear();
 	}
 
 	void SteerTowardTitan( float dt )
@@ -373,6 +395,9 @@ public sealed partial class Titanfall2Projectile : Component
 	[Rpc.Broadcast( NetFlags.HostOnly )]
 	void PlayImpact( BaseCombatWeapon.ShotEffect shot, Color color, float splash )
 	{
+		// Retail SetReducedEffects sets m_reducedEffects and clears the authored
+		// impact table. The central Double Take bolt still applies full damage.
+		if ( Settings.ReducedEffects ) return;
 		Titanfall2CombatEffects.Impact( Scene, shot, Settings.MountIdent, Settings.ImpactTable ?? "exp_frag_grenade", splash, color );
 	}
 }

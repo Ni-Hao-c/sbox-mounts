@@ -93,6 +93,7 @@ static class Titanfall2PcfReader
 				else if ( function.Equals( "emit_instantaneously by distance", StringComparison.OrdinalIgnoreCase ) )
 				{
 					definition.BurstSpacing = MathF.Max( 0.01f, emitter.GetFloat( "spacing", 1f ) );
+					definition.BurstMinimum = Math.Clamp( emitter.GetInt( "minimum count", 0 ), 0, 1_000_000 );
 				}
 				else if ( function.Equals( "emit over distance", StringComparison.OrdinalIgnoreCase ) )
 				{
@@ -136,7 +137,11 @@ static class Titanfall2PcfReader
 			foreach ( var child in children )
 			{
 				var childName = child.GetString( "child", child.Name );
-				if ( !string.IsNullOrWhiteSpace( childName ) ) definition.Children.Add( childName );
+				if ( string.IsNullOrWhiteSpace( childName ) ) continue;
+				// End caps run when their parent stops, never at collection creation.
+				// Starting the resting-casing end cap here produces a second shell at the port.
+				if ( child.GetBool( "end cap effect", false ) ) definition.EndCapChildren.Add( childName );
+				else definition.Children.Add( childName );
 			}
 		}
 
@@ -154,12 +159,21 @@ static class Titanfall2PcfReader
 		if ( initializer.GetBool( "mute", false ) || initializer.GetInt( "operator end cap state", 0 ) == 1 ) return;
 		var function = GetFunctionName( initializer );
 		if ( TryAddScalarRemap( definition, initializer, function, true ) ) return;
-		if ( function.Equals( "Lifetime Random", StringComparison.OrdinalIgnoreCase ) )
+		if ( function.Equals( "Remap Particle Count to Scalar", StringComparison.OrdinalIgnoreCase ) )
+		{
+			definition.CountRemaps.Add( new( initializer.GetInt( "output field", 3 ),
+				initializer.GetFloat( "input minimum", 0f ), initializer.GetFloat( "input maximum", 1f ),
+				initializer.GetFloat( "output minimum", 0f ), initializer.GetFloat( "output maximum", 1f ),
+				initializer.GetBool( "output is scalar of initial random range", false ),
+				initializer.GetBool( "only active within specified input range", false ), initializer.GetBool( "from end of list", false ) ) );
+		}
+		else if ( function.Equals( "Lifetime Random", StringComparison.OrdinalIgnoreCase ) )
 		{
 			var minimum = MathF.Max( 0.01f, initializer.GetFloat( "lifetime_min", 1f ) );
 			var maximum = MathF.Max( 0.01f, initializer.GetFloat( "lifetime_max", minimum ) );
 			definition.LifetimeMinimum = MathF.Min( minimum, maximum );
 			definition.LifetimeMaximum = MathF.Max( minimum, maximum );
+			definition.LifetimeExponent = ReadExponent( initializer, "lifetime_random_exponent" );
 		}
 		else if ( function.Equals( "Radius Random", StringComparison.OrdinalIgnoreCase ) )
 		{
@@ -167,6 +181,7 @@ static class Titanfall2PcfReader
 			var maximum = MathF.Max( 0f, initializer.GetFloat( "radius_max", minimum ) );
 			definition.RadiusMinimum = MathF.Min( minimum, maximum );
 			definition.RadiusMaximum = MathF.Max( minimum, maximum );
+			definition.RadiusExponent = ReadExponent( initializer, "radius_random_exponent" );
 		}
 		else if ( function.Equals( "Alpha Random", StringComparison.OrdinalIgnoreCase ) )
 		{
@@ -174,11 +189,12 @@ static class Titanfall2PcfReader
 			var maximum = NormalizeAlpha( initializer.GetFloat( "alpha_max", 255f ) );
 			definition.AlphaMinimum = MathF.Min( minimum, maximum );
 			definition.AlphaMaximum = MathF.Max( minimum, maximum );
+			definition.AlphaExponent = ReadExponent( initializer, "alpha_random_exponent" );
 		}
 		else if ( function.Equals( "Color Random", StringComparison.OrdinalIgnoreCase ) )
 		{
 			definition.ColorMinimum = initializer.GetColor( "color1", RgbaColor.White );
-			definition.ColorMaximum = initializer.GetColor( "color2", definition.ColorMinimum );
+			definition.ColorMaximum = initializer.GetColor( "color2", RgbaColor.White );
 		}
 		else if ( function.Equals( "Color Lit Per Particle", StringComparison.OrdinalIgnoreCase ) )
 		{
@@ -205,8 +221,14 @@ static class Titanfall2PcfReader
 			definition.Shape = Titanfall2ParticleShape.Sphere;
 			definition.ShapeMinimum = MathF.Max( 0f, initializer.GetFloat( "distance_min", 0f ) );
 			definition.ShapeMaximum = MathF.Max( definition.ShapeMinimum, initializer.GetFloat( "distance_max", 0f ) );
-			definition.VelocityMinimum += initializer.GetVector3( "speed_in_local_coordinate_system_min", Vector3.Zero );
-			definition.VelocityMaximum += initializer.GetVector3( "speed_in_local_coordinate_system_max", Vector3.Zero );
+			// Retail CreateWithinSphere uses the control point's forward/right/up
+			// vectors directly (client 0x1806FE280). PositionOffset and VelocityRandom
+			// use forward/left/up instead. Convert only this initializer's speed Y;
+			// treating both bases alike sends muzzle fingers away from their centre.
+			var localMinimum = initializer.GetVector3( "speed_in_local_coordinate_system_min", Vector3.Zero );
+			var localMaximum = initializer.GetVector3( "speed_in_local_coordinate_system_max", Vector3.Zero );
+			definition.VelocityMinimum += new Vector3( localMinimum.x, -localMaximum.y, localMinimum.z );
+			definition.VelocityMaximum += new Vector3( localMaximum.x, -localMinimum.y, localMaximum.z );
 			definition.LocalVelocity |= definition.VelocityMinimum != Vector3.Zero || definition.VelocityMaximum != Vector3.Zero;
 		}
 		else if ( function.Equals( "Position Within Box Random", StringComparison.OrdinalIgnoreCase ) )
@@ -246,12 +268,14 @@ static class Titanfall2PcfReader
 			var maximum = MathF.Max( 0f, initializer.GetFloat( "length_max", minimum ) );
 			definition.TrailMinimum = MathF.Min( minimum, maximum );
 			definition.TrailMaximum = MathF.Max( minimum, maximum );
+			definition.TrailExponent = ReadExponent( initializer, "length_random_exponent" );
 		}
 		else if ( function.Equals( "Rotation Random", StringComparison.OrdinalIgnoreCase ) )
 		{
 			var initial = initializer.GetFloat( "rotation_initial", 0f );
 			var minimum = initializer.GetFloat( "rotation_offset_min", 0f );
-			var maximum = initializer.GetFloat( "rotation_offset_max", 0f );
+			// C_INIT_RandomRotation's retail descriptor defaults the maximum to 360.
+			var maximum = initializer.GetFloat( "rotation_offset_max", 360f );
 			definition.RotationMinimum = initial + MathF.Min( minimum, maximum );
 			definition.RotationMaximum = initial + MathF.Max( minimum, maximum );
 		}
@@ -273,7 +297,7 @@ static class Titanfall2PcfReader
 		{
 			var minimum = initializer.GetFloat( "min", 0f );
 			var maximum = initializer.GetFloat( "max", minimum );
-			var outputField = initializer.GetInt( "output field", -1 );
+			var outputField = initializer.GetInt( "output field", 3 );
 			// Alpha2 is a Titanfall extension multiplied into normal alpha. s&box
 			// has one alpha channel, so preserve the combined result.
 			if ( outputField is 7 or 16 )
@@ -283,8 +307,12 @@ static class Titanfall2PcfReader
 			}
 			else if ( outputField == 3 )
 			{
-				definition.RadiusMultiplierMinimum *= minimum;
-				definition.RadiusMultiplierMaximum *= maximum;
+				// RandomScalar writes its output; it does not multiply the default
+				// collection radius (Cold War stores 32 but initializes it to 0.8).
+				definition.RadiusMinimum = MathF.Min( minimum, maximum );
+				definition.RadiusMaximum = MathF.Max( minimum, maximum );
+				definition.RadiusMultiplierMinimum = definition.RadiusMultiplierMaximum = 1f;
+				definition.RadiusExponent = ReadExponent( initializer, "exponent" );
 			}
 			else if ( outputField == 12 )
 			{
@@ -299,12 +327,24 @@ static class Titanfall2PcfReader
 		}
 	}
 
+	static float ReadExponent( DmxElement source, string name ) => Math.Clamp( source.GetFloat( name, 1f ), 0.0001f, 1000f );
+
 	static ParticleRandomFadeDefinition ReadRandomFade( DmxElement source, string direction ) => new(
 		source.GetFloat( $"fade {direction} time min", 0.25f ), source.GetFloat( $"fade {direction} time max", 0.25f ),
-		source.GetFloat( $"fade {direction} time exponent", 1f ), source.GetBool( "proportional", true ) );
+		source.GetFloat( $"fade {direction} time exponent", 1f ), source.GetBool( "proportional 0/1", source.GetBool( "proportional", true ) ) );
 
 	static bool TryAddScalarRemap( Titanfall2ParticleDefinition definition, DmxElement source, string function, bool initialOnly )
 	{
+		// Retail field 8 is creation time in collection time, not particle age.
+		// SMR uses this to bring in its exhaust over the first 0.3 seconds.
+		if ( function.Equals( "Remap Scalar", StringComparison.OrdinalIgnoreCase ) && source.GetInt( "input field", 7 ) == 8 )
+		{
+			definition.ScalarRemaps.Add( new( -1, 0, -1, source.GetInt( "output field", 3 ),
+				source.GetFloat( "input minimum", 0f ), source.GetFloat( "input maximum", 1f ),
+				source.GetFloat( "output minimum", 0f ), source.GetFloat( "output maximum", 1f ),
+				source.GetBool( "output is scalar of initial random range", false ), initialOnly, 8 ) );
+			return true;
+		}
 		var distance = function.Equals( "Remap Distance Between Two Control Points to Scalar", StringComparison.OrdinalIgnoreCase );
 		var scalar = function.Equals( "Remap Control Point to Scalar", StringComparison.OrdinalIgnoreCase );
 		if ( !distance && !scalar ) return false;
@@ -337,6 +377,12 @@ static class Titanfall2PcfReader
 		{
 			definition.Damping = MathF.Max( definition.Damping, particleOperator.GetFloat( "drag", 0f ) );
 			definition.Gravity += particleOperator.GetVector3( "gravity", Vector3.Zero );
+		}
+		else if ( function.Equals( "Movement Lock to Control Point", StringComparison.OrdinalIgnoreCase ) )
+		{
+			definition.LockControlPoint = Math.Clamp( particleOperator.GetInt( "control_point_number", 0 ), 0, 63 );
+			definition.LockRotation = particleOperator.GetBool( "lock rotation", false );
+			definition.LockDistanceFade = MathF.Max( 0f, particleOperator.GetFloat( "distance fade range", 0f ) );
 		}
 		else if ( function.Equals( "Movement Maintain Position Along Path", StringComparison.OrdinalIgnoreCase ) )
 		{
@@ -481,6 +527,7 @@ static class Titanfall2PcfReader
 			definition.TrailRenderMaximum = MathF.Max( definition.TrailRenderMinimum, renderer.GetFloat( "max length", 2000f ) );
 			definition.TrailFadeInTime = MathF.Max( 0f, renderer.GetFloat( "length fade in time", 0f ) );
 			definition.ConstrainRadiusToTrail = renderer.GetBool( "constrain radius to length", true );
+			definition.TrailIgnoreDeltaTime = renderer.GetBool( "ignore delta time", false );
 		}
 		else if ( function.Contains( "rope", StringComparison.OrdinalIgnoreCase ) )
 		{
@@ -832,7 +879,8 @@ internal readonly record struct RgbaColor( byte R, byte G, byte B, byte A )
 }
 
 internal readonly record struct ParticleRandomFadeDefinition( float Minimum, float Maximum, float Exponent, bool Proportional );
-internal readonly record struct ParticleControlScalarDefinition( int ControlPoint, int Component, int EndPoint, int Field, float InputMin, float InputMax, float OutputMin, float OutputMax, bool ScaleInitial, bool InitialOnly );
+internal readonly record struct ParticleControlScalarDefinition( int ControlPoint, int Component, int EndPoint, int Field, float InputMin, float InputMax, float OutputMin, float OutputMax, bool ScaleInitial, bool InitialOnly, int InputAttribute = -1 );
+internal readonly record struct ParticleCountRemapDefinition( int Field, float InputMin, float InputMax, float OutputMin, float OutputMax, bool ScaleInitial, bool OnlyWithinRange, bool FromEnd );
 internal readonly record struct ParticleFadeDefinition( float FadeInStart, float FadeInEnd, float FadeOutStart, float FadeOutEnd );
 internal readonly record struct ParticleScaleDefinition( float StartTime, float EndTime, float StartScale, float EndScale );
 internal readonly record struct ParticleControlPointDefinition( int Index, Vector3 Position );
@@ -865,9 +913,11 @@ internal sealed class Titanfall2ParticleDefinition
 	internal int PlayerControlPoint { get; set; } = -1;
 	internal float LifetimeMinimum { get; set; } = 1f;
 	internal float LifetimeMaximum { get; set; } = 1f;
+	internal float LifetimeExponent { get; set; } = 1f;
 	internal float Duration { get; set; } = 1f;
 	internal float Burst { get; set; }
 	internal float BurstSpacing { get; set; }
+	internal int BurstMinimum { get; set; }
 	internal float EmissionRate { get; set; }
 	internal bool Looping { get; set; }
 	internal float EmissionRateOverDistance { get; set; }
@@ -876,10 +926,12 @@ internal sealed class Titanfall2ParticleDefinition
 	internal bool EndCapLifetime { get; set; }
 	internal float RadiusMinimum { get; set; } = 1f;
 	internal float RadiusMaximum { get; set; } = 1f;
+	internal float RadiusExponent { get; set; } = 1f;
 	internal float RadiusMultiplierMinimum { get; set; } = 1f;
 	internal float RadiusMultiplierMaximum { get; set; } = 1f;
 	internal float AlphaMinimum { get; set; } = 1f;
 	internal float AlphaMaximum { get; set; } = 1f;
+	internal float AlphaExponent { get; set; } = 1f;
 	internal float AlphaMultiplierMinimum { get; set; } = 1f;
 	internal float AlphaMultiplierMaximum { get; set; } = 1f;
 	internal RgbaColor ColorMinimum { get; set; } = RgbaColor.White;
@@ -895,6 +947,9 @@ internal sealed class Titanfall2ParticleDefinition
 	internal Vector3 VelocityMinimum { get; set; }
 	internal Vector3 VelocityMaximum { get; set; }
 	internal bool LocalVelocity { get; set; }
+	internal int LockControlPoint { get; set; } = -1;
+	internal bool LockRotation { get; set; }
+	internal float LockDistanceFade { get; set; }
 	internal Vector3 Gravity { get; set; }
 	internal float Damping { get; set; }
 	internal float RotationMinimum { get; set; }
@@ -910,10 +965,12 @@ internal sealed class Titanfall2ParticleDefinition
 	internal float AnimationRate { get; set; } = 1f;
 	internal float TrailMinimum { get; set; } = 0.1f;
 	internal float TrailMaximum { get; set; } = 0.1f;
+	internal float TrailExponent { get; set; } = 1f;
 	internal float TrailRenderMinimum { get; set; }
 	internal float TrailRenderMaximum { get; set; } = 2000f;
 	internal float TrailFadeInTime { get; set; }
 	internal bool ConstrainRadiusToTrail { get; set; } = true;
+	internal bool TrailIgnoreDeltaTime { get; set; }
 	internal float RopeTextureScale { get; set; } = 1f / 128f;
 	internal float RopeTextureScroll { get; set; }
 	internal float RopeTextureOffset { get; set; }
@@ -938,8 +995,10 @@ internal sealed class Titanfall2ParticleDefinition
 	internal ParticleRandomFadeDefinition? RandomFadeIn { get; set; }
 	internal ParticleRandomFadeDefinition? RandomFadeOut { get; set; }
 	internal List<ParticleControlScalarDefinition> ScalarRemaps { get; } = [];
+	internal List<ParticleCountRemapDefinition> CountRemaps { get; } = [];
 	internal ParticleScaleDefinition? RadiusScale { get; set; }
 	internal List<ParticleScalarGraphDefinition> ScalarGraphs { get; } = [];
 	internal List<ParticleOscillationDefinition> Oscillations { get; } = [];
 	internal List<string> Children { get; } = [];
+	internal List<string> EndCapChildren { get; } = [];
 }

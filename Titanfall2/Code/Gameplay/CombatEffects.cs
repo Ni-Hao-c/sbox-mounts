@@ -48,7 +48,7 @@ static class Titanfall2CombatEffects
 		var effect = mount?.CombatImpactValue( table, "FX", material );
 		var sound = mount?.CombatImpactValue( table, "Sound", material );
 		if ( Titanfall2OrdnanceSounds.Prefix( table ) is not null ) Titanfall2OrdnanceSounds.Play( mountIdent, table, shot.HitPosition );
-		else if ( !string.IsNullOrWhiteSpace( sound ) && sound != "null_temp" ) Titanfall2GameplayVisuals.PlayFireSound( mountIdent ?? "titanfall2", sound, shot.HitPosition );
+		else if ( !string.IsNullOrWhiteSpace( sound ) && sound != "null_temp" ) Titanfall2GameplayVisuals.PlayFireSound( scene, mountIdent ?? "titanfall2", sound, shot.HitPosition );
 
 		var go = new GameObject( scene, false, blastRadius > 0 ? "TF2 Explosion" : "TF2 Bullet Impact" );
 		go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;

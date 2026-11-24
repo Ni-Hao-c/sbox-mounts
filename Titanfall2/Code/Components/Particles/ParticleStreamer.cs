@@ -550,7 +550,8 @@ static class Titanfall2ParticleFactory
 		if ( definition.OrientationType == 2 || definition.Path.HasValue || definition.Visibility.HasValue || definition.EndCapLifetime || definition.DistanceRemaps.Count > 0
 			|| definition.ColorRemaps.Count > 0 || definition.ScalarRemaps.Count > 0 || definition.RandomFadeIn.HasValue || definition.RandomFadeOut.HasValue || definition.PositionWarpMinimum != Vector3.One
 			|| definition.PositionWarpMaximum != Vector3.One || (definition.Renderer & Titanfall2ParticleRenderer.Trail) != 0
-			|| definition.Oscillations.Count > 0 || HasShapePositionOffset( definition ) )
+			|| definition.Oscillations.Count > 0 || HasShapePositionOffset( definition ) || definition.LocalVelocity || definition.LockControlPoint >= 0
+			|| definition.RadiusExponent != 1f || definition.AlphaExponent != 1f || definition.TrailExponent != 1f || definition.CountRemaps.Count > 0 )
 		{
 			geometry = gameObject.AddComponent<Titanfall2ParticleGeometry>();
 			geometry.Configure( definition, controlPoints, CreateStretch( definition ) );
@@ -562,8 +563,10 @@ static class Titanfall2ParticleFactory
 	static void ConfigureEffect( ParticleEffect effect, Titanfall2ParticleDefinition definition )
 	{
 		effect.MaxParticles = Math.Clamp( definition.MaxParticles, 1, Titanfall2ParticleFactory.MaxParticlesPerSystem );
-		effect.Lifetime = definition.EndCapLifetime ? float.MaxValue : Range( definition.LifetimeMinimum, definition.LifetimeMaximum );
-		effect.LocalSpace = definition.LocalPosition || definition.LocalVelocity ? 1f : 0f;
+		effect.Lifetime = definition.EndCapLifetime ? float.MaxValue : ExponentRange( definition.LifetimeMinimum, definition.LifetimeMaximum, definition.LifetimeExponent );
+		// PCF local velocity is a birth transform, not a simulation-space flag.
+		// The controller rotates it once and handles only explicitly authored CP locks.
+		effect.LocalSpace = 0f;
 		var maximumVelocity = Titanfall2ParticleFactory.MaximumVelocity;
 		effect.InitialVelocity = new ParticleVector3
 		{
@@ -619,7 +622,9 @@ static class Titanfall2ParticleFactory
 			effect.Force = true;
 			effect.ForceDirection = gravity.Normal;
 			effect.ForceScale = gravity.Length;
-			effect.ForceSpace = definition.LocalVelocity ? ParticleEffect.SimulationSpace.Local : ParticleEffect.SimulationSpace.World;
+			// Movement Basic gravity is world-space even when velocity was local to an
+			// ejection port. Rotating -Z by that port points gravity down the barrel.
+			effect.ForceSpace = ParticleEffect.SimulationSpace.World;
 		}
 
 		if ( definition.SequenceMaximum > 0 )
@@ -641,7 +646,7 @@ static class Titanfall2ParticleFactory
 			if ( float.IsFinite( distance ) )
 				count += MathF.Max( 2f, MathF.Ceiling( Math.Clamp( distance / definition.BurstSpacing, 0f, maximum ) ) + 1f );
 		}
-		return (int)Math.Clamp( count, 0f, maximum );
+		return (int)Math.Clamp( MathF.Max( count, definition.BurstMinimum ), 0f, maximum );
 	}
 
 	static void ConfigureEmitter( GameObject effectObject, Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints points )
@@ -796,7 +801,8 @@ static class Titanfall2ParticleFactory
 				renderer.FogStrength = Math.Clamp( materialDefinition.GetFloat( "$vertexfogamount", 1f ), 0, 1 );
 				renderer.CameraFadeNear = 4f;
 				renderer.CameraFadeFar = 24f;
-				if ( colorRamp is not null ) gameObject.AddComponent<Titanfall2ParticleRampRenderer>().Configure( renderer, colorRamp );
+				if ( colorRamp is not null || trail ) gameObject.AddComponent<Titanfall2ParticleRampRenderer>()
+					.Configure( renderer, colorRamp, materialDefinition.GetBool( "$texcolorfromalpha" ), trail );
 				created = true;
 			}
 		}
@@ -934,6 +940,21 @@ static class Titanfall2ParticleFactory
 			Evaluation = ParticleFloat.EvaluationType.Life,
 			CurveA = CreateComposedCurve( definition.LifetimeMinimum, graphs, _ => minimum ),
 			CurveB = CreateComposedCurve( definition.LifetimeMaximum, graphs, _ => maximum )
+		};
+	}
+
+	internal static float SampleExponentRange( float minimum, float maximum, float exponent, float unit ) =>
+		minimum + (maximum - minimum) * MathF.Pow( Math.Clamp( unit, 0f, 1f ), exponent );
+
+	static ParticleFloat ExponentRange( float minimum, float maximum, float exponent )
+	{
+		if ( exponent == 1f || minimum == maximum ) return Range( minimum, maximum );
+		// Seed-evaluated native curves preserve Source RandomFloatExp at birth.
+		return new ParticleFloat
+		{
+			Type = ParticleFloat.ValueType.Curve, Evaluation = ParticleFloat.EvaluationType.Seed,
+			CurveA = new Curve( Enumerable.Range( 0, 129 ).Select( index => new Curve.Frame( index / 128f,
+				SampleExponentRange( minimum, maximum, exponent, index / 128f ) ) { Mode = Curve.HandleMode.Linear } ) )
 		};
 	}
 

@@ -59,6 +59,8 @@ PS
 	Texture2D RampTexture < Attribute( "T2ParticleRamp" ); SrgbRead( true ); >;
 	SamplerState SampleClamp < Filter( BILINEAR ); AddressU( CLAMP ); AddressV( CLAMP ); >;
 	float Additive < Attribute( "T2ParticleAdditive" ); Default( 0 ); >;
+	float TextureColorFromAlpha < Attribute( "T2ParticleTextureColorFromAlpha" ); Default( 0 ); >;
+	float HasRamp < Attribute( "T2ParticleHasRamp" ); Default( 1 ); >;
 	float Lit < Attribute( "T2ParticleLit" ); Default( 0 ); >;
 	float FogStrength < Attribute( "T2ParticleFog" ); Default( 1 ); >;
 	float DepthFeather < Attribute( "T2ParticleDepthFeather" ); Default( 0 ); >;
@@ -73,9 +75,12 @@ PS
 		float4 texel = ParticleTexture.Sample( SampleClamp, i.vTextureCoords.xy );
 		if ( i.Blend > 0 ) texel = lerp( texel, ParticleTexture.Sample( SampleClamp, i.vTextureCoords.zw ), i.Blend );
 		clip( texel.a - 0.001 );
+		// Retail SpriteCard's $texColorFromAlpha replaces the base RGB before
+		// the color-ramp lookup. Flash/smoke cards author their density in alpha.
+		if ( TextureColorFromAlpha > 0.5 ) texel.rgb = texel.aaa;
 		// Lookup happens after the sheet frames blend; precolouring each frame
 		// and blending the lookup results is not equivalent for nonlinear ramps.
-		texel.rgb = RampTexture.SampleLevel( SampleClamp, texel.rg, 0 ).rgb;
+		if ( HasRamp > 0.5 ) texel.rgb = RampTexture.SampleLevel( SampleClamp, texel.rg, 0 ).rgb;
 		texel.rgb = lerp( texel.rgb, i.Overlay.rgb, saturate( i.Overlay.a ) );
 		texel *= i.vVertexColor;
 		float3 world = i.vPositionWithOffsetWs + g_vHighPrecisionLightingOffsetWs.xyz;

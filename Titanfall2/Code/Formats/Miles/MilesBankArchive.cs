@@ -15,6 +15,7 @@ sealed class MilesBankArchive
 	readonly string _gameRoot;
 	readonly IReadOnlyDictionary<(ushort Language, ushort Patch), MilesStreamFile> _streams;
 	readonly IReadOnlyList<MilesSoundAsset> _assets;
+	internal MilesSoundEventCatalog Events { get; private set; }
 
 	MilesBankArchive(
 		string gameRoot,
@@ -117,6 +118,7 @@ sealed class MilesBankArchive
 			var assets = selected.Values.OrderBy( static asset => asset.ResourceName, StringComparer.OrdinalIgnoreCase ).ToList();
 			if ( assets.Count == 0 ) throw new InvalidDataException( "The MBNK contains no sources for the installed MSTR language." );
 			archive = new MilesBankArchive( gameRoot, streams, assets, preferredLanguage );
+			archive.Events = new MilesSoundEventCatalog( bank, () => Titanfall2Storage.OpenRead( bankPath ) );
 			return true;
 		}
 		catch ( Exception e )

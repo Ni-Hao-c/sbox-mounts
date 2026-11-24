@@ -36,6 +36,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	Vector2 _swayOffset;
 	Vector2 _swayVelocity;
 	bool _inertiaReady;
+	double _inertiaTime;
 
 	internal bool HasAds => _clips.Contains( AdsIn ) && _clips.Contains( AdsIdle );
 
@@ -146,7 +147,10 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			WorldTransform = posedCamera;
 			return;
 		}
-		var localCamera = WorldTransform.ToLocal( pose.ToWorld( attachment.LocalTransform ) );
+		// World-space bones belong to the native renderer's last evaluated root.
+		// The GameObject may already have moved during this camera setup. Mixing
+		// the two roots feeds our last placement back into the next placement.
+		var localCamera = Renderer.SceneModel.Transform.ToLocal( pose.ToWorld( attachment.LocalTransform ) );
 		WorldTransform = posedCamera.ToWorld( localCamera.ToLocal( global::Transform.Zero ) );
 	}
 
@@ -156,21 +160,28 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		if ( !_inertiaReady )
 		{
 			_lastCameraAngles = currentAngles;
+			_inertiaTime = Time.NowDouble;
 			_inertiaReady = true;
 			return camera;
 		}
 
-		var dt = Math.Clamp( Time.Delta, 0.001f, 0.05f );
-		var dYaw = MathX.DeltaDegrees( currentAngles.yaw, _lastCameraAngles.yaw );
-		var dPitch = MathX.DeltaDegrees( currentAngles.pitch, _lastCameraAngles.pitch );
-		_lastCameraAngles = currentAngles;
+		// Camera composition can run again for another render in the same tick.
+		// Placement must not advance the spring again or depend on render count.
+		if ( _inertiaTime != Time.NowDouble )
+		{
+			_inertiaTime = Time.NowDouble;
+			var dt = Math.Clamp( Time.Delta, 0f, 0.05f );
+			var dYaw = MathX.DeltaDegrees( currentAngles.yaw, _lastCameraAngles.yaw );
+			var dPitch = MathX.DeltaDegrees( currentAngles.pitch, _lastCameraAngles.pitch );
+			_lastCameraAngles = currentAngles;
 
-		_swayOffset.x = Math.Clamp( _swayOffset.x + dYaw * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
-		_swayOffset.y = Math.Clamp( _swayOffset.y + dPitch * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
+			_swayOffset.x = Math.Clamp( _swayOffset.x + dYaw * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
+			_swayOffset.y = Math.Clamp( _swayOffset.y + dPitch * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
 
-		var accel = -InertiaStiffness * _swayOffset - InertiaDamping * _swayVelocity;
-		_swayVelocity += accel * dt;
-		_swayOffset += _swayVelocity * dt;
+			var accel = -InertiaStiffness * _swayOffset - InertiaDamping * _swayVelocity;
+			_swayVelocity += accel * dt;
+			_swayOffset += _swayVelocity * dt;
+		}
 
 		var scale = float.Lerp( 1f, 0.18f, adsBlend );
 		var wallRoll = -Math.Clamp( wallrunSide, -1f, 1f ) * 6.5f * scale;
@@ -263,16 +274,14 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		{
 			case Titanfall2PilotViewData.EventKind.Sound:
 				if ( _owner.IsValid() )
-					Titanfall2GameplayVisuals.PlayViewSound( _owner.MountIdent, evt.Options, WorldPosition );
+					Titanfall2GameplayVisuals.PlayViewSound( Scene, _owner.MountIdent, evt.Options, WorldPosition );
 				break;
 			case Titanfall2PilotViewData.EventKind.MuzzleFlash:
 				SpawnMuzzleFlash();
 				break;
 			case Titanfall2PilotViewData.EventKind.ShellEject:
-				if ( ShellEjectGameObject.IsValid() && (!_owner.IsValid() || !_owner.Projectile.Enabled) )
-				{
-					if ( _owner.IsValid() ) Titanfall2RetailWeaponEffects.Spawn( ShellEjectGameObject, _owner.MountIdent, _owner.Presentation.ShellView, true, 3 );
-				}
+				// Kraber and other projectile guns still eject authored casings.
+				if ( _owner.IsValid() ) Titanfall2RetailWeaponEffects.Shells( this, _owner.MountIdent, _owner.Presentation, true, _aiming, _owner.GameObject );
 				break;
 			case Titanfall2PilotViewData.EventKind.HideClip:
 				SetClipVisible( false );
@@ -286,7 +295,8 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	void SpawnMuzzleFlash()
 	{
 		if ( !MuzzleGameObject.IsValid() || (_owner.IsValid() && _owner.HoldType == "grenade") ) return;
-		if ( _owner.IsValid() ) Titanfall2RetailWeaponEffects.Spawn( MuzzleGameObject, _owner.MountIdent, _owner.Presentation.MuzzleView, true );
+		if ( _owner.IsValid() ) Titanfall2RetailWeaponEffects.MuzzleFlash( this, _owner.MountIdent, _owner.Presentation,
+			true, _aiming, _owner.IsFullyAds );
 	}
 
 	bool HasEvent( string clip, Titanfall2PilotViewData.EventKind kind ) =>

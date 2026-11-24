@@ -20,6 +20,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	TimeUntil _burstStep;
 	TimeUntil _nextProjectileRequest;
 	float _adsBlend;
+	internal bool IsFullyAds => _adsBlend >= 1f;
 
 	public bool IsAiming => !IsProxy && IsHeld && IsActive && !IsReloading && Input.Down( "attack2" )
 		&& ViewModel.IsValid() && ViewModel.GetComponent<Titanfall2PilotViewModel>() is { HasAds: true };
@@ -28,7 +29,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		&& TimeSinceShoot > 0.25f && Owner.IsValid() && Owner.IsOnGround
 		&& Input.Down( "run" ) && Owner.Velocity.WithZ( 0 ).Length > 180f;
 
-	public override Vector2 CurrentSpread => base.CurrentSpread * (SmartLockEnabled && SmartLockProgress >= 1f ? 0f : float.Lerp( 1f, 0.25f, _adsBlend ));
+	public override Vector2 CurrentSpread => SmartLockEnabled && SmartLockProgress >= 1f ? Vector2.Zero
+		: SpreadProfile.Enabled ? RetailSpread( _adsBlend ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, _adsBlend );
 
 	protected override void ModifyCamera( CameraComponent camera, ref CameraView view )
 	{
@@ -48,37 +50,38 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	public override void PrimaryAttack()
 	{
-		if ( Projectile.Enabled )
-		{
-			if ( !IsProxy && IsHeld )
-			{
-				if ( Networking.IsHost ) LaunchProjectile( AimRay.Forward, validateClientAim: false );
-				else RequestProjectile( AimRay.Forward );
-			}
-			return;
-		}
-		FireHitscan();
-		if ( BurstCount <= 1 || !IsHeld || !HasPrimaryAmmo() ) return;
+		FireRound();
+		if ( BurstCount <= 1 || !IsHeld || !HasRoundAmmo() ) return;
 		_burstRemaining = Math.Min( BurstCount - 1, 7 );
 		_burstStep = MathF.Max( PrimaryDelay, 0.01f );
 		SetNextPrimaryFire( (MathF.Max( PrimaryDelay, 0.01f ) * _burstRemaining) + BurstRecovery );
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestProjectile( Vector3 direction ) => LaunchProjectile( direction, validateClientAim: true );
+	void FireRound()
+	{
+		if ( !Projectile.Enabled ) { FireHitscan(); return; }
+		if ( IsProxy || !IsHeld ) return;
+		if ( Networking.IsHost ) LaunchProjectile( AimRay.Forward, _adsBlend, validateClientAim: false );
+		else RequestProjectile( AimRay.Forward, _adsBlend );
+	}
 
-	void LaunchProjectile( Vector3 direction, bool validateClientAim )
+	[Rpc.Host( NetFlags.OwnerOnly )]
+	void RequestProjectile( Vector3 direction, float zoom ) => LaunchProjectile( direction, zoom, validateClientAim: true );
+
+	void LaunchProjectile( Vector3 direction, float zoom, bool validateClientAim )
 	{
 		var owner = Owner;
 		if ( !Networking.IsHost || !Projectile.Enabled || !owner.IsValid() || Inventory?.ActiveItem != this
-			|| IsReloading || _nextProjectileRequest > 0 || !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f ) return;
+			|| IsReloading || _nextProjectileRequest > 0 || !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f
+			|| !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
 		direction = direction.Normal;
 		if ( validateClientAim && Vector3.Dot( owner.EyeTransform.Forward, direction ) < 0.35f ) return;
-		if ( !TakePrimaryAmmo() ) return;
+		if ( !TakePrimaryAmmo( Firing.Cost ) ) return;
 		_nextProjectileRequest = MathF.Max( PrimaryDelay, 0.015f );
+		var spread = SmartLockEnabled && SmartLockProgress >= 1f ? Vector2.Zero
+			: SpreadProfile.Enabled ? RetailSpread( zoom ) : CurrentSpread;
 		TimeSinceShoot = 0;
-		var spread = CurrentSpread;
-		var pellets = Math.Clamp( Ballistics.Pellets, 1, 12 );
+		var pellets = Firing.Count( Ballistics.Pellets );
 		var origin = GetMuzzleTransform().Position;
 		if ( !origin.IsFinite || origin.Distance( owner.EyePosition ) > 96f ) origin = owner.EyePosition;
 		// Keep the real projectile at the visible barrel while preserving camera aim.
@@ -88,18 +91,20 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade );
 		if ( clearance.StartedSolid ) origin = owner.EyePosition;
 		else if ( clearance.Hit ) origin = clearance.EndPosition + clearance.Normal * 0.1f;
+		// Scripted bolt offsets share one attack direction; independent aim cones
+		// per bolt destroy the Double Take/Mastiff pattern.
+		var patternDirection = Firing.HasPattern ? direction.WithAimCone( spread.x, spread.y ) : direction;
 		for ( var i = 0; i < pellets; i++ )
 		{
-			// Double Take uses a horizontal three-projectile pattern rather than independent random pellets.
-			var bearing = direction.WithAimCone( spread.x, spread.y );
-			if ( pellets > 1 ) bearing = Rotation.FromYaw( (i - (pellets - 1) * 0.5f) * 0.65f ) * bearing;
+			var bearing = Firing.HasPattern ? Firing.Bearing( patternDirection, i, zoom ) : direction.WithAimCone( spread.x, spread.y );
 			var target = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( new Ray( owner.EyePosition, bearing ), Ballistics.Range )
 				.IgnoreGameObjectHierarchy( owner.GameObject ).IgnoreGameObjectHierarchy( GameObject )
 				.WithoutTags( "trigger", "projectile" ).UseHitboxes(), Titanfall2TraceMask.Grenade ).EndPosition;
 			var flightDirection = (target - origin).LengthSquared > 1f ? (target - origin).Normal : bearing;
-			Titanfall2Projectile.Launch( Scene, new Ray( origin, flightDirection ), Projectile,
+			Titanfall2Projectile.Launch( Scene, new Ray( origin, flightDirection ), Firing.Flight( Projectile, zoom, i ),
 				Ballistics.Damage, TitanDamage, owner.GameObject, GameObject, owner.GameObject, DamageProfile );
 		}
+		RecordSpreadShot( zoom );
 		PlayProjectileFire();
 	}
 
@@ -110,16 +115,16 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	{
 		UpdateSmartLock();
 		if ( _burstRemaining == 0 ) return;
-		if ( !IsHeld || !HasPrimaryAmmo() || IsReloading || Input.Pressed( "reload" ) )
+		if ( !IsHeld || !HasRoundAmmo() || IsReloading || Input.Pressed( "reload" ) )
 		{
 			_burstRemaining = 0;
 			return;
 		}
 		if ( _burstStep > 0 ) return;
-		FireHitscan();
+		FireRound();
 		_burstRemaining--;
 		_burstStep = MathF.Max( PrimaryDelay, 0.01f );
-		if ( _burstRemaining == 0 || !HasPrimaryAmmo() )
+		if ( _burstRemaining == 0 || !HasRoundAmmo() )
 		{
 			_burstRemaining = 0;
 			SetNextPrimaryFire( MathF.Max( PrimaryDelay, BurstRecovery ) );
@@ -164,7 +169,10 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		if ( stored != _inInventory ) UpdatePickup( stored );
 		base.OnUpdate();
 		if ( IsReloading || !IsActive ) GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
+		else if ( !IsProxy && Owner is { UseInputControls: true } && _burstRemaining == 0 && !Input.Down( "attack1" ) )
+			GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		UpdatePilotViewState();
+		UpdateScopePresentation();
 	}
 
 	float _wallrunSide;
@@ -188,7 +196,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		var sprinting = IsSprinting;
 		var oneHanded = MathF.Abs( _wallrunSide ) > 0.1f;
 		var rate = aiming ? 9f : 11f;
-		_adsBlend = Math.Clamp( _adsBlend + (aiming ? 1f : -1f) * rate * Time.Delta, 0f, 1f );
+		_adsBlend = SpreadProfile.Enabled ? SpreadProfile.AdvanceZoom( _adsBlend, aiming, Time.Delta )
+			: Math.Clamp( _adsBlend + (aiming ? 1f : -1f) * rate * Time.Delta, 0f, 1f );
 		if ( ViewModel.GetComponent<Titanfall2PilotViewModel>() is { } pilotView )
 			pilotView.SetLocomotionState( aiming, sprinting, oneHanded );
 	}
@@ -304,6 +313,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void DestroyViewModel()
 	{
+		DestroyScopePresentation();
 		base.DestroyViewModel();
 		_viewArms = null;
 		_armSourceModel = null;
@@ -409,16 +419,16 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		if ( !Projectile.Enabled && (shot.Hit || shot.HitPosition != default) && WeaponModel?.MuzzleGameObject is { } port )
 			Titanfall2RetailWeaponEffects.Spawn( port, MountIdent, isLocalFirstPerson && !string.IsNullOrWhiteSpace( Presentation.TracerView ) ? Presentation.TracerView : Presentation.TracerWorld, false, 0.5f, shot.HitPosition );
 		if ( shot.NoEvents ) return;
-		GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, Audio, isLocalFirstPerson, GetMuzzleTransform().Position, PrimaryDelay );
+		GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, Audio, isLocalFirstPerson,
+			GetMuzzleTransform().Position, PrimaryDelay, ammoPercent: ClipMaxSize > 0 ? Clip1 * 100f / ClipMaxSize : 100 );
 
 		// The pilot rig emits the first-person burst through its animation event or fallback.
 		if ( HoldType != "grenade" && WeaponModel is { } shown
 			&& shown is not Titanfall2PilotViewModel
 			&& shown.MuzzleGameObject is { } muzzle && muzzle.IsValid() )
 		{
-			Titanfall2RetailWeaponEffects.Spawn( muzzle, MountIdent, isLocalFirstPerson ? Presentation.MuzzleView : Presentation.MuzzleWorld, isLocalFirstPerson );
-			if ( shown.ShellEjectGameObject is { } shell && shell.IsValid() )
-				Titanfall2RetailWeaponEffects.Spawn( shell, MountIdent, isLocalFirstPerson ? Presentation.ShellView : Presentation.ShellWorld, isLocalFirstPerson, 3 );
+			Titanfall2RetailWeaponEffects.MuzzleFlash( shown, MountIdent, Presentation, isLocalFirstPerson, fullyAds: IsFullyAds );
+			Titanfall2RetailWeaponEffects.Shells( shown, MountIdent, Presentation, isLocalFirstPerson, soundOwner: GameObject );
 		}
 	}
 }
@@ -462,23 +472,15 @@ static class Titanfall2GameplayVisuals
 		return visual;
 	}
 
-	internal static void PlayFireSound( string mountIdent, string name, Vector3 position )
+	internal static void PlayFireSound( Scene scene, string mountIdent, string name, Vector3 position )
 	{
 		if ( Application.IsDedicatedServer || Application.IsHeadless || string.IsNullOrWhiteSpace( name ) || string.IsNullOrWhiteSpace( mountIdent ) ) return;
-		if ( Sandbox.Mounting.Directory.Get( mountIdent ) is not Titanfall2Mount mount || !mount.TryGetSoundFile( name, false, out var sound, out _ ) ) return;
-		var handle = Sound.PlayFile( sound, 0.65f, 1, 0, 0 );
-		if ( handle.IsValid() ) handle.Position = position;
+		Titanfall2SoundEventEmitter.OneShot( scene, mountIdent, name, position );
 	}
 
-	internal static void PlayViewSound( string mountIdent, string name, Vector3 position, float volume = 0.55f )
+	internal static void PlayViewSound( Scene scene, string mountIdent, string name, Vector3 position )
 	{
 		if ( Application.IsDedicatedServer || Application.IsHeadless || string.IsNullOrWhiteSpace( name ) || string.IsNullOrWhiteSpace( mountIdent ) ) return;
-		if ( Sandbox.Mounting.Directory.Get( mountIdent ) is not Titanfall2Mount mount || !mount.TryGetWeaponAnimationSound( name, out var sound ) ) return;
-		var handle = Sound.PlayFile( sound, volume, 1, 0, 0 );
-		if ( handle.IsValid() )
-		{
-			handle.ListenLocal = true;
-			handle.Position = position;
-		}
+		Titanfall2SoundEventEmitter.OneShot( scene, mountIdent, name, position, firstPerson: true );
 	}
 }

@@ -154,7 +154,7 @@ public partial class Titanfall2Mount : BaseGameMount
 		_combatTables.Clear();
 		_weaponAudio.Clear();
 		_ordnanceSoundSamples.Clear();
-		_weaponAnimationSounds.Clear();
+		_missingWeaponEvents.Clear();
 		_combatDecals.Clear();
 		_surfaceCatalog = null;
 		Titanfall2GraphicsSettings.Disconnect();
@@ -241,7 +241,7 @@ public partial class Titanfall2Mount : BaseGameMount
 	/// entries, so both the BCF bank (<c>sound/&lt;name&gt;</c>) and loose <c>.wav</c> entries
 	/// are searched. Files are cached per loop flag because looping is baked into the sound file.
 	/// </summary>
-	internal bool TryGetSoundFile( string soundName, bool loop, out SoundFile soundFile, out string error )
+	internal bool TryGetSoundFile( string soundName, bool loop, out SoundFile soundFile, out string error, bool exact = false )
 	{
 		soundFile = null;
 		error = null;
@@ -255,7 +255,9 @@ public partial class Titanfall2Mount : BaseGameMount
 			}
 
 			var key = NormalizeSoundKey( soundName );
-			var cacheKey = loop ? key + "|loop" : key;
+			// Exact gameplay leaves must never reuse a map resolver's fuzzy result
+			// (or its failure backoff), even when the requested name is identical.
+			var cacheKey = (exact ? "exact|" : "") + key + (loop ? "|loop" : "");
 			lock ( _soundCacheLock )
 			{
 				if ( _soundFileCache.TryGetValue( cacheKey, out soundFile ) ) return true;
@@ -270,7 +272,7 @@ public partial class Titanfall2Mount : BaseGameMount
 				}
 			}
 
-			var created = LoadSoundFile( key, loop, out error );
+			var created = LoadSoundFile( key, loop, exact, out error );
 			lock ( _soundCacheLock )
 			{
 				if ( created is not null )
@@ -293,9 +295,13 @@ public partial class Titanfall2Mount : BaseGameMount
 		}
 	}
 
-	SoundFile LoadSoundFile( string key, bool loop, out string error )
+	SoundFile LoadSoundFile( string key, bool loop, bool exact, out string error )
 	{
 		error = null;
+		// SoundFile also caches globally by filename, normalizing WAV/PCM names
+		// to .vsnd. Distinct mount dictionaries alone cannot isolate lookup mode
+		// or baked loop flags; pass that identity through to the engine cache.
+		var nativeName = $"titanfall2/{_contentFingerprint ?? "unversioned"}/{(exact ? "exact" : "map")}/{(loop ? "loop" : "oneshot")}/{key}.vsnd";
 
 		var started = System.Diagnostics.Stopwatch.GetTimestamp();
 		// The out argument has to be declared up front: the compiler cannot prove it is assigned
@@ -308,11 +314,13 @@ public partial class Titanfall2Mount : BaseGameMount
 		{
 			var replacementSource = _contentSnapshot.GetSource( replacement.Path );
 			if ( !replacementSource.TryReadAllBytes( out var wav, out error ) ) return null;
-			var replacementSound = SoundFile.FromWav( key + ".wav", wav, new SoundFile.LoadOptions { Loop = loop } );
+			var replacementSound = SoundFile.FromWav( nativeName, wav, new SoundFile.LoadOptions { Loop = loop } );
 			if ( replacementSound is null ) error = "Mod SoundFile.FromWav returned null";
 			return replacementSound;
 		}
-		var inBank = _milesArchive is not null && TryFindMilesAsset( key, out asset );
+		var inBank = _milesArchive is not null && (exact
+			? _milesSoundAssets.TryGetValue( key, out asset )
+			: TryFindMilesAsset( key, out asset ));
 		_soundLookupTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
 		if ( inBank )
 		{
@@ -335,7 +343,7 @@ public partial class Titanfall2Mount : BaseGameMount
 				else
 				{
 					started = System.Diagnostics.Stopwatch.GetTimestamp();
-					var sound = SoundFile.FromPcm( key, pcm, new SoundFile.PcmOptions
+					var sound = SoundFile.FromPcm( nativeName, pcm, new SoundFile.PcmOptions
 					{
 						Channels = channels,
 						Rate = rate,
@@ -362,7 +370,7 @@ public partial class Titanfall2Mount : BaseGameMount
 			}
 			else
 			{
-				var sound = SoundFile.FromWav( key + ".wav", data, new SoundFile.LoadOptions { Loop = loop } );
+				var sound = SoundFile.FromWav( nativeName, data, new SoundFile.LoadOptions { Loop = loop } );
 				if ( sound is not null ) return sound;
 				error = "SoundFile.FromWav returned null";
 			}

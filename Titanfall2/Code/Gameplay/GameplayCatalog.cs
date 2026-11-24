@@ -229,6 +229,8 @@ public partial class Titanfall2Mount
 				gun.Damage = data.Damage;
 				gun.TitanDamage = data.TitanDamage;
 				gun.DamageProfile = data.DamageProfile;
+				gun.Firing = data.Firing;
+				gun.SpreadProfile = data.SpreadProfile;
 				gun.Interval = 1 / data.ShotsPerSecond;
 				gun.Magazine = data.Magazine;
 				gun.ReloadSeconds = data.ReloadSeconds;
@@ -278,13 +280,15 @@ public partial class Titanfall2Mount
 					gun.PrimaryAutomatic = data.Automatic;
 					gun.PrimaryDelay = 1 / data.ShotsPerSecond;
 					gun.ClipMaxSize = data.Magazine;
+					gun.Firing = data.Firing;
+					gun.SpreadProfile = data.SpreadProfile;
 					gun.ReloadTime = data.ReloadSeconds;
 					gun.Projectile = data.Projectile with { ModelPath = Mounted( data.Projectile.ModelPath ), MountIdent = Host.Ident };
 					gun.TitanDamage = data.TitanDamage;
 					gun.DamageProfile = data.DamageProfile;
 					gun.BurstCount = data.BurstCount;
 					gun.BurstRecovery = data.BurstDelay;
-					gun.Ballistics = new() { Damage = data.Damage, Pellets = data.Pellets, Range = data.Range, SpreadBase = new Vector2( data.Spread, data.Spread ) };
+					gun.Ballistics = new() { Damage = data.Damage, Pellets = data.Pellets, Range = data.Range, SpreadBase = new Vector2( data.Spread, data.Spread ), SpreadGrowth = Vector2.Zero };
 					var visual = new GameObject( root, true, "Dropped weapon model" );
 					gun.DroppedModel = visual.AddComponent<SkinnedModelRenderer>();
 					gun.DroppedModel.UseAnimGraph = false;
@@ -369,7 +373,9 @@ public partial class Titanfall2Mount
 						npc.TitanShotDamage = data.TitanDamage;
 						npc.DamageProfile = data.DamageProfile;
 						npc.ShotPellets = data.Pellets;
-						npc.ShotSpread = MathF.Max( 0.5f, data.Spread );
+						npc.Firing = data.Firing;
+						npc.SpreadProfile = data.SpreadProfile;
+						npc.ShotSpread = data.Spread;
 						npc.MagazineSize = data.Magazine;
 						npc.ReloadSeconds = data.ReloadSeconds;
 						if ( definition.Titan )
@@ -384,7 +390,7 @@ public partial class Titanfall2Mount
 						npc.DetectionRange = 4200;
 						npc.AttackRange = 2400;
 					}
-					if ( definition.Role == Titanfall2Npc.FrontierRole.EliteMonarch ) npc.ShotSpread *= 0.3f;
+					if ( definition.Role == Titanfall2Npc.FrontierRole.EliteMonarch ) { npc.ShotSpread *= 0.3f; npc.ShotSpreadScale = 0.3f; }
 					if ( definition.Navigation == Titanfall2Npc.Navigation.Ground && definition.Speed > 0 )
 					{
 						npc.Agent = root.AddComponent<NavMeshAgent>();

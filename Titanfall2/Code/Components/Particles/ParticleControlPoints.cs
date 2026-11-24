@@ -60,27 +60,35 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 	ParticleFloat _trailTime;
 	float _textureAspect = 1f;
 	int _pathCount;
+	int _birthCount;
 	int _nextParticle;
 	float _sizeFadeStart;
 	float _sizeFadeEnd;
 	bool _sizeFade;
+	float _collectionStart;
 	readonly Dictionary<Particle, float> _pathFractions = [];
 	readonly Dictionary<Particle, (float Radius, float Alpha)> _initialValues = [];
 	readonly Dictionary<Particle, (float In, float Out)> _randomFades = [];
 	readonly Dictionary<Particle, float[]> _scalarInitialValues = [];
 	readonly Dictionary<Particle, OscillationState[]> _oscillations = [];
+	readonly Dictionary<Particle, Transform> _lockTransforms = [];
+	Transform _currentLockTransform;
+	bool _lockTransformReady;
+	readonly Dictionary<Particle, Vector3> _randomWeights = [];
+	readonly Dictionary<Particle, int> _birthIndices = [];
 
 	readonly record struct OscillationState( float Lifespan, Vector3 Rate, Vector3 Frequency, float Start, float End );
 
 	internal void Configure( Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints points,
 		ParticleFloat trailTime, float textureAspect = 1f )
 	{
+		if ( _definition is null ) _collectionStart = Time.Now;
 		_definition = definition;
 		_points = points;
 		_trailTime = trailTime;
 		_textureAspect = MathF.Max( 0.001f, textureAspect );
-		_pathCount = Math.Max( 2, definition.Path is { UseParticleCount: true }
-			? Titanfall2ParticleFactory.GetBurstCount( definition, points ) : definition.Path?.Count ?? 2 );
+		_birthCount = Math.Max( 1, Titanfall2ParticleFactory.GetBurstCount( definition, points ) );
+		_pathCount = Math.Max( 2, definition.Path is { UseParticleCount: true } ? _birthCount : definition.Path?.Count ?? 2 );
 	}
 
 	internal void ConfigureSizeFade( float start, float end )
@@ -97,9 +105,25 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 
 	protected override void OnParticleCreated( Particle particle )
 	{
+		if ( _definition is { } movement )
+		{
+			if ( movement.LocalVelocity ) particle.Velocity = WorldRotation * particle.Velocity;
+			if ( movement.LockControlPoint >= 0 )
+			{
+				_lockTransforms[particle] = LockTransform();
+				_lockTransformReady = false;
+			}
+			if ( movement.RadiusExponent != 1f || movement.AlphaExponent != 1f || movement.TrailExponent != 1f )
+				_randomWeights[particle] = new Vector3( MathF.Pow( Random.Shared.Float(), movement.RadiusExponent ),
+					MathF.Pow( Random.Shared.Float(), movement.AlphaExponent ), MathF.Pow( Random.Shared.Float(), movement.TrailExponent ) );
+		}
 		if ( _definition?.DistanceRemaps.Any( remap => remap.ScaleInitialRange ) == true || _definition?.ScalarRemaps.Any( remap => remap.ScaleInitial ) == true )
-			_initialValues[particle] = (particle.StartScale * ParticleEffect.Scale.Evaluate( particle, 6211 ),
-				ParticleEffect.Alpha.Evaluate( particle, 8525 ));
+		{
+			var weighted = _randomWeights.TryGetValue( particle, out var initialWeights );
+			_initialValues[particle] = (particle.StartScale * (weighted && _definition.RadiusExponent != 1f
+				? ParticleEffect.Scale.Evaluate( 0f, initialWeights.x ) : ParticleEffect.Scale.Evaluate( particle, 6211 )),
+				weighted && _definition.AlphaExponent != 1f ? ParticleEffect.Alpha.Evaluate( 0f, initialWeights.y ) : ParticleEffect.Alpha.Evaluate( particle, 8525 ));
+		}
 		if ( _definition is { } fadeDefinition && (fadeDefinition.RandomFadeIn.HasValue || fadeDefinition.RandomFadeOut.HasValue) )
 		{
 			float Duration( ParticleRandomFadeDefinition? fade ) => fade is { } f ? MathF.Max( 0f,
@@ -107,7 +131,7 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 			_randomFades[particle] = (Duration( fadeDefinition.RandomFadeIn ), Duration( fadeDefinition.RandomFadeOut ));
 		}
 		if ( _definition?.ScalarRemaps.Any( remap => remap.InitialOnly ) == true )
-			_scalarInitialValues[particle] = _definition.ScalarRemaps.Select( remap => remap.InitialOnly ? EvaluateScalarRemap( remap ) : float.NaN ).ToArray();
+			_scalarInitialValues[particle] = _definition.ScalarRemaps.Select( remap => remap.InitialOnly ? EvaluateScalarRemap( remap, particle ) : float.NaN ).ToArray();
 		if ( _definition is { Oscillations.Count: > 0 } oscillating )
 		{
 			// End-cap-only decay keeps particles past their PCF lifespan, so keep
@@ -118,6 +142,7 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 				RandomRange( oscillation.StartMin, oscillation.StartMax ), RandomRange( oscillation.EndMin, oscillation.EndMax ) ) ).ToArray();
 		}
 		var index = _nextParticle++;
+		if ( _definition?.CountRemaps.Count > 0 ) _birthIndices[particle] = index;
 		if ( _definition is { } definition && (definition.PositionWarpMinimum != Vector3.One
 			|| definition.PositionWarpMaximum != Vector3.One) )
 		{
@@ -166,6 +191,9 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 		_randomFades.Remove( particle );
 		_scalarInitialValues.Remove( particle );
 		_oscillations.Remove( particle );
+		_lockTransforms.Remove( particle );
+		_randomWeights.Remove( particle );
+		_birthIndices.Remove( particle );
 	}
 
 	protected override void OnAfterStep( float delta )
@@ -174,14 +202,31 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 		if ( _definition.PlayerControlPoint >= 0 && Scene.Camera.IsValid() )
 			_points.SetControlPoint( _definition.PlayerControlPoint, Scene.Camera.WorldPosition );
 		var visibility = GetVisibility();
+		var hasLocks = UpdateControlPointLock();
+		var isTrail = (_definition.Renderer & Titanfall2ParticleRenderer.Trail) != 0;
 		foreach ( var particle in ParticleEffect.Particles )
 		{
+			if ( hasLocks ) ApplyControlPointLock( particle );
+			var trailSeconds = isTrail ? MathF.Max( 0f, _randomWeights.TryGetValue( particle, out var trailWeights ) && _definition.TrailExponent != 1f
+				? _trailTime.Evaluate( particle.LifeDelta, trailWeights.z ) : _trailTime.Evaluate( particle, 9145 ) ) : 0f;
+			if ( _randomWeights.TryGetValue( particle, out var weights ) )
+			{
+				if ( _definition.RadiusExponent != 1f ) particle.Size = particle.StartScale * ParticleEffect.Scale.Evaluate( particle.LifeDelta, weights.x );
+				if ( _definition.AlphaExponent != 1f ) particle.Alpha = ParticleEffect.Alpha.Evaluate( particle.LifeDelta, weights.y );
+			}
 			for ( var remapIndex = 0; remapIndex < _definition.ScalarRemaps.Count; ++remapIndex )
 			{
 				var remap = _definition.ScalarRemaps[remapIndex];
-				var value = remap.InitialOnly && _scalarInitialValues.TryGetValue( particle, out var values ) ? values[remapIndex] : EvaluateScalarRemap( remap );
+				var value = remap.InitialOnly && _scalarInitialValues.TryGetValue( particle, out var values ) ? values[remapIndex] : EvaluateScalarRemap( remap, particle );
 				if ( !float.IsFinite( value ) ) continue;
-				if ( remap.ScaleInitial && _initialValues.TryGetValue( particle, out var initial ) ) value *= remap.Field == 3 ? initial.Radius : initial.Alpha;
+				if ( remap.Field == 10 )
+				{
+					trailSeconds = MathF.Max( 0f, remap.ScaleInitial ? trailSeconds * value : value );
+					continue;
+				}
+				// Alpha2's initial value is one; normal alpha is multiplied below.
+				if ( remap.ScaleInitial && !(remap.InputAttribute >= 0 && remap.Field == 16)
+					&& _initialValues.TryGetValue( particle, out var initial ) ) value *= remap.Field == 3 ? initial.Radius : initial.Alpha;
 				if ( remap.Field == 3 ) particle.Size = Math.Clamp( value, 0f, Titanfall2ParticleFactory.GetRadiusLimit( _definition ) );
 				else if ( remap.Field == 7 ) particle.Alpha = value;
 				else if ( remap.Field == 16 ) particle.Alpha *= value;
@@ -226,6 +271,16 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 				if ( fade.In > 0f ) particle.Alpha *= Math.Clamp( fadeInAge / fade.In, 0f, 1f );
 				if ( fade.Out > 0f ) particle.Alpha *= Math.Clamp( remaining / fade.Out, 0f, 1f );
 			}
+			if ( _birthIndices.TryGetValue( particle, out var birthIndex ) )
+			{
+				foreach ( var remap in _definition.CountRemaps )
+				{
+					var value = EvaluateCountRemap( remap, birthIndex, _birthCount );
+					if ( !float.IsFinite( value ) ) continue;
+					if ( remap.Field is 7 or 16 ) particle.Alpha = remap.ScaleInitial ? particle.Alpha * value : value;
+					else if ( remap.Field == 3 ) particle.Size = remap.ScaleInitial ? particle.Size * value : new Vector3( value );
+				}
+			}
 			particle.Alpha *= visibility;
 			if ( _sizeFade && Scene.Camera.IsValid() )
 			{
@@ -235,7 +290,7 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 				particle.Color = new Color( particle.Color.r * screenFade, particle.Color.g * screenFade, particle.Color.b * screenFade, particle.Color.a );
 				particle.Alpha *= screenFade;
 			}
-			if ( (_definition.Renderer & Titanfall2ParticleRenderer.Trail) == 0 )
+			if ( !isTrail )
 			{
 				// Source orientation 2 is a world-Z-aligned card, not an upright
 				// camera-facing billboard. Preserve roll/yaw in the card's local
@@ -244,15 +299,73 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 					particle.Angles = (Rotation.FromPitch( 90f ) * particle.Angles.ToRotation()).Angles();
 				continue;
 			}
-			var seconds = MathF.Max( 0f, _trailTime.Evaluate( particle, 9145 ) );
-			var length = Math.Clamp( particle.Velocity.Length * seconds,
-				_definition.TrailRenderMinimum, _definition.TrailRenderMaximum );
+			// Retail C_OP_RenderSpritesTrail (client 0x1806CE590) fades the
+			// unbounded length, then clamps it. Fading after the clamp breaks the
+			// Volt's fixed 60-unit core into a detached card in front of the muzzle.
+			var length = particle.Velocity.Length * trailSeconds * (_definition.TrailIgnoreDeltaTime ? MathF.Max( 0, delta ) : 1f);
 			if ( _definition.TrailFadeInTime > 0f ) length *= Math.Clamp( particle.Age / _definition.TrailFadeInTime, 0f, 1f );
+			length = Math.Clamp( length, _definition.TrailRenderMinimum, _definition.TrailRenderMaximum );
 			var radius = particle.Size.x;
-			if ( _definition.ConstrainRadiusToTrail ) radius = MathF.Min( radius, length * 0.5f );
-			particle.Size = new Vector3( 2f * radius / _textureAspect, length, particle.Size.z );
+			// Unlike render_animated_sprites, retail sprite trails use the radius
+			// attribute as the full ribbon width (vertices are offset by +/- 0.5).
+			if ( _definition.ConstrainRadiusToTrail ) radius = MathF.Min( radius, length );
+			particle.Size = new Vector3( radius / _textureAspect, length, particle.Size.z );
 			particle.Angles = Angles.Zero;
 		}
+	}
+
+	// Viewmodel placement follows simulation. Locked flashes also need the
+	// final camera pose, rather than the previous pose of the animated POV root.
+	protected override void OnPreRender() => RefreshControlPointLocks();
+
+	internal void RefreshControlPointLocks()
+	{
+		if ( !ParticleEffect.IsValid() || !UpdateControlPointLock() ) return;
+		foreach ( var particle in ParticleEffect.Particles ) ApplyControlPointLock( particle );
+	}
+
+	bool UpdateControlPointLock()
+	{
+		if ( _lockTransforms.Count == 0 ) return false;
+		var current = LockTransform();
+		// All existing particles were brought to this transform on the previous
+		// pass; new particles record their own current transform at birth. Exact
+		// equality preserves even sub-epsilon camera movement across frames.
+		if ( _lockTransformReady && current.Equals( _currentLockTransform ) ) return false;
+		_currentLockTransform = current;
+		_lockTransformReady = true;
+		return true;
+	}
+
+	[System.Runtime.CompilerServices.MethodImpl( System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining )]
+	void ApplyControlPointLock( Particle particle )
+	{
+		if ( !_lockTransforms.TryGetValue( particle, out var previous ) ) return;
+		var current = _currentLockTransform;
+		var factor = _definition.LockDistanceFade > 0f
+			? Math.Clamp( 1f - particle.Position.Distance( previous.Position ) / _definition.LockDistanceFade, 0f, 1f ) : 1f;
+		// LockTransform is rigid (unit scale). Compose its rotations once rather
+		// than doing two point rotations and recomputing the inverse for velocity.
+		var rotation = _definition.LockRotation ? current.Rotation * previous.Rotation.Inverse : Rotation.Identity;
+		var position = _definition.LockRotation
+			? current.Position + rotation * (particle.Position - previous.Position)
+			: particle.Position + current.Position - previous.Position;
+		particle.Position = factor >= 1f ? position : Vector3.Lerp( particle.Position, position, factor );
+		if ( _definition.LockRotation )
+			particle.Velocity = factor >= 1f ? rotation * particle.Velocity : Vector3.Lerp( particle.Velocity, rotation * particle.Velocity, factor );
+		_lockTransforms[particle] = current;
+	}
+
+	Transform LockTransform() => new( _points.IsValid() ? _points.GetControlPoint( _definition.LockControlPoint ) : WorldPosition, WorldRotation );
+
+	// Retail C_INIT_RemapParticleCountToScalar (client 0x180703C60) scales the
+	// existing value. Reversed ranges address the final knot; the two initializers
+	// combine, so a short tracer's muzzle and hit endpoints both become transparent.
+	internal static float EvaluateCountRemap( ParticleCountRemapDefinition remap, int index, int count )
+	{
+		var input = remap.FromEnd ? count - 1 - index : index;
+		if ( remap.OnlyWithinRange && (input < remap.InputMin || input > remap.InputMax) ) return float.NaN;
+		return Remap( input, remap.InputMin, remap.InputMax, remap.OutputMin, remap.OutputMax );
 	}
 
 	/// <summary>
@@ -283,8 +396,10 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 	static float RandomRange( float a, float b ) => Random.Shared.Float( MathF.Min( a, b ), MathF.Max( a, b ) );
 	static Vector3 RandomVector( Vector3 a, Vector3 b ) => new( RandomRange( a.x, b.x ), RandomRange( a.y, b.y ), RandomRange( a.z, b.z ) );
 
-	float EvaluateScalarRemap( ParticleControlScalarDefinition remap )
+	float EvaluateScalarRemap( ParticleControlScalarDefinition remap, Particle particle )
 	{
+		if ( remap.InputAttribute == 8 )
+			return Remap( particle.BornTime - _collectionStart, remap.InputMin, remap.InputMax, remap.OutputMin, remap.OutputMax );
 		if ( !_points.IsValid() || !_points.TryGetControlPoint( remap.ControlPoint, out var point ) ) return float.NaN;
 		float input;
 		if ( remap.EndPoint >= 0 )
@@ -323,6 +438,10 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 		_randomFades.Clear();
 		_scalarInitialValues.Clear();
 		_oscillations.Clear();
+		_lockTransforms.Clear();
+		_lockTransformReady = false;
+		_randomWeights.Clear();
+		_birthIndices.Clear();
 		_nextParticle = 0;
 	}
 }

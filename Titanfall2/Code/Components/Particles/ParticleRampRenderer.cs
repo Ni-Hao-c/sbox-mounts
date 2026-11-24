@@ -9,6 +9,8 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 {
 	[Property, Hide] public ParticleSpriteRenderer Source { get; set; }
 	[Property, Hide] public Texture ColorRamp { get; set; }
+	[Property, Hide] public bool TextureColorFromAlpha { get; set; }
+	[Property, Hide] public bool WorldSpaceTrail { get; set; }
 	readonly object _sync = new();
 	readonly List<Item> _items = [];
 	readonly Dictionary<Particle, Vector3> _lastVelocity = [];
@@ -26,17 +28,19 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 	readonly record struct Item( Vector3 Position, Vector3 Size, Vector3 Velocity, Angles Angles,
 		Color Tint, Color Overlay, float Alpha, int Sequence, float SequenceTime );
 
-	internal void Configure( ParticleSpriteRenderer source, Texture ramp )
+	internal void Configure( ParticleSpriteRenderer source, Texture ramp, bool textureColorFromAlpha = false, bool worldSpaceTrail = false )
 	{
 		Source = source;
 		ColorRamp = ramp;
+		TextureColorFromAlpha = textureColorFromAlpha;
+		WorldSpaceTrail = worldSpaceTrail;
 		source.Enabled = false;
 		EnsureObject();
 	}
 
 	void EnsureObject()
 	{
-		if ( _object.IsValid() || !Source.IsValid() || ColorRamp is null || Scene?.SceneWorld is null ) return;
+		if ( _object.IsValid() || !Source.IsValid() || Scene?.SceneWorld is null ) return;
 		_material ??= Material.FromShader( "shaders/titanfall2_particle_ramp.shader" );
 		_compare ??= ( a, b ) => b.Position.DistanceSquared( _sortOrigin ).CompareTo( a.Position.DistanceSquared( _sortOrigin ) );
 		_object = new SceneCustomObject( Scene.SceneWorld ) { RenderOverride = Render };
@@ -50,14 +54,19 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 
 	protected override void OnAfterStep( float delta )
 	{
+		_animation.PlaybackSpeed = Source.IsValid() ? Source.PlaybackSpeed : 1f;
+		_animation.TryAdvanceFrame( Source.IsValid() ? Source.CurrentAnimation : null, delta );
+	}
+
+	protected override void OnPreRender()
+	{
+		GetComponent<Titanfall2ParticleGeometry>()?.RefreshControlPointLocks();
 		EnsureObject();
 		if ( !_object.IsValid() || !Source.IsValid() || !ParticleEffect.IsValid() ) return;
 		Source.RenderOptions.Apply( _object );
 		lock ( _sync )
 		{
 			var animation = Source.CurrentAnimation;
-			_animation.PlaybackSpeed = Source.PlaybackSpeed;
-			_animation.TryAdvanceFrame( animation, delta );
 			_texture = animation?.Frames.ElementAtOrDefault( _animation.CurrentFrameIndex )?.Texture;
 			_items.Clear();
 			if ( _texture is null || !_texture.IsValid || _texture.IsError ) { _object.RenderingEnabled = false; return; }
@@ -104,7 +113,17 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 			foreach ( var p in _items )
 			{
 				var right = camera.Right; var up = camera.Up;
-				if ( Source.Alignment == ParticleSpriteRenderer.BillboardAlignment.RotateToCamera )
+				if ( WorldSpaceTrail )
+				{
+					// Retail C_OP_RenderSpritesTrail (client 0x1806CE590) extends
+					// along previous-position minus position, with a camera-facing
+					// cross product for width. Screen-plane FaceVelocity loses depth
+					// foreshortening and turns receding rockets into radial streaks.
+					up = p.Velocity.Normal;
+					right = Vector3.Cross( up, p.Position - Graphics.CameraPosition ).Normal;
+					if ( up.LengthSquared < .5f || right.LengthSquared < .5f ) continue;
+				}
+				else if ( Source.Alignment == ParticleSpriteRenderer.BillboardAlignment.RotateToCamera )
 				{
 					up = Vector3.Up;
 					var forward = camera.Forward.WithZ( 0 );
@@ -116,7 +135,7 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 					if ( Source.Alignment == ParticleSpriteRenderer.BillboardAlignment.Object ) rotation = _rotation * rotation;
 					right = rotation.Left; up = rotation.Up;
 				}
-				if ( Source.Alignment is ParticleSpriteRenderer.BillboardAlignment.LookAtCamera or ParticleSpriteRenderer.BillboardAlignment.RotateToCamera )
+				if ( !WorldSpaceTrail && Source.Alignment is ParticleSpriteRenderer.BillboardAlignment.LookAtCamera or ParticleSpriteRenderer.BillboardAlignment.RotateToCamera )
 				{
 					var angle = -p.Angles.roll * MathF.PI / 180;
 					if ( Source.FaceVelocity && p.Velocity.LengthSquared > 0.001f )
@@ -132,7 +151,11 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 					Normal = new Vector3( p.Tint.r, p.Tint.g, p.Tint.b ),
 					Tangent = new Vector4( p.Overlay.r, p.Overlay.g, p.Overlay.b, p.Overlay.a ),
 					Color = Color.White,
-					TexCoord0 = new Vector4( x, y, p.Sequence, p.SequenceTime ),
+					// Retail trail head: +width=(u0,v1), -width=(u1,v1);
+					// tail: -width=(u1,v0), +width=(u0,v0). The ordinary
+					// sprite UV order flips the flame, putting its bright base at
+					// the outward-moving tip (client C_OP_RenderSpritesTrail).
+					TexCoord0 = new Vector4( WorldSpaceTrail ? 1f - x : x, WorldSpaceTrail ? 1f - y : y, p.Sequence, p.SequenceTime ),
 					TexCoord1 = new Vector4( p.Alpha, 0, 0, 0 )
 				};
 				var a = Corner( 0, 0 ); var b = Corner( 1, 0 ); var c = Corner( 1, 1 ); var d = Corner( 0, 1 );
@@ -140,7 +163,9 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 				_vertices.Add( a ); _vertices.Add( c ); _vertices.Add( d );
 			}
 			var attributes = sceneObject.Attributes;
-			attributes.Set( "T2ParticleTexture", _texture ); attributes.Set( "T2ParticleRamp", ColorRamp );
+			attributes.Set( "T2ParticleTexture", _texture ); attributes.Set( "T2ParticleRamp", ColorRamp ?? _texture );
+			attributes.Set( "T2ParticleHasRamp", ColorRamp is not null ? 1f : 0f );
+			attributes.Set( "T2ParticleTextureColorFromAlpha", TextureColorFromAlpha ? 1f : 0f );
 			attributes.Set( "T2ParticleSheet", sheet );
 			attributes.Set( "T2ParticleSnap", ParticleEffect.SnapToFrame ? 1f : 0f );
 			attributes.Set( "T2ParticleAdditive", Source.Additive ? 1f : 0f );

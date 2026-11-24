@@ -44,5 +44,5 @@ public sealed partial class Titanfall2Npc
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayVoiceRpc( string sound ) => Titanfall2GameplayVisuals.PlayFireSound( MountIdent, sound, Eye );
+	void PlayVoiceRpc( string sound ) => Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, sound, Eye );
 }

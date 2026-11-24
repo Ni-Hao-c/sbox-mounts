@@ -199,7 +199,7 @@ public sealed partial class Titanfall2TitanKit : Component
 				Chassis.Tone => "weapon_trackingrockets_fire_3P", Chassis.Northstar => "ShoulderRocket_Cluster_Fire_3P",
 				Chassis.Ronin => "arcwave_fire_3p", _ => Actor.FireSound
 			});
-		Titanfall2GameplayVisuals.PlayFireSound( Actor.MountIdent, sound, Eye );
+		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, sound, Eye );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]

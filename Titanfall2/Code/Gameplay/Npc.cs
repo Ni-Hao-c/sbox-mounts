@@ -15,6 +15,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	[Property] public float MeleeInterval { get; set; } = 1.2f;
 	[Property] public bool MeleeOnly { get; set; }
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2ProjectileSettings Projectile { get; set; }
+	[Property, Sync( SyncFlags.FromHost )] public Titanfall2WeaponFiring Firing { get; set; }
 	float _hoverHeight;
 	[Property] public string ModelPath { get; set; }
 	[Property, Sync( SyncFlags.FromHost )] public string GunModelPath { get; set; }
@@ -208,12 +209,14 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		UpdateAbilityLight();
 		if ( Dead )
 		{
+			GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 			if ( _gun.IsValid() ) _gun.Enabled = false;
 			PlaySequence( ModelLoader.DeathRole, looping: false );
 			if ( Networking.IsHost && !IsProxy && _remove <= 0 ) GameObject.Destroy();
 			return;
 		}
 		AttachGun();
+		if ( Reloading ) GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		if ( !Networking.IsHost || IsProxy )
 		{
 			PlayLocomotion();
@@ -389,6 +392,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		var core = GetComponent<Titanfall2TitanCore>();
 		if ( core is { BlocksPrimary: true } ) return core.TryPrimaryAttack( aim, attacker );
 		if ( Reloading || _meleePending || _nextShot > 0 || Rounds <= 0 && core is not { UnlimitedAmmo: true } ) return false;
+		if ( !MeleeOnly && Rounds < Firing.Minimum && core is not { UnlimitedAmmo: true } ) { StartReload(); return false; }
 		var damageMultiplier = core?.PrimaryDamageMultiplier ?? 1;
 		aim = core?.AssistAim( aim ) ?? aim;
 		if ( MeleeOnly ) return TryStartMelee( aim, attacker );
@@ -401,13 +405,16 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 				.IgnoreGameObjectHierarchy( GameObject ).UseHitboxes().WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot ).EndPosition;
 			if ( (target - origin).LengthSquared > 1f ) aim = new Ray( origin, (target - origin).Normal );
 		}
-		var spread = ShotSpread * (piloted ? 1 : 1.5f);
-		for ( var i = 0; i < Math.Clamp( ShotPellets, 1, 12 ); i++ )
+		var spread = FiringSpread( piloted );
+		var patternDirection = Firing.HasPattern ? aim.Forward.WithAimCone( spread, spread ) : aim.Forward;
+		// Retail NPC callbacks use a fixed zoom fraction of 0.5.
+		var zoom = 0.5f;
+		for ( var i = 0; i < Firing.Count( ShotPellets ); i++ )
 		{
-			var ray = new Ray( aim.Position, aim.Forward.WithAimCone( spread, spread ) );
+			var ray = new Ray( aim.Position, Firing.HasPattern ? Firing.Bearing( patternDirection, i, zoom ) : aim.Forward.WithAimCone( spread, spread ) );
 			if ( Projectile.Enabled )
 			{
-				Titanfall2Projectile.Launch( Scene, ray, Projectile, ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, attacker, GameObject, GameObject, DamageProfile, !piloted );
+				Titanfall2Projectile.Launch( Scene, ray, Firing.Flight( Projectile, zoom, i ), ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, attacker, GameObject, GameObject, DamageProfile, !piloted );
 				continue;
 			}
 			var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( ray, AttackRange ).IgnoreGameObjectHierarchy( GameObject )
@@ -420,11 +427,11 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			BaseCombatWeapon.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
 			PlayBulletTrace( origin, new BaseCombatWeapon.ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface ) );
 		}
-		PlayShotSound( origin );
+		PlayShotSound( origin, npc: !piloted );
 		core?.NotifyPrimaryFired();
-		if ( core is not { UnlimitedAmmo: true } ) Rounds--;
+		if ( core is not { UnlimitedAmmo: true } ) Rounds = Math.Max( 0, Rounds - Firing.Cost );
 		var interval = core?.PrimaryInterval( ShotInterval ) ?? ShotInterval;
-		if ( Rounds == 0 && core is not { UnlimitedAmmo: true } ) StartReload();
+		if ( Rounds < Firing.Minimum && core is not { UnlimitedAmmo: true } ) StartReload();
 		else if ( !piloted && Role != FrontierRole.EliteMonarch && ++_burst >= Math.Max( 1, BurstShots ) )
 		{
 			_burst = 0;
@@ -439,6 +446,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		var core = GetComponent<Titanfall2TitanCore>();
 		if ( Dead || Reloading || core is { UnlimitedAmmo: true } || Rounds >= (core?.MagazineCapacity ?? MagazineSize) ) return;
 		Reloading = true;
+		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		_burst = 0;
 		_nextShot = MathF.Max( 0.1f, ReloadSeconds * (core?.ReloadMultiplier ?? 1) );
 	}
@@ -452,17 +460,18 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayShotSound( Vector3 position, bool melee = false )
+	void PlayShotSound( Vector3 position, bool melee = false, bool npc = true )
 	{
 		CueActorAttack( melee );
 		if ( !melee )
 		{
-			GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, WeaponAudio, false, position, ShotInterval );
+			var firstPerson = !npc && Seat.IsValid() && Seat.LocalPilot is { ThirdPerson: false };
+			GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, WeaponAudio, firstPerson, position, ShotInterval,
+				npc: npc, ammoPercent: MagazineSize > 0 ? Rounds * 100f / MagazineSize : 100 );
 			if ( _gun.IsValid() && _gun.GetComponent<BaseWeaponModel>()?.MuzzleGameObject is { } muzzle && muzzle.IsValid() )
 			{
-				Titanfall2RetailWeaponEffects.Spawn( muzzle, MountIdent, WeaponPresentation.MuzzleWorld, false );
-				if ( _gun.GetComponent<BaseWeaponModel>()?.ShellEjectGameObject is { } shell && shell.IsValid() )
-					Titanfall2RetailWeaponEffects.Spawn( shell, MountIdent, WeaponPresentation.ShellWorld, false, 3 );
+				Titanfall2RetailWeaponEffects.MuzzleFlash( _gun.GetComponent<BaseWeaponModel>(), MountIdent, WeaponPresentation, false );
+				Titanfall2RetailWeaponEffects.Shells( _gun.GetComponent<BaseWeaponModel>(), MountIdent, WeaponPresentation, false );
 			}
 		}
 	}

@@ -54,7 +54,20 @@ public partial class Titanfall2Mount
 		return key switch
 		{
 			"p_wpn_tracer" or "p_wpn_tracer_pistol" or "p_wpn_tracer_pulse" or "p_wpn_tracer_sniper" or "p_wpn_tracer_bc"
-				or "weapon_tracers_40mm" or "weapon_tracers_mega_turret_aa" or "weapon_tracers_shotgun" or "weapon_tracers_vortex" or "weapon_tracers_xo16" => "particles/tracer_fx.pcf",
+				or "weapon_tracers_40mm" or "weapon_tracers_mega_turret_aa" or "weapon_tracers_shotgun" or "weapon_tracers_vortex" or "weapon_tracers_xo16"
+				or "weapon_kraber_projectile" or "weapon_40mm_projectile" => "particles/tracer_fx.pcf",
+			"p_projectile_tpa" => "particles/wpn_particle_accelerator.pcf",
+			"p_leadwall_proj" or "p_mastiff_proj" => "particles/wpn_dragonsbreath.pcf",
+			"p_titan_sniper1" => "particles/wpn_xo_sniper.pcf",
+			"p_wpn_meteor_trail" => "particles/wpn_xo_meteor.pcf",
+			"p_plasma_proj_lg_dlight" or "p_plasma_proj_md" or "p_plasma_proj_md_dlight" or "p_plasma_proj_sm" => "particles/wpn_plasma_trail.pcf",
+			"p_projectile_lstar" => "particles/wpn_lstar.pcf",
+			"p_doubletake_proj" => "particles/wpn_doubletake.pcf",
+			"wpn_grenade_frag_softball" or "wpn_grenade_frag_mag" or "wpn_grenade_frag_blue" => "particles/wpn_grenade.pcf",
+			"p_wpn_defender_beam" => "particles/wpn_defender_beam.pcf",
+			"rocket_smoke_large" => "particles/wpn_rocket_fx.pcf",
+			"p_wpn_arcball_trail" => "particles/wpn_xo_arcball.pcf",
+			"p_wpn_grenade_smoke_trail" => "particles/wpn_grenade_smoke.pcf",
 			"p_muzzleflash_predator" or "p_weapon_tracers_predator" or "p_weapon_tracers_predator_alt" => "particles/wpn_muzzleflash_xo_predator.pcf",
 			"mflash_shotgun_fp_full" or "mflash_shotgun_full" => "particles/wpn_muzzleflash_shotgun.pcf",
 			"p_wpn_muzzleflash_mgl_fp_full" or "p_wpn_muzzleflash_mgl_full" => "particles/wpn_muzzleflash_mgl.pcf",
@@ -66,7 +79,7 @@ public partial class Titanfall2Mount
 			"p_wpn_muz_mastiff" => "particles/wpn_muzzleflash_mastiff.pcf",
 			"p_wpn_xo_sniper_muzzleflash" => "particles/wpn_muzzleflash_xo_sniper.pcf",
 			"wpn_muzzleflash_xo_shotgun_alt" => "particles/wpn_muzzleflash_xo_shotgun.pcf",
-			"wpn_muzzleflash_snp_hmn" => "particles/wpn_muzzleflash_sniper_hmn.pcf",
+			"wpn_muzzleflash_snp_hmn" or "wpn_mflash_snp_hmn_smoke_side" => "particles/wpn_muzzleflash_sniper_hmn.pcf",
 			"p_wpn_muzzleflash_alternator" or "p_wpn_muzzleflash_coldwar" or "p_wpn_muzzleflash_epg" or "p_wpn_muzzleflash_law" or "p_wpn_muzzleflash_smr" => $"particles/{key[2..]}.pcf",
 			"wpn_muzzleflash_pistol" or "wpn_muzzleflash_40mm" or "wpn_muzzleflash_lmg" or "wpn_muzzleflash_pulse" or "wpn_muzzleflash_smg"
 				or "wpn_muzzleflash_xo" or "wpn_muzzleflash_xo_rocket" or "wpn_muzzleflash_xo_triple" => $"particles/{key}.pcf",

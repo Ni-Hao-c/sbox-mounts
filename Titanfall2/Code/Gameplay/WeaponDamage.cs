@@ -85,8 +85,12 @@ public sealed partial class Titanfall2Weapon
 
 	void FireHitscan()
 	{
-		if ( !DamageProfile.Enabled ) { base.PrimaryAttack(); return; }
-		if ( IsHeld && !TakePrimaryAmmo() ) return;
+		if ( !DamageProfile.Enabled )
+		{
+			if ( IsHeld && (!HasRoundAmmo() || Firing.Cost > 1 && !TakePrimaryAmmo( Firing.Cost - 1 )) ) return;
+			base.PrimaryAttack(); RecordSpreadShot( _adsBlend ); return;
+		}
+		if ( IsHeld && !TakePrimaryAmmo( Firing.Cost ) ) return;
 		var config = Ballistics;
 		var aim = AimRay;
 		var volley = new ShotEffect[Math.Clamp( config.Pellets, 1, 12 )];
@@ -99,6 +103,7 @@ public sealed partial class Titanfall2Weapon
 			volley[i] = new ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface, NoEvents: i > 0 );
 		}
 		TimeSinceShoot = 0;
+		RecordSpreadShot( _adsBlend );
 		ShootEffects( volley );
 	}
 

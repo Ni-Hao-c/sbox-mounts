@@ -347,7 +347,7 @@ public sealed class Titanfall2TitanCore : Component
 			Chassis.Tone => charging ? "weapon_coreability_salvo_chargeup_3p" : "weapon_coreability_salvo_fire_3P",
 			Chassis.Scorch => charging ? "flamewave_start_3p" : "flamewave_blast_middle", _ => null
 		};
-		Titanfall2GameplayVisuals.PlayFireSound( Actor.MountIdent, sound, Eye );
+		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, sound, Eye );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
@@ -355,7 +355,7 @@ public sealed class Titanfall2TitanCore : Component
 	{
 		if ( !Actor.IsValid() ) return;
 		Actor.CueCoreMelee();
-		Titanfall2GameplayVisuals.PlayFireSound( Actor.MountIdent, "ronin_sword_melee_3p", Eye );
+		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, "ronin_sword_melee_3p", Eye );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]

@@ -12,6 +12,8 @@ public sealed class Titanfall2TitanArmament : Component
 	[Property] public float Damage { get; set; }
 	[Property] public float TitanDamage { get; set; }
 	[Property] public Titanfall2DamageProfile DamageProfile { get; set; }
+	[Property] public Titanfall2WeaponFiring Firing { get; set; }
+	[Property] public Titanfall2SpreadProfile SpreadProfile { get; set; }
 	[Property] public float Interval { get; set; }
 	[Property] public int Magazine { get; set; }
 	[Property] public float ReloadSeconds { get; set; }
@@ -54,6 +56,8 @@ public sealed class Titanfall2TitanArmament : Component
 		actor.ShotDamage = Damage;
 		actor.TitanShotDamage = TitanDamage;
 		actor.DamageProfile = DamageProfile;
+		actor.Firing = Firing;
+		actor.SpreadProfile = SpreadProfile;
 		actor.ShotInterval = Interval;
 		actor.MagazineSize = Magazine;
 		actor.ReloadSeconds = ReloadSeconds;

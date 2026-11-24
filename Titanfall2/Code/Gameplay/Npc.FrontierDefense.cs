@@ -267,7 +267,7 @@ public sealed partial class Titanfall2Npc
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayFrontierSound( string sound ) => Titanfall2GameplayVisuals.PlayFireSound( MountIdent, sound, WorldPosition );
+	void PlayFrontierSound( string sound ) => Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, sound, WorldPosition );
 
 	// A local warning that follows replicated ability state. This is not a port of the original RPAK effects.
 	void UpdateAbilityLight()

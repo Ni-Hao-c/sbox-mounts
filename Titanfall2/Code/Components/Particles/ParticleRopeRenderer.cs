@@ -54,16 +54,31 @@ public sealed class Titanfall2ParticleRopeRenderer : ParticleController
 	protected override void OnParticleCreated( Particle particle ) => _order[particle] = _nextOrder++;
 	protected override void OnParticleDestroyed( Particle particle ) => _order.Remove( particle );
 
-	protected override void OnAfterStep( float delta )
+	protected override void OnAfterStep( float delta ) => _time += delta;
+
+	protected override void OnPreRender()
 	{
 		if ( !_line.IsValid() || _definition is null || !ParticleEffect.IsValid() ) return;
-		_time += delta;
+		// Controller callbacks are not ordered. Read particles only after all
+		// post-step PCF operators have finished, including endpoint alpha remaps.
 		_ordered.Clear();
 		foreach ( var particle in ParticleEffect.Particles )
 			if ( Titanfall2ParticleControlPoints.IsFinite( particle.Position ) ) _ordered.Add( particle );
 		// The comparison captures this; cache it so the per-frame sort does not allocate a delegate.
 		_compare ??= ( a, b ) => _order.GetValueOrDefault( a ).CompareTo( _order.GetValueOrDefault( b ) );
 		_ordered.Sort( _compare );
+		// Time-based emission can place several particles at the same emitter
+		// position. Collapse those knots before Catmull-Rom interpolation: an
+		// equal pair followed by a distant point otherwise grows a backwards
+		// loop, which becomes a large ribbon spike when viewed along a tracer.
+		var unique = 0;
+		for ( var index = 0; index < _ordered.Count; ++index )
+		{
+			var particle = _ordered[index];
+			if ( unique > 0 && _ordered[unique - 1].Position.DistanceSquared( particle.Position ) < 0.000001f ) continue;
+			_ordered[unique++] = particle;
+		}
+		if ( unique < _ordered.Count ) _ordered.RemoveRange( unique, _ordered.Count - unique );
 		_line.RenderingEnabled = _ordered.Count >= 2;
 		if ( _ordered.Count < 2 ) return;
 		_line.StartLine();
@@ -92,14 +107,16 @@ public sealed class Titanfall2ParticleRopeRenderer : ParticleController
 				var texture = distance * _definition.RopeTextureScale + _definition.RopeTextureOffset + _time * _definition.RopeTextureScroll;
 				var startColor = particle.Color.WithAlpha( Math.Clamp( particle.Color.a * particle.Alpha, 0f, 1f ) );
 				var endColor = next.Color.WithAlpha( Math.Clamp( next.Color.a * next.Alpha, 0f, 1f ) );
-				var width = Math.Clamp( MathX.Lerp( particle.Size.x, next.Size.x, fraction ) * 2f,
-					0f, Titanfall2ParticleFactory.MaximumRadius * 2f );
+				// SceneLineObject offsets each edge by Width; it expects the PCF
+				// radius, rather than the full diameter used by sprite renderers.
+				var width = Math.Clamp( MathX.Lerp( particle.Size.x, next.Size.x, fraction ),
+					0f, Titanfall2ParticleFactory.MaximumRadius );
 				maximumWidth = MathF.Max( maximumWidth, width );
 				_line.AddLinePoint( position, Color.Lerp( startColor, endColor, fraction ), width, texture );
 			}
 		}
 		_line.EndLine();
-		_line.Bounds = _line.Bounds.Grow( maximumWidth * 0.5f );
+		_line.Bounds = _line.Bounds.Grow( maximumWidth );
 	}
 
 	protected override void OnDisabled()

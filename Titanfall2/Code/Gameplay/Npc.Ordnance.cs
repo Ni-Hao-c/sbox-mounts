@@ -213,5 +213,5 @@ public sealed partial class Titanfall2Npc
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayGrenadeThrowSound() => Titanfall2GameplayVisuals.PlayFireSound( MountIdent ?? "titanfall2", "Weapon_FragGrenade_Throw_3P", GrenadeHand );
+	void PlayGrenadeThrowSound() => Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent ?? "titanfall2", "Weapon_FragGrenade_Throw_3P", GrenadeHand );
 }
