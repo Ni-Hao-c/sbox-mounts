@@ -1,6 +1,11 @@
 /// <summary>Builds a runtime material from a legacy VMT when no RPAK MATL exists at the same path.</summary>
-class LegacyMaterialLoader( string materialName ) : ResourceLoader<Titanfall2Mount>
+class LegacyMaterialLoader( string materialName, bool previewMaterial = false ) : ResourceLoader<Titanfall2Mount>
 {
+	protected override ResourceLoader ResolveChild( string name, out ResourceType type )
+	{
+		type = ResourceType.Material;
+		return !previewMaterial && name.Equals( "preview.vmat", StringComparison.OrdinalIgnoreCase ) ? new LegacyMaterialLoader( materialName, previewMaterial: true ) : null;
+	}
 
 	static int _warningCount;
 	const int WarningLimit = 64;
@@ -19,7 +24,7 @@ class LegacyMaterialLoader( string materialName ) : ResourceLoader<Titanfall2Mou
 		Host.RegisterMaterialDescriptor( descriptor );
 		if ( definition.IsUnlitTwoTexture )
 			return CreateUnlitTwoTexture( Host, Path, definition, metadata, Warn );
-		return descriptor.CreateMaterial( Host, Path, Warn );
+		return descriptor.CreateMaterial( Host, Path, Warn, previewMaterial );
 	}
 
 	internal static Material CreateUnlitTwoTexture( Titanfall2Mount host, string resourcePath,
@@ -37,7 +42,7 @@ class LegacyMaterialLoader( string materialName ) : ResourceLoader<Titanfall2Mou
 			_ => "shaders/titanfall2_vmt_unlit_two_texture.shader"
 		};
 		var material = Material.Create( resourcePath, shader );
-		Titanfall2Surface.ApplyTo( material, metadata.SurfaceProperty, resourcePath );
+		Titanfall2Surface.ApplyTo( material, metadata.SurfaceProperty, resourcePath, host );
 		material.Set( "g_tTexture1", Texture.Transparent );
 		if ( !cubeLayer2 ) material.Set( "g_tTexture2", Texture.Transparent );
 

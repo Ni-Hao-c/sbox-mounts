@@ -1,14 +1,15 @@
+using System.Runtime.InteropServices;
 using Titanfall2;
 
 partial class MapLoader
 {
 	// World collision is split into XY cells so the broad phase and tile queries touch few triangles.
 	const float CollisionCellSize = 512f;
-	readonly List<Model> _classifiedWorldModels = [];
+	readonly List<PhysicsGroupDescription> _worldPhysics = [];
 
-	ModelCollider[] CreateClassifiedWorldCollision( GameObject world, Titanfall2BspReader.ParsedBsp parsed )
+	PhysicsCollider[] CreateClassifiedWorldCollision( GameObject world, Titanfall2BspReader.ParsedBsp parsed )
 	{
-		var result = new List<ModelCollider>();
+		var result = new List<PhysicsCollider>();
 		foreach ( var group in parsed.WorldCollision.Parts.GroupBy( part => part.Contents ) )
 		{
 			if ( group.Key == 0 ) continue;
@@ -17,14 +18,16 @@ partial class MapLoader
 				Vertices = parsed.WorldCollision.Vertices,
 				Indices = group.SelectMany( part => parsed.WorldCollision.Indices.AsSpan( part.FirstIndex, part.IndexCount ).ToArray() ).ToArray()
 			};
-			var builder = Model.Builder.WithName( $"titanfall2/map/{parsed.MapName}_contents_{group.Key:x8}" );
+			var body = new PhysicsBodyBuilder();
 			foreach ( var chunk in BuildCollisionChunks( geometry, CollisionCellSize ).Values )
-				builder.AddCollisionMesh( chunk.Vertices.ToArray(), chunk.Indices.ToArray() );
-			var model = builder.Create();
-			_classifiedWorldModels.Add( model );
+				body.AddMesh( CollectionsMarshal.AsSpan( chunk.Vertices ), chunk.Indices.Select( index => (uint)index ).ToArray(), [] );
+			// CM contents are authoritative. They do not identify a surfaceprop: do not infer
+			// a physical material from a render face or from Source 1's collision layout.
+			var physics = PhysicsGroupDescription.Create( $"{Path}/contents_{group.Key:x8}.vphys", [body] );
+			_worldPhysics.Add( physics );
 			var child = new GameObject( world, true, $"titanfall2_world_contents_{group.Key:x8}" ) { IsStatic = true };
-			var collider = child.AddComponent<ModelCollider>();
-			collider.Model = model;
+			var collider = child.AddComponent<PhysicsCollider>();
+			collider.Physics = physics;
 			collider.Static = true;
 			Titanfall2CollisionQueries.Classify( child, collider, group.Key );
 			// Tagged unconditionally: the tag only matters once a navigation filter selects it.
@@ -35,34 +38,6 @@ partial class MapLoader
 			result.Add( collider );
 		}
 		return result.ToArray();
-	}
-
-	Model BuildWorldCollisionModel( Titanfall2BspReader.ParsedBsp parsed )
-	{
-		var collision = parsed.WorldCollision;
-		if ( collision is null || collision.IsEmpty ) return null;
-		var chunks = BuildCollisionChunks( collision, CollisionCellSize );
-		if ( chunks.Count == 0 ) return null;
-		var builder = Model.Builder.WithName( $"titanfall2/map/{parsed.MapName}_collision" );
-		var submittedVertices = 0;
-		var submittedTriangles = 0;
-		foreach ( var chunk in chunks.Values )
-		{
-			if ( chunk.Vertices.Count < 3 || chunk.Indices.Count < 3 ) continue;
-			builder.AddCollisionMesh( chunk.Vertices.ToArray(), chunk.Indices.ToArray() );
-			submittedVertices += chunk.Vertices.Count;
-			submittedTriangles += chunk.Indices.Count / 3;
-		}
-		var model = builder.Create();
-		Log.Info( $"Titanfall 2 real world collision built: {Path} ({collision.PrimitiveCount} primitives: "
-			+ $"{collision.BrushCount} brushes/{collision.BrushTriangleCount} triangles + "
-			+ $"{collision.TricollCount} tricolls/{collision.TricollTriangleCount} triangles; "
-			+ $"{collision.NonBlockingPrimitiveCount} non-player-solid primitives skipped, "
-			+ $"{collision.WaterPrimitiveCount} water primitives "
-			+ $"({collision.BlockingWaterPrimitiveCount} player-blocking); "
-			+ $"{chunks.Count} spatial chunks at {CollisionCellSize:0} units, "
-			+ $"{submittedVertices} submitted vertices, {submittedTriangles} triangles)" );
-		return model;
 	}
 
 	static Dictionary<CollisionCell, CollisionChunk> BuildCollisionChunks( Titanfall2BspReader.BspWorldCollision collision, float cellSize )

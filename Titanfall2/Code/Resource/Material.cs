@@ -43,8 +43,13 @@ readonly record struct Titanfall2MaterialMetadata(
 }
 
 /// <summary>Builds a Titanfall 2 material and binds its RPAK texture GUIDs.</summary>
-class MaterialLoader( RpakArchive archive, RpakAsset asset ) : ResourceLoader<Titanfall2Mount>
+class MaterialLoader( RpakArchive archive, RpakAsset asset, bool previewMaterial = false ) : ResourceLoader<Titanfall2Mount>
 {
+	protected override ResourceLoader ResolveChild( string name, out ResourceType type )
+	{
+		type = ResourceType.Material;
+		return !previewMaterial && name.Equals( "preview.vmat", StringComparison.OrdinalIgnoreCase ) ? new MaterialLoader( archive, asset, previewMaterial: true ) : null;
+	}
 
 	static int _bindingWarningCount;
 	static readonly object SharedTextureLock = new();
@@ -75,7 +80,7 @@ class MaterialLoader( RpakArchive archive, RpakAsset asset ) : ResourceLoader<Ti
 			return null;
 		}
 		if ( Host.TryGetCachedMaterialDescriptor( asset.Name, out var cached ) )
-			return cached.CreateMaterial( Host, Path, WarnBinding );
+			return cached.CreateMaterial( Host, Path, WarnBinding, previewMaterial );
 		if ( !archive.TryReadAsset( asset, out var data, out var error ) )
 		{
 			Titanfall2Log.Warning( $"Failed to read Titanfall 2 material '{Path}': {error}" );
@@ -148,7 +153,7 @@ class MaterialLoader( RpakArchive archive, RpakAsset asset ) : ResourceLoader<Ti
 		if ( handleCount == 0 || !archive.TryReadPagePointer( handles, handleCount * 8, out var guidBytes, out error ) )
 		{
 			Host.RegisterMaterialDescriptor( descriptor );
-			return descriptor.CreateMaterial( Host, Path, WarnBinding );
+			return descriptor.CreateMaterial( Host, Path, WarnBinding, previewMaterial );
 		}
 
 		var first = true;
@@ -183,7 +188,7 @@ class MaterialLoader( RpakArchive archive, RpakAsset asset ) : ResourceLoader<Ti
 		}
 
 		Host.RegisterMaterialDescriptor( descriptor );
-		return descriptor.CreateMaterial( Host, Path, WarnBinding );
+		return descriptor.CreateMaterial( Host, Path, WarnBinding, previewMaterial );
 	}
 
 	enum VistaMaterialMode

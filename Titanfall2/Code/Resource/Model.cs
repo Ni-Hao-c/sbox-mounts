@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using Titanfall2.Formats;
 
 /// <summary>Loads an embedded Titanfall 2 MDL53/RMDL as a runtime model.</summary>
-partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = false, Titanfall2Mount variantHost = null, string variantPath = null, int skin = 0, int body = 0, bool collisionOnly = false ) : ResourceLoader<Titanfall2Mount>
+partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = false, Titanfall2Mount variantHost = null, string variantPath = null, int skin = 0, int body = 0, bool collisionOnly = false, bool separateResources = false, bool infantryAnimations = false, bool heldWeapon = false, bool pilotViewAnimations = false, bool previewOnly = false ) : ResourceLoader<Titanfall2Mount>
 {
 
 	internal const string StaticInstanceSuffix = ".t2static";
@@ -74,7 +74,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		{
 			if ( _variants.TryGetValue( key, out var weak ) && weak.TryGetTarget( out var cached ) && IsUsableModel( cached ) ) return cached;
 			var loader = new ModelLoader( _source, _staticInstance && !onlyCollision,
-				ImportHost, $"{ImportPath}/skin{requestedSkin}_body{requestedBody}{(onlyCollision ? "_physics" : "")}", requestedSkin, requestedBody, onlyCollision );
+				ImportHost, $"{ImportPath}/skin{requestedSkin}_body{requestedBody}{(onlyCollision ? "_physics" : "")}", requestedSkin, requestedBody, onlyCollision, separateResources, heldWeapon: heldWeapon );
 			var model = loader.Load() as Model;
 			if ( IsUsableModel( model ) ) _variants[key] = new WeakReference<Model>( model );
 			foreach ( var expired in _variants.Where( pair => !pair.Value.TryGetTarget( out _ ) ).Select( pair => pair.Key ).ToArray() ) _variants.Remove( expired );
@@ -159,6 +159,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 
 	protected override object Load()
 	{
+		if ( previewOnly && TryReadPreviewGeometry( out var preview ) ) return BuildPreviewGeometry( preview, cached: true );
 		// The "True:0" and trailing "False" fields are kept from the earlier key layout so
 		// processed-cache entries written before it remain valid.
 		var cacheIdentity = _staticInstance && !collisionOnly && Titanfall2StreamingSettings.ProcessedCache
@@ -183,6 +184,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				return BuildStaticInstanceAllLodsModel( levels );
 			}
 			var lod = Titanfall2MeshExtractor.ExtractLod( parsed, 0, false, body, skin );
+			if ( previewOnly ) return CreatePreviewGeometry( parsed, lod, data );
 			if ( collisionOnly ) return BuildCollisionOnly( parsed, lod, data );
 			return BuildModel( parsed, lod, data );
 		}
@@ -349,6 +351,10 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		var levelMeshes = new List<Mesh>[StaticInstanceBandCount];
 		for ( var level = 0; level < StaticInstanceBandCount; ++level )
 		{
+			// Filter after cache read: cached geometry is independent of AR visibility.
+			var lod = levelLods[level];
+			if ( !Titanfall2StreamingSettings.ShowWeakpointMarkers && lod.Meshes.Any( m => IsWeakpointMarker( m.MaterialName ) ) )
+				levelLods[level] = lod with { Meshes = lod.Meshes.Where( m => !IsWeakpointMarker( m.MaterialName ) ).ToArray() };
 			levelMeshes[level] = CreateStaticInstanceMeshes( levelLods[level], isVista, ref canInstance );
 		}
 
@@ -441,8 +447,10 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 	{
 		var isVista = IsVistaModelPath( ImportPath );
 		var builder = Model.Builder.WithName( ImportPath );
-		var skeleton = AddSkeleton( builder, parsed );
-		AddModelMetadata( builder, parsed, skeleton );
+		var modelRotation = heldWeapon ? Titanfall2GameplayVisuals.WeaponAxisCorrection : Rotation.Identity;
+		var skeleton = AddSkeleton( null, parsed, modelRotation );
+		var boneBindPoses = skeleton.Names.Length > 0 ? CreateBoneBindPoses( skeleton ) : null;
+		var boneBounds = skeleton.Names.Length > 0 ? new BBox?[skeleton.Names.Length] : null;
 		var animationCount = 0;
 		if ( skeleton.Names.Length > 0 )
 		{
@@ -455,12 +463,13 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			bindPose.AddFrame( skeleton.LocalTransforms );
 			animationCount = 1;
 		}
-		animationCount += AddAnimations( builder, parsed, skeleton, data );
+		if ( pilotViewAnimations ) animationCount += AddPilotViewAnimations( builder, parsed, data );
+		else if ( !separateResources || infantryAnimations ) animationCount += AddAnimations( builder, parsed, skeleton, data );
 		// Native body groups need every choice's geometry. The packed body value only picks
 		// the default mask, so ModelRenderer.SetBodyGroup can switch without another model.
 		// Only the body-0 model gets native groups: choice 0 is the native default, and packed
 		// body variants keep their selected-only geometry for Titanfall2ModelVariant.
-		var bodyGroups = body != 0 ? null : NativeBodyGroupNames( parsed );
+		var bodyGroups = previewOnly || body != 0 ? null : NativeBodyGroupNames( parsed );
 		if ( bodyGroups is not null )
 		{
 			lod = Titanfall2MeshExtractor.ExtractLod( parsed, 0, true, body, skin );
@@ -482,7 +491,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var materialName = NormalizeMaterialName( sourceMesh.MaterialName );
 			var metadata = GetMaterialMetadata( materialName );
 			// Render-geometry fallback collision follows the selected body, not every choice.
-			var includeCollision = !isVista
+			var includeCollision = !isVista && !separateResources
 				&& IsSelectedBodyChoice( parsed, sourceMesh.BodyPartIndex, sourceMesh.ModelIndex, body )
 				&& Titanfall2CollisionFilter.ShouldIncludeMaterial( materialName, metadata );
 			if ( metadata.IsDecal ) decalMeshCount++;
@@ -490,6 +499,17 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var meshBounds = new BBox { Mins = float.MaxValue, Maxs = float.MinValue };
 			var collisionBase = collisionVertices.Count;
 			var indices = ReverseWinding( sourceMesh.Indices );
+			// Only suppress drawing. Leave the MDL hitbox sets and selected-body fallback collision intact.
+			if ( !Titanfall2StreamingSettings.ShowWeakpointMarkers && IsWeakpointMarker( materialName ) )
+			{
+				if ( includeCollision )
+				{
+					foreach ( var vertex in sourceMesh.Vertices )
+						collisionVertices.Add( ToSandbox( vertex.Position ) + (metadata.IsDecal ? ToSandbox( vertex.Normal ).Normal * DecalNormalOffset : Vector3.Zero) );
+					collisionIndices.AddRange( indices.Select( i => collisionBase + i ) );
+				}
+				continue;
+			}
 			var material = LoadMaterial( materialName )
 				?? (isVista
 					? MaterialLoader.CreateVistaMaterial( $"{ImportPath}/fallback_{meshIndex}", materialName, metadata )
@@ -504,10 +524,11 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				for ( var vertexIndex = 0; vertexIndex < sourceMesh.Vertices.Length; ++vertexIndex )
 				{
 					var sourceVertex = sourceMesh.Vertices[vertexIndex];
-					var normal = ToSandbox( sourceVertex.Normal ).Normal;
-					var position = ToSandbox( sourceVertex.Position );
+					var normal = (modelRotation * ToSandbox( sourceVertex.Normal )).Normal;
+					var position = modelRotation * ToSandbox( sourceVertex.Position );
 					if ( metadata.IsDecal ) position += normal * DecalNormalOffset;
 					EncodeSkinning( sourceVertex.BoneIds, sourceVertex.BoneWeights, skeleton.Names.Length, out var boneIndices, out var boneWeights );
+					AccumulateBoneBounds( boneBounds, boneBindPoses, position, boneIndices, boneWeights );
 					vertices[vertexIndex] = new TitanfallSkinnedVertex
 					{
 						Position = position,
@@ -528,8 +549,8 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				for ( var vertexIndex = 0; vertexIndex < sourceMesh.Vertices.Length; ++vertexIndex )
 				{
 					var sourceVertex = sourceMesh.Vertices[vertexIndex];
-					var normal = ToSandbox( sourceVertex.Normal ).Normal;
-					var position = ToSandbox( sourceVertex.Position );
+					var normal = (modelRotation * ToSandbox( sourceVertex.Normal )).Normal;
+					var position = modelRotation * ToSandbox( sourceVertex.Position );
 					if ( metadata.IsDecal ) position += normal * DecalNormalOffset;
 					vertices[vertexIndex] = new TitanfallVertex
 					{
@@ -567,11 +588,13 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				skinSlotConflict = true;
 		}
 
-		AddSkinMaterialGroups( builder, parsed, skinSlots, skinSlotConflict );
+		RegisterSkeletonBones( builder, parsed, skeleton, boneBounds );
+		if ( !previewOnly ) AddModelMetadata( builder, parsed, skeleton );
+		if ( !previewOnly ) AddSkinMaterialGroups( builder, parsed, skinSlots, skinSlotConflict );
 
 		var collisionDescription = "none";
 		var collisionHullCount = 0;
-		if ( hasMesh && !isVista )
+		if ( hasMesh && !isVista && !separateResources )
 		{
 			(collisionDescription, collisionHullCount) = AddCollision(
 				builder, parsed, skeleton, data, collisionVertices, collisionIndices );
@@ -597,7 +620,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		return builder.Create();
 	}
 
-	static SkeletonData AddSkeleton( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel parsed )
+	static SkeletonData AddSkeleton( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel parsed, Rotation? modelRotation = null )
 	{
 		if ( parsed.Bones.Length == 0 ) return new SkeletonData();
 		var names = new string[parsed.Bones.Length];
@@ -618,27 +641,92 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var rotation = GetBoneRotation( parsed, boneIndex );
 			var scale = ToSandbox( parsed.Bones[boneIndex].Bone.Scale );
 			if ( !IsFinite( scale ) ) scale = Vector3.One;
+			if ( parent < 0 && modelRotation is { } correction )
+			{
+				position = correction * position;
+				rotation = correction * rotation;
+			}
 			localTransforms[boneIndex] = new Transform( position, rotation, scale );
 			modelTransforms[boneIndex] = parent >= 0 && parent < boneIndex
 				? modelTransforms[parent].ToWorld( localTransforms[boneIndex] )
 				: localTransforms[boneIndex];
+		}
+
+		var skeleton = new SkeletonData
+		{
+			Names = names,
+			LocalTransforms = localTransforms,
+			ModelTransforms = modelTransforms
+		};
+		if ( builder is not null ) RegisterSkeletonBones( builder, parsed, skeleton );
+		return skeleton;
+	}
+
+	static void RegisterSkeletonBones(
+		ModelBuilder builder,
+		Titanfall2Mdl53Reader.ParsedModel parsed,
+		SkeletonData skeleton,
+		BBox?[] boneBounds = null )
+	{
+		for ( var boneIndex = 0; boneIndex < skeleton.Names.Length; ++boneIndex )
+		{
+			var parent = GetBoneParent( parsed, boneIndex );
+			var parentName = parent >= 0 && parent < skeleton.Names.Length ? skeleton.Names[parent] : null;
 
 			// The runtime ModelBuilder native skeleton path derives its inverse-bind
 			// matrices from model-space bone transforms, despite the managed API
 			// documentation describing these arguments as parent-relative. Passing
 			// Titanfall's local transforms here makes every descendant apply its
 			// parent chain twice and visibly pulls weighted mesh parts apart.
-			var modelTransform = modelTransforms[boneIndex];
-			builder.AddBone( name, modelTransform.Position, modelTransform.Rotation,
-				parent >= 0 && parent < names.Length ? names[parent] : null );
+			// SceneModel frustum culling unions bone-local bounds rather than mesh
+			// bounds, so skinned models need per-bone bounds to stay visible when
+			// bone origins leave the camera frustum.
+			var modelTransform = skeleton.ModelTransforms[boneIndex];
+			if ( boneBounds is not null && boneBounds[boneIndex] is { } bounds )
+				builder.AddBone( skeleton.Names[boneIndex], modelTransform.Position, modelTransform.Rotation, bounds, parentName );
+			else
+				builder.AddBone( skeleton.Names[boneIndex], modelTransform.Position, modelTransform.Rotation, parentName );
 		}
+	}
 
-		return new SkeletonData
+	static Transform[] CreateBoneBindPoses( SkeletonData skeleton )
+	{
+		var poses = new Transform[skeleton.Names.Length];
+		for ( var i = 0; i < skeleton.Names.Length; ++i )
 		{
-			Names = names,
-			LocalTransforms = localTransforms,
-			ModelTransforms = modelTransforms
-		};
+			var modelTransform = skeleton.ModelTransforms[i];
+			poses[i] = new Transform( modelTransform.Position, modelTransform.Rotation );
+		}
+		return poses;
+	}
+
+	internal static void AccumulateBoneBounds(
+		BBox?[] boneBounds,
+		Transform[] boneBindPoses,
+		Vector3 position,
+		Color32 indices,
+		Color32 weights )
+	{
+		if ( !IsFinite( position ) ) return;
+		AccumulateBoneBound( boneBounds, boneBindPoses, position, indices.r, weights.r );
+		AccumulateBoneBound( boneBounds, boneBindPoses, position, indices.g, weights.g );
+		AccumulateBoneBound( boneBounds, boneBindPoses, position, indices.b, weights.b );
+		AccumulateBoneBound( boneBounds, boneBindPoses, position, indices.a, weights.a );
+	}
+
+	static void AccumulateBoneBound(
+		BBox?[] boneBounds,
+		Transform[] boneBindPoses,
+		Vector3 position,
+		byte boneIndex,
+		byte weight )
+	{
+		if ( weight == 0 ) return;
+		var local = boneBindPoses[boneIndex].PointToLocal( position );
+		if ( !IsFinite( local ) ) return;
+		boneBounds[boneIndex] = boneBounds[boneIndex] is { } existing
+			? existing.AddPoint( local )
+			: new BBox( local, local );
 	}
 
 	int AddAnimations(
@@ -655,6 +743,8 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var name = targetModel.Bones[targetIndex].Name;
 			if ( !string.IsNullOrWhiteSpace( name ) ) targetBones.TryAdd( name, targetIndex );
 		}
+
+		if ( infantryAnimations ) return AddInfantryAnimations( builder, targetSkeleton, sources, targetBones );
 
 		// "bindpose" is always installed before imported sequences and owns that
 		// name, so an included model cannot replace the safe default pose.
@@ -714,7 +804,8 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		int sequenceFlags,
 		HashSet<string> addedNames,
 		ref int animationCount,
-		ref int failureCount )
+		ref int failureCount,
+		Action<Titanfall2Mdl53AnimationReader.DecodedAnimation> onAdded = null )
 	{
 		var name = requestedName?.Trim().TrimStart( '@' );
 		if ( string.IsNullOrWhiteSpace( name ) ) name = $"animation_{animationIndex}";
@@ -724,10 +815,18 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		{
 			var decoded = Titanfall2Mdl53AnimationReader.Decode(
 				sourceData.Data, sourceData.Model, animationIndex, name, sequenceFlags );
+			if ( infantryAnimations && !HasPoseMotion( decoded, sourceToTarget ) )
+			{
+				addedNames.Remove( name );
+				return;
+			}
 			var animation = builder.AddAnimation( decoded.Name, decoded.FramesPerSecond )
 				.WithLooping( decoded.Looping )
 				.WithDelta( decoded.Delta );
 
+			var stripRootTravel = infantryAnimations && IsLocomotionRole( name );
+			var inPlaceRoot = stripRootTravel ? Enumerable.Range( 0, sourceToTarget.Length )
+				.Select( bone => GetBoneParent( sourceData.Model, bone ) < 0 ).ToArray() : null;
 			foreach ( var sourceFrame in decoded.Frames )
 			{
 				var targetFrame = new Transform[targetSkeleton.Names.Length];
@@ -739,13 +838,20 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 					var targetBone = sourceToTarget[sourceBone];
 					if ( targetBone < 0 ) continue;
 					var pose = sourceFrame[sourceBone];
+					var position = ToSandbox( pose.Position );
+					if ( inPlaceRoot is not null && inPlaceRoot[sourceBone] )
+					{
+						var start = ToSandbox( decoded.Frames[0][sourceBone].Position );
+						position = new Vector3( start.x, start.y, position.z );
+					}
 					targetFrame[targetBone] = new Transform(
-						ToSandbox( pose.Position ),
+						position,
 						ToSandbox( pose.Rotation ),
 						ToSandbox( pose.Scale ) );
 				}
 				animation.AddFrame( targetFrame );
 			}
+			onAdded?.Invoke( decoded );
 			animationCount++;
 		}
 		catch ( Exception exception )
@@ -784,7 +890,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 					{
 						Description = path,
 						Data = bytes,
-						Model = Titanfall2Mdl53Reader.Parse( bytes )
+						Model = Titanfall2Mdl53Reader.Parse( bytes, includeGeometry: !infantryAnimations && !previewOnly )
 					} );
 				}
 				catch ( Exception exception )
@@ -937,7 +1043,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			+ $"{_fallbackTriangleCount} source fallback triangles inspected." );
 	}
 
-	static void AddCollisionHulls(
+	void AddCollisionHulls(
 		ModelBuilder builder,
 		Titanfall2Mdl53Reader.ParsedModel parsed,
 		SkeletonData skeleton,
@@ -954,7 +1060,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			break;
 		}
 		var rootPose = rootBoneIndex >= 0 ? skeleton.ModelTransforms[rootBoneIndex] : Transform.Zero;
-		var body = builder.AddBody( mass, Titanfall2Surface.Resolve( parsed.SurfaceProperty, null ), rootBoneIndex >= 0 ? skeleton.Names[rootBoneIndex] : null );
+		var body = builder.AddBody( mass, Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost ), rootBoneIndex >= 0 ? skeleton.Names[rootBoneIndex] : null );
 		if ( rootBoneIndex >= 0 ) body.SetBindPose( rootPose );
 		var traceVertices = new List<Vector3>();
 		var traceIndices = new List<int>();
@@ -988,7 +1094,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			builder.AddTraceMesh( traceVertices, traceIndices );
 	}
 
-	static bool TryAddRagdollCollision(
+	bool TryAddRagdollCollision(
 		ModelBuilder builder,
 		Titanfall2Mdl53Reader.ParsedModel parsed,
 		SkeletonData skeleton,
@@ -1049,7 +1155,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var mass = sourceBody.Mass > 0.0f && float.IsFinite( sourceBody.Mass )
 				? sourceBody.Mass
 				: fallbackMass;
-			var body = builder.AddBody( mass, Titanfall2Surface.Resolve( parsed.SurfaceProperty, null ), skeleton.Names[sourceBody.BoneIndex] );
+			var body = builder.AddBody( mass, Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost ), skeleton.Names[sourceBody.BoneIndex] );
 			var bindPose = skeleton.ModelTransforms[sourceBody.BoneIndex];
 			body.SetBindPose( bindPose );
 			bodyIndices.Add( sourceBody.SolidIndex, bodyIndices.Count );
@@ -1311,7 +1417,8 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		var normalized = NormalizeMaterialName( name );
 		if ( string.IsNullOrWhiteSpace( normalized ) ) return null;
 		if ( !ImportHost.TryGetMaterialPath( normalized, out var registeredPath ) ) return null;
-		return Material.Load( $"mount://{ImportHost.Ident}/{registeredPath}.vmat" );
+		var resource = $"mount://{ImportHost.Ident}/{registeredPath}.vmat";
+		return Material.Load( previewOnly ? resource + "/preview.vmat" : resource );
 	}
 
 	Titanfall2MaterialMetadata GetMaterialMetadata( string materialName )
@@ -1337,6 +1444,10 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		if ( string.IsNullOrWhiteSpace( name ) ) return string.Empty;
 		return string.Join( '/', name.Trim().Replace( '\\', '/' ).Split( '/', StringSplitOptions.RemoveEmptyEntries ) );
 	}
+
+	// Input is the normalized retail material name. Do not classify by tint or emissiveness.
+	internal static bool IsWeakpointMarker( string materialName ) =>
+		string.Equals( materialName, "models/titans/titan_ar_marker/titan_ar_marker", StringComparison.OrdinalIgnoreCase );
 
 	static bool ShouldSkipRenderMaterial( string name )
 	{

@@ -1,5 +1,6 @@
 /// <summary>
-/// Maps Titanfall 2 surface property names onto the engine's <see cref="Surface"/> resources.
+/// Resolves original Titanfall 2 surface definitions as engine <see cref="Surface"/> resources,
+/// falling back to conservative engine aliases when no original definition is available.
 /// <para>
 /// The mount reads surface properties wherever the formats expose them (MDL model/bone
 /// surface props and legacy VMT <c>$surfaceprop</c>). Retail rBSP material surface names are
@@ -86,8 +87,10 @@ static class Titanfall2Surface
 	/// Resolves a source surface name to an engine surface. Unknown names fall back to
 	/// <c>default</c>; each unknown name is reported once so a map does not flood the log.
 	/// </summary>
-	internal static Surface Resolve( string name, string source )
+	internal static Surface Resolve( string name, string source, Titanfall2Mount mount = null )
 	{
+		var original = name?.Trim().Trim( '"' ).ToLowerInvariant();
+		if ( !string.IsNullOrWhiteSpace( original ) && mount?.ResolveOriginalSurface( original ) is { } native ) return native;
 		var normalized = NormalizeName( name );
 		lock ( Sync )
 		{
@@ -128,24 +131,25 @@ static class Titanfall2Surface
 	}
 
 	/// <summary>The engine resource name for a source surface name, or <c>default</c>.</summary>
-	internal static string ResolveName( string name, string source )
+	internal static string ResolveName( string name, string source, Titanfall2Mount mount = null )
 	{
-		return Resolve( name, source )?.ResourceName ?? FallbackName;
+		var surface = Resolve( name, source, mount );
+		return surface?.ResourcePath?.StartsWith( "mount://", StringComparison.OrdinalIgnoreCase ) == true ? surface.ResourcePath : surface?.ResourceName ?? FallbackName;
 	}
 
 	/// <summary>
 	/// Applies the surface to a material's <c>PhysicsSurfaceProperties</c> attribute so the
 	/// engine's material surface lookup (impacts, footsteps) reports the mapped surface.
 	/// </summary>
-	internal static void ApplyTo( Material material, string name, string source )
+	internal static void ApplyTo( Material material, string name, string source, Titanfall2Mount mount = null )
 	{
 		if ( material is null || string.IsNullOrWhiteSpace( name ) )
 			return;
 
-		var surface = Resolve( name, source );
+		var surface = Resolve( name, source, mount );
 		if ( surface is null || string.IsNullOrWhiteSpace( surface.ResourceName ) )
 			return;
 
-		material.Attributes.Set( "PhysicsSurfaceProperties", surface.ResourceName );
+		material.Attributes.Set( "PhysicsSurfaceProperties", ResolveName( name, source, mount ) );
 	}
 }

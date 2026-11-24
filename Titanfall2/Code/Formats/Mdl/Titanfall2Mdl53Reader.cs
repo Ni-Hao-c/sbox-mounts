@@ -77,6 +77,15 @@ public static class Titanfall2Mdl53Reader
 		public Mdl53AnimationDescription Animation { get; init; }
 	}
 
+	public sealed class EventInfo
+	{
+		public float Cycle { get; init; }
+		public int Event { get; init; }
+		public int Type { get; init; }
+		public string Name { get; init; }
+		public string Options { get; init; }
+	}
+
 	public sealed class SequenceInfo
 	{
 		public int Index { get; init; }
@@ -85,6 +94,7 @@ public static class Titanfall2Mdl53Reader
 		public string ActivityName { get; init; }
 		public Mdl53SequenceDescription Sequence { get; init; }
 		public short[] AnimationIndices { get; init; } = Array.Empty<short>();
+		public EventInfo[] Events { get; init; } = Array.Empty<EventInfo>();
 	}
 
 	public sealed class IncludedModelInfo
@@ -149,7 +159,9 @@ public static class Titanfall2Mdl53Reader
 
 	public static ParsedModel Parse( byte[] data ) => Parse( data.AsSpan() );
 
-	public static ParsedModel Parse( ReadOnlySpan<byte> data )
+	public static ParsedModel Parse( ReadOnlySpan<byte> data ) => Parse( data, includeGeometry: true );
+
+	public static ParsedModel Parse( ReadOnlySpan<byte> data, bool includeGeometry )
 	{
 		EnsureReadable<Mdl53StudioHeader>( data, 0 );
 
@@ -175,15 +187,15 @@ public static class Titanfall2Mdl53Reader
 			Sequences = ParseSequences( data, header ),
 			IncludedModels = ParseIncludedModels( data, header ),
 			Textures = ParseTextures( data, header ),
-			BodyParts = ParseBodyParts( data, header ),
+			BodyParts = includeGeometry ? ParseBodyParts( data, header ) : [],
 			SkinTable = ParseSkinTable( data, header ),
 			EmbeddedVvdHeader = ParseOptionalHeader<VvdHeader>( data, header.VvdOffset, header.VvdSize ),
 			EmbeddedVvcHeader = ParseOptionalHeader<VvcHeader>( data, header.VvcOffset, header.VvcSize ),
 			EmbeddedVvdFixups = ParseVvdFixups( data, header ),
-			EmbeddedVertices = ParseEmbeddedVertices( data, header ),
-			EmbeddedVertexColors = ParseEmbeddedVertexColors( data, header ),
-			EmbeddedUv2 = ParseEmbeddedUv2( data, header ),
-			EmbeddedVtx = ParseEmbeddedVtx( data, header ),
+			EmbeddedVertices = includeGeometry ? ParseEmbeddedVertices( data, header ) : [],
+			EmbeddedVertexColors = includeGeometry ? ParseEmbeddedVertexColors( data, header ) : [],
+			EmbeddedUv2 = includeGeometry ? ParseEmbeddedUv2( data, header ) : [],
+			EmbeddedVtx = includeGeometry ? ParseEmbeddedVtx( data, header ) : null,
 			BoneTableByName = ParseBoneTableByName( data, header )
 		};
 
@@ -308,10 +320,40 @@ public static class Titanfall2Mdl53Reader
 				Label = Titanfall2Mdl53Binary.ReadRelativeString( data, offset, sequence.LabelOffset ),
 				ActivityName = Titanfall2Mdl53Binary.ReadRelativeString( data, offset, sequence.ActivityNameOffset ),
 				Sequence = sequence,
-				AnimationIndices = animationIndices
+				AnimationIndices = animationIndices,
+				Events = ParseSequenceEvents( data, offset, sequence )
 			};
 		}
 		return sequences;
+	}
+
+	private static EventInfo[] ParseSequenceEvents( ReadOnlySpan<byte> data, int sequenceOffset, Mdl53SequenceDescription sequence )
+	{
+		if ( sequence.EventCount <= 0 || sequence.EventOffset <= 0 || sequence.EventCount > 1024 )
+			return Array.Empty<EventInfo>();
+
+		var tableOffset = checked(sequenceOffset + sequence.EventOffset);
+		var stride = SizeOf<Mdl53Event>();
+		if ( tableOffset < 0 || tableOffset + (long)sequence.EventCount * stride > data.Length )
+			return Array.Empty<EventInfo>();
+
+		var events = new EventInfo[sequence.EventCount];
+		Span<byte> optionsBytes = stackalloc byte[64];
+		for ( var i = 0; i < events.Length; ++i )
+		{
+			var eventOffset = checked(tableOffset + i * stride);
+			var raw = Titanfall2Mdl53Binary.ReadStruct<Mdl53Event>( data, eventOffset );
+			for ( var b = 0; b < 64; ++b ) optionsBytes[b] = raw.Options[b];
+			events[i] = new EventInfo
+			{
+				Cycle = raw.Cycle,
+				Event = raw.Event,
+				Type = raw.Type,
+				Name = raw.EventNameOffset > 0 ? Titanfall2Mdl53Binary.ReadRelativeString( data, eventOffset, raw.EventNameOffset ) : string.Empty,
+				Options = ReadFixedName( optionsBytes )
+			};
+		}
+		return events;
 	}
 
 	private static IncludedModelInfo[] ParseIncludedModels( ReadOnlySpan<byte> data, Mdl53StudioHeader header )

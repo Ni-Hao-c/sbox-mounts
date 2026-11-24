@@ -57,7 +57,7 @@
 
 　　| rBSP | Full and pure-world scenes, plus inline brush models at `maps/<map>.bsp/brush/<index>.vmdl`. |
 
-　　| PCF | Map-created particle systems rather than individually registered resources. |
+　　| PCF | Map effects and independent `particles/<escaped-name>.prefab` resources. |
 
 　　`skies/skycube.vmat` wraps the retail cubemap in a native sky material.
 ### Loading maps
@@ -78,12 +78,55 @@
 　　With `BSP_LIGHTMAPS=1`, world geometry uses baked HDR lightmaps, props use authored probes, and local lights are evaluated in shaders, up to four per pixel. `light_environment` provides the sun; environment/fog volumes select parameters around the camera. Vista models use public `Skybox3D` with `sky_camera`. Water uses semantic shader classification and framebuffer copies. Decal geometry has its own non-shadowing path. Exposure, display transform, global/local 32³ color correction and core/wide/streak Bloom are reconstructed by the mount.
 
 　　Props preload during loading and live until scene destruction. Native instance batches group a model within a default 4×4 cluster of 512-unit cells. Four decoded LOD bands switch at 1536/4096/8192 units; remaining model slots alias the deepest available band. PVS uses up to 128 cells and 16 portal hops; invalid masks remain visible, and a batch is visible if any member is visible. Authored fades and the default 8192-unit cull apply, except landmarks with radius at least 256. Props with radius below 48 do not cast directional shadows. World/prop shadows and contact shadows default on; godray cards can flicker during distance fades.
+### Independent resources
+
+Models retain the compatible `models/<name>.mdl.vmdl` path. The additional `models/<name>.mdl.visual.vmdl` builds geometry, skeleton and a bind pose without embedding the sequence library or collision. Its `titanfall2_resources` model data lists the associated resources:
+
+| Child of either model path | Engine resource | Use |
+| --- | --- | --- |
+| `skeleton.skel` | `Sandbox.Animation.Skeleton` | Load the MDL53 reference skeleton without creating render meshes. |
+| `animations.json` | Text | Discover clip paths, include sources, sequence activities, flags and blend-grid cells. |
+| `animations/<escaped-name>.anim` | `Sandbox.Animation.Clip` | Decode one requested clip, including additive scale conversion, using the TF2 MDL53 decoder. |
+| `physics.prefab` | `PrefabFile` | Clone independently generated model collision using a `PhysicsCollider`. |
+
+Append the child path to the full mounted model path, for example `mount://titanfall2/models/humans/pilots/pilot_light_ged_m.mdl.visual.vmdl/skeleton.skel`. Clip names are URI escaped; consume the paths in `animations.json`. Blend-grid cells are separate clips; this does not evaluate TF2 sequence layers, IK, events or gameplay animation graphs. A host graph can consume the standard skeleton and clips. Physics prefabs retain the existing VPHY/hitbox/render-fallback policy and do not apply an sprp instance's effective contents or add a rigidbody automatically. Each clone uses `Titanfall2PhysicsResource` to bind its own runtime `PhysicsCollider`; `Prepared` reports success. Prefabs serialize the model source, skin and body rather than the shared anonymous native physics name.
+
+`mount://titanfall2/particles` returns a text index of effect names and prefab paths. Load `mount://titanfall2/particles/<escaped-name>.prefab` as a `PrefabFile`. The PCF catalog is parsed on first explicit particle-resource discovery/load; ordinary mount registration does not parse it. Each clone reconstructs the same TF2 particle controllers as map effects, owns its runtime children and exposes `Titanfall2ParticleResource.Prepared`. Set endpoints through its root `Titanfall2ParticleControlPoints`. The prefab remains dependent on the mounted game and supported PCF operators.
+
+### Weapons, NPCs and Titans
+
+The mount publishes ordinary `PrefabFile` resources tagged `weapon`, `npc`, or `npc` + `titan`. Mount Titanfall 2 first, then use `GameObject.GetPrefab( uri )?.Clone( position )` or a host that lists tagged mount prefabs.
+
+| Path under `mount://titanfall2/entities/` | Contents |
+| --- | --- |
+| `weapons/mp_weapon_<id>.prefab` | `rspn101`, `car`, `r97`, `vinson`, `g2`, `semipistol`, `autopistol`, `alternator_smg`, `hemlok_smg`, `lmg`, `esaw`, `dmr`, `rspn101_og`, `wingman`, `shotgun`, `hemlok` |
+| `weapons/mp_weapon_<id>.prefab` (projectiles) | `epg`, `lstar`, `sniper`, `smr`, `doubletake`, `wingman_n` |
+| `npcs/<id>.prefab` | `npc_soldier`, `npc_spectre`, `npc_stalker`, `npc_militia_grunt`, `npc_imc_heavy`, `npc_reaper`, `npc_marvin`, `npc_plasma_turret`, `npc_attack_drone`, `npc_prowler` |
+| `titans/<id>.prefab` | `monarch`, `bt7274`, `legion`, `ion`, `tone`, `scorch`, `northstar`, `ronin`; FD actors: `arc_titan`, `nuke_titan`, `elite_monarch` |
+| `titanweapons/mp_titanweapon_<id>.prefab` | `xo16_shorty`, `xo16_vanguard`, `predator_cannon`, `particle_accelerator`, `leadwall`, `sniper`, `sticky_40mm`, `meteor`. Tagged `titan-weapon`; use `Titanfall2TitanArmament.EquipTo(actor)` on the host. |
+
+Weapons read PC multiplayer `WeaponData` (including `#base` and `MP_BASE`). They use `BaseCombatWeapon` for inventory, hitscan and reload. Hemlok uses timed bursts and EVA-8 splits volley damage across eight pellets. A standalone host needs a `PlayerController` and `BaseInventoryComponent` configured for pickup and control; reserve ammo is unlimited. Pilot guns use retail POV rigs and bone-merged pilot arms with supported ADS, sprint, reload and animation events. Authored bodygroups, muzzle flashes, shells, tracers, trails and bullet decals use mounted retail resources. Gunshot samples are selected by verified weapon family, perspective and firing stage; the Miles event mixer is not reproduced. See [presentation and current limits](docs/COMBAT_SYSTEMS.zh-CN.md).
+
+Projectile weapons consume a round on the host and create a swept flight, applying gravity, direct damage and (where configured) occluded splash. Fast bolts use the same sweep as slower plasma and rockets. Models come from the mount; bolts represented by the original empty model use a colored engine model. Double Take uses a horizontal pattern. L-STAR currently cools off using the magazine/reload framework, not TF2's continuous heat system.
+
+Combat NPCs have host-side sight checks, faction combat and death, with `NavMeshAgent` movement where there is a usable mesh. The Reaper, stationary plasma turret and hovering attack drone fire integrated projectiles; MRVN is passive, and the Prowler uses short-range melee. The drone uses a swept local hover controller, not a flight navigation graph. The `.infantry.vmdl` variants decode a small set of idle/move/death clips where available.
+
+Titans use chassis-sized collision, regenerating shields and separate anti-Titan weapon damage. The local player or listen host can press Use to embark through a short, cancellable connection sequence. The native cockpit HUD displays hull, shields, ammunition, targeting, ability cooldowns and core charge. Use leaves through a checked, grounded player-sized exit; moving and looking steers, primary attack fires, Reload reloads, secondary attack uses ordnance, Duck uses defense, and Run dashes. The core uses the configured action, Flashlight/F by default. Entering aligns the Titan with the pilot; exiting, disabling or destroying the Titan restores pilot inventory and movement. Seven chassis kits and six core abilities are reusable prefab components. Tone requires three 40mm hits on a target before firing its tracking rockets. Northstar Flight Core, remote-client driving and complete retail gameplay animation graphs remain unsupported. See [combat systems and current approximations](docs/COMBAT_SYSTEMS.zh-CN.md).
+
+Player/NPC hits and projectiles share retail impact-table particle/sound lookup with native spark, smoke, flash and procedural bullet/scorch decal fallbacks. Decals follow hit props and project into the surface; skinning, water and unavailable PCF operators have limited coverage. A scene retains at most 128 marks and 64 impact bursts. Titan armament prefabs install retail ballistics and replace the held model, then reload; they are not pilot inventory pickups.
+
+The local `Validation/validate.ps1 -GameplayOnly -Graphics` fixture checks the compiled package against a local TF2 installation in an isolated runtime.
+
 ### Collision, surfaces and decals
 　　World collision uses rBSP CM brushes/tricolls, grouped by original contents. Groups without player-solid bits become triggers. Clients warn and fall back to filtered render geometry if CM is incomplete; dedicated servers require complete CM. Prop collision prefers VPHY hulls, then hitboxes, then render meshes; meshes above 8192 triangles use a bounds hull. Effective contents combine sprp solid type, MDL contents and the remove mask; zero means no collision. Ordinary scenes default to resident collision. With `RESIDENT_WORLD=0`, props activate within 1536 units and release beyond 2560; pure-world scenes and servers remain resident.
 
 　　Objects carry `ttf2_contents`, `ttf2_content_<bit>` and applicable `playerclip`, `titanclip`, `nograpple`, `nowallrun` tags. [Titanfall2CollisionQueries.Run](Code/Collision/CollisionQueries.cs) accepts `Titanfall2TraceMask`, such as `Shot`; masks use retail constants. `titanfall2_collision_look [distance=512] [radius=0]` inspects collision source, contents, shapes and tags without changing them.
 
-　　[Titanfall2Surface](Code/Resource/Surface.cs) normalizes surfaceprop names, applies aliases (`concrete` → `dirt`, `tile` → `ceramic`) and falls back to `default`, warning once per unknown name. MDL model surfaces apply to bodies and bone surfaces to hitboxes; VMT `$surfaceprop` becomes `PhysicsSurfaceProperties`. World CM and unparsed RPAK surface names retain engine defaults.
+　　World CM and fallback collision use standalone `PhysicsGroupDescription` resources and `PhysicsCollider`, independently of rendering models. Original contents groups, query tags and native-body readiness checks are retained. Existing serialized `ModelCollider` readiness references remain supported.
+
+[Titanfall2Surface](Code/Resource/Surface.cs) first resolves the installed game's `scripts/surfaceproperties_manifest.txt` and its ordered surface scripts from the same immutable content snapshot. Original names, inheritance, density, friction and elasticity become mounted `Surface` resources. MDL model surfaces apply to bodies and bone surfaces to hitboxes; VMT `$surfaceprop` becomes the full mounted `PhysicsSurfaceProperties` path. Engine aliases are a fallback for absent definitions. World CM and unparsed RPAK surface names retain engine defaults; render materials are not guessed to describe CM collision surfaces.
+
+`mount://titanfall2/surfaceproperties` returns a text index. Each `<escaped-name>.surface` child is a standard `Surface`; its `<escaped-name>.json` companion retains inherited source properties, including TF2 step/impact identifiers and movement factors. These remain metadata where the engine has no matching consumer; Miles events, movement factors and Source gamematerial letters are not automatically converted into engine sound or gameplay behavior.
 
 　　[Titanfall2DecalFactory](Code/Resource/Decals.cs) exposes `TryCreateDefinition`, `Spawn` and `RotationForNormal`. `titanfall2_decal <material> [size=32] [depth=8]` places a decal at the crosshair. Native decals use albedo/normal/emissive textures and color alpha, without the original layer blending, LUT or separate opacity semantics. Static BSP decals remain geometry.
 ### Navigation and audio
@@ -163,6 +206,7 @@
 
 　　| `CACHE_MB` | 2048 | 128–8192 | Derived-cache disk budget in MiB. |
 
+　　| `SHOW_WEAKPOINT_MARKERS` | Off | On/off | Show retail AR weakpoint overlay meshes on mounted models. Restart to apply; on restores the mesh, not the retail targeting rules. |
 　　| `TEXTURE_MAX` | Player quality | 64–16384 | Maximum source dimension; missing/empty/invalid follows player quality. Explicit 512 is available for low-memory use. |
 
 　　| `LIGHTMAP_16BIT` | On | On/off | Single-level SkyB BGR565 and RealTimeB BGRA4444 reduce lightmap channels from 17 to 13 B/texel. BGR565 uses R high/B low; RGB565 is not interchangeable. Mipped RealTimeB stays RGBA8888 due to lower-mip corruption with native BGRA4444. Off restores RGBA8888. |
@@ -289,7 +333,7 @@
 
 　　Color correction uses 32³ RGB tables (98,304 bytes), such as `materials/correction/sp_beacon.raw`, registered as mounted volume textures at `<source>.raw.vtex`. Scenes store paths/static definitions, not the sample bytes. Global, distance and brush weights/fades are evaluated per camera, without retail script execution. The mount retains 32³ precision instead of resampling to native 16³ grading. Missing tables disable their contribution.
 ### Models, batching, particles and audio details
-　　MDL body `Base` is a packing multiplier, not a default index. VTX strip `IndexOffset` counts elements, not bytes. Bad VVD ranges/embedded VTX fail explicitly. Models retain `titanfall2_collision` source metadata; hitboxes get `titanfall2_hitgroup_<n>` and nonzero critical overrides get `titanfall2_critical_override`. Include-model animations map bones by name, always add bindpose, and import only the first animation of each sequence.
+　　MDL body `Base` is a packing multiplier, not a default index. VTX strip `IndexOffset` counts elements, not bytes. Bad VVD ranges/embedded VTX fail explicitly. Models retain `titanfall2_collision` source metadata; hitboxes get `titanfall2_hitgroup_<n>` and nonzero critical overrides get `titanfall2_critical_override`. Legacy embedded animations map included-model bones by name, add bindpose and import the first animation of each sequence. Independent animation children also expose the remaining blend-grid cells on demand.
 
 　　Identity instance-index buffers upload once and reuse prefixes; LOD/visibility subsets use dynamic buffers. Batch teardown releases its three GPU buffers. Probe batches skip probe bindings in depth prepass, retaining them for forward/shadows. Serialized arrays validate magic/version/count against actual bytes. PVS, LOD, distance and shadows use native batches; removed `GpuSceneCompatibility`/GPU MDI cannot be re-enabled by settings. Remaining layout/budget utilities and shaders are offline material, not an active GPU scene.
 
@@ -329,7 +373,7 @@
 ## Limitations
 　　- World CM and RPAK materials retain default physical surfaces; fallback prop hulls/meshes are approximations. `NoClimb` to wall-running semantics is inferred.
 
-　　- Gameplay, scripts, trigger behavior and networking belong to game code. Only the first animation per sequence is imported; blend sequences remain incomplete.
+　　- Gameplay, scripts, trigger behavior and networking belong to game code. Legacy models embed the first animation per sequence; independent clips expose blend-grid cells without implementing sequence blending, layers or IK. The engine's standard animation resources require uniform scale: tiny retail roundoff is normalized, while genuinely nonuniform scaling fails explicitly.
 
 　　- PCF operators/initializers and VMT proxies are partial. Runtime control-point movement requires game code; arbitrary texture transforms/entity-driven inputs are unsupported.
 
@@ -429,7 +473,7 @@ These projects informed the earlier reusable mount-framework design. The researc
 
 　　| `r2/sound/general.mbnk` | `sound/<name>.vsnd` | Miles 银行中的 BCF 声音，由挂载内置的纯 C# Bink Audio 2 解码器解码为 PCM。 |
 
-　　| PCF | 地图粒子系统 | 由地图实体创建，不单独注册为资源。 |
+　　| PCF | 地图粒子系统、`particles/<escaped-name>.prefab` | 独立 prefab 与地图实体复用同一套 TF2 转换器。`mount://titanfall2/particles` 提供名字与路径索引。 |
 
 　　| rBSP 地图 | `maps/<map>.bsp.scene`、`maps/<map>.bsp.world.scene` | 见下一节。 |
 
@@ -456,6 +500,47 @@ These projects informed the earlier reusable mount-framework design. The researc
 　　地图对象作为不保存的子对象加入场景，组件只销毁它自己创建的对象。`Titanfall2Map.GetAvailableMaps()` 返回当前挂载中所有可用的地图名。
 
 　　纯世界场景加载完成后，`worldspawn` 对象上的 `Titanfall2WorldReady` 组件会在以下条件都满足时添加标签 `ttf2_map_ready`：世界碰撞体已进入物理世界，所有内容分组都有物理体，常驻道具碰撞全部创建完成。任一条件失效时标签会被移除。游戏代码应在看到这个标签后再放置玩家。
+## 武器、NPC 与泰坦
+
+挂载成功后可以通过 `GameObject.GetPrefab( uri )?.Clone( position )` 生成下列实体。路径均以 `mount://titanfall2/entities/` 开头：
+
+| 相对路径 | 实体 ID |
+| --- | --- |
+| `weapons/mp_weapon_<id>.prefab` | `rspn101`、`car`、`r97`、`vinson`、`g2`、`semipistol`、`autopistol`、`alternator_smg`、`hemlok_smg`、`lmg`、`esaw`、`dmr`、`rspn101_og`、`wingman`、`shotgun`、`hemlok`、`smart_pistol` |
+| `weapons/mp_weapon_<id>.prefab`（投射物） | `epg`、`lstar`、`sniper`、`smr`、`doubletake`、`wingman_n`、`softball`、`pulse_lmg`、`mastiff`、`shotgun_pistol` |
+| `weapons/mp_weapon_<id>.prefab`（反泰坦） | `defender`、`mgl`、`rocket_launcher`、`arc_launcher` |
+| `weapons/mp_weapon_<id>.prefab`（投掷物） | `frag_grenade`、`grenade_emp`、`thermite_grenade`、`grenade_gravity`、`grenade_electric_smoke`、`satchel` |
+| `npcs/<id>.prefab` | `npc_soldier`、`npc_spectre`、`npc_stalker`、`npc_militia_grunt`、`npc_imc_heavy`、`npc_reaper`、`npc_marvin`、`npc_plasma_turret`、`npc_attack_drone`、`npc_prowler` |
+| `npcs/<id>.prefab`（新增） | `npc_imc_smg`、`npc_imc_shotgun`、`npc_imc_captain`、`npc_militia_heavy`、`npc_militia_smg`、`npc_militia_shotgun`、`npc_stalker_red`、`npc_imc_pilot`、`npc_militia_pilot` |
+| `titans/<id>.prefab`（可驾驶） | `monarch`（帝王 / XO-16）、`bt7274`（BT / XO-16）、`legion`（军团 / Predator Cannon）、`ion`（离子 / Splitter Rifle）、`tone`（强力 / 40mm）、`scorch`（烈焰 / T-203）、`northstar`（北极星 / Plasma Railgun）、`ronin`（浪人 / Leadwall） |
+| `titans/<id>.prefab`（FD 敌方 AI） | `arc_titan`、`nuke_titan`、`elite_monarch`；没有驾驶座 |
+
+当前目录包含 37 件铁驭武器／投掷物、24 种普通 NPC 和 11 种泰坦。铁驭武器读取零售 PC 多人 `WeaponData`；Hemlok 可三连发，EVA-8 将一发总伤害分摊给 8 颗散弹。独立项目需配置 `PlayerController` 和启用拾取及控制的 `BaseInventoryComponent`。第一人称使用原版 POV 骨架与骨骼合并的铁驭手臂，支持可用的 ADS、冲刺、换弹和动画事件；按原版 bodygroup 保留机瞄等部件。枪口、抛壳、曳光、尾迹与弹痕读取挂载的原版素材，枪声按已核对的武器音源族、视角和首发／循环／收尾选择，不使用跨武器模糊匹配。Miles 原生事件混音仍未恢复，详见[战斗系统说明](docs/COMBAT_SYSTEMS.zh-CN.md)。备用弹仍无限，Devotion 渐进射速等专属机制尚未复刻。
+
+智能手枪目前锁定准星附近、无遮挡的敌对 NPC，持续约 0.6 秒后辅助命中；开镜时使用手动瞄准，尚无专用锁定 HUD。遥控炸药主射击投掷并黏附碰撞表面，副射击仅引爆当前武器投出的炸药，未引爆炸药在 45 秒后清理。电烟雷碰撞后生成 5 秒烟雾和受掩体阻挡的电击区域。
+
+投射物在主机上消耗弹药并逐步飞行，读取零售参数中的速度、重力和溅射；薄障碍物由扫掠碰撞检测，掩体能阻挡爆炸伤害。Double Take 发射横向三枚弹体。L-STAR 仍借用弹匣／冷却流程，不是原版连续热量系统。
+
+NPC 继承引擎 `BaseCombatNpc`。普通地面单位使用官方 `SensesLayer`、`NavigationLayer` 和任务调度器；`Titanfall2EngageSchedule` 在同一任务中并行处理移动和内置武器射击。参考 Northstar 的 `behavior_soldier`、`behavior_spectre`、`behavior_pilot_elite` 和 AI settings，增加低弹量换弹找掩体、近距离后撤、射击位置调整、队友位置通报和丢失目标后搜索。搜索使用最后目击／通报位置，默认 6 秒后忘记，不跟踪遮挡后的实时位置；友军挡住枪线时暂停射击。步兵、持续推进单位和铁驭分别配置反应及点射节奏。战术点要求完整 NavMesh 路径，并避开队友正在使用的位置；每次规划最多检查 12 个点、计算 3 条路径。无目标时复用官方待命、调查和跟随，友军步兵使用键切换跟随。新增企业幽灵、苔藓潜行者、民兵幽灵、民兵潜行者和苔藓 MRVN（均为零售模型／阵营变体）。死神、潜行者、幽灵、持枪步兵和 AI 泰坦可在近距离切换到独立近战；前摇后重新扫掠命中、可躲避且受墙体阻挡，不消耗弹药。死神优先播放 `sspec_attack_groundslam`，潜行者优先播放 `st_stand_melee_swipe`；近战姿势优先于步态及装填。数值和命中时序属于本地实现，未宣称逐帧还原原作。Reaper 使用内置投射物，并通过现有 PCF 转换器加载脚本指定的 `P_plasma_proj_MD_DLight`、附带飞行光源和命中放电；冷启动时按帧准备粒子目录，准备期间保留发光弹迹。固定炮塔、悬停无人机和 FD 特殊单位保留专用逻辑；Prowler 近战，MRVN 中立。移动需要可用 NavMesh。`Faction`、`Friendly` 和 `AttackPlayers` 控制阵营及玩家敌对；序列化 `Friendly=false` 不会覆盖 wildlife/neutral 等自定义阵营。
+
+移动动画分别保留步行／跑步的前进、后退、左移和右移，优先选择 NPC 持枪或对应机体的循环。带方向混合的序列按参数零值选择中间格，而不是固定取第一格（如 `Run_forward_mp` 的三格范围是 −90°～+90°）。R2 frame movement 的轨道偏移以整个 24 字节结构起点为基准，不能沿用骨骼轨道的指针组基准；否则会多偏移 16 字节、跳过前几帧并在结尾读入相邻数据。模型的 `titanfall2_actor_animation` 数据记录实际使用的源片段和原版移动速度；运行时按身体局部移动方向选片段、按实际水平速度调整步频，换方向保留步态相位。导航控制世界位移，移动片段不重复应用水平根骨平移。尚未完整复现 Respawn 的方向混合图、移动开火叠加层、转身／起停过渡、脚部 IK、跑墙或原版 C++ 行为选择器。
+
+官方 Q 菜单的 `PreviewModel` 使用独立 `.preview.vmdl`：NPC 只解码待机的一帧，再把姿势烘焙进静态顶点；武器使用校正朝向的默认身体部件。预览没有骨架、动作库、碰撞或额外皮肤组，`PreviewSequence` 留空。CPU 网格缓存命中后连原始 MDL 和关联动画文件都不读取；缓存沿用内容指纹校验与损坏回退。材质通过 `/preview.vmat` 子资源绑定 `/preview.vtex` 贴图子资源，最高使用 512 像素的原版 mip（仍遵守更低的用户画质上限），与游戏材质／贴图资源分别缓存。生成角色仍使用 `.infantry.vmdl`，实际武器仍使用 `.held.vmdl`／原版 POV；预览不会替换它们。首轮未缓存的转换仍有开销，官方缩略图队列继续负责可见项排队及会话内成图缓存。
+
+泰坦有大型碰撞体、可恢复护盾和机载武器的对泰坦伤害值。空座时由 AI 操作；本地玩家或监听主机可用 **使用键** 开始短暂登乘连接，走远或被遮挡时取消。入舱后显示原生中文 HUD，包含生命、护盾、弹药、目标、技能冷却和核心充能。移动键和鼠标驾驶，主射击开火、换弹键装填、**副射击** 攻击技能、**蹲下** 防御、**疾跑** 冲刺，**F／手电筒 action** 激活核心。离舱会检查完整玩家体积、路径和地面；出口受阻时保留驾驶，死亡或删除机体前解绑驾驶员并恢复库存。`Titanfall2TitanKit` 接入七种基础技能，`Titanfall2TitanCore` 接入君主、离子、军团、浪人、强力和烈焰六种核心；BT 使用君主路线。强力需对同一目标累计三次 40mm 命中才能发射追踪火箭。北极星飞行核心、远程客户端驾驶与完整原版技能／动画状态机仍未实现。详细用法及简化范围见 [战斗系统说明](docs/COMBAT_SYSTEMS.zh-CN.md)。
+
+玩家、NPC 和投射物共用命中特效入口：读取零售版 impact table 中的粒子／声音，以原生火花、烟尘、闪光和程序生成的弹孔／焦痕兜底。贴花依附命中物体并向表面内部投射；每个场景最多保留 128 张弹痕、64 组瞬时命中特效。`entities/titanweapons/mp_titanweapon_<id>.prefab` 是独立的 `titan-weapon` 武装预制体；主机调用 `Titanfall2TitanArmament.EquipTo(actor)` 安装，替换模型并重新装填，不占用铁驭背包。命中特效未完整复刻 RPAK 粒子和原版弹痕美术。
+
+游戏实体的第三人称动画按原版 MDL 活动与骨架选取。BT 的战斗待机为 1001 帧循环；有对应动作时，静止交火、装填、近战和死亡分别播放全身序列，移动时优先保留步态。持枪模型若与角色有共同的枪根骨骼（如 `ja_c_propGun`），按武器参考姿势对齐该动画骨骼的旋转与位置。只放置 `.vmdl` 不会启动 NPC 行为；请使用 gameplay prefab。第一人称动画图、移动中上半身分层与双手 IK 不在此实现内。
+
+宿主可以不加载预制体就按 `weapon`、`npc`、`titan` 或 `frontier-defense` 标签枚举。Sandbox 的官方 Q → 武器／NPC → Titanfall 2 入口展示这些实体；菜单属于游戏项目，而非挂载 DLL。
+
+```csharp
+var mount = Sandbox.Mounting.Directory.Get( "titanfall2" );
+var assets = mount.GetAll( Sandbox.Mounting.ResourceType.PrefabFile );
+var titans = assets.Where( asset => asset.Tags.Contains( "titan" ) );
+```
+
 ## 渲染
 　　以下功能在默认设置（`SBOX_TITANFALL2_BSP_LIGHTMAPS=1`）下启用。
 
@@ -512,8 +597,25 @@ These projects informed the earlier reusable mount-framework design. The researc
 　　用原始掩码做射线检测时，调用 `Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Shot )`（[Collision/CollisionQueries.cs](Code/Collision/CollisionQueries.cs)）。`Titanfall2Contents` 和 `Titanfall2TraceMask` 枚举（[Collision/CollisionContents.cs](Code/Collision/CollisionContents.cs)）使用零售版脚本中的常量值。
 
 　　控制台命令 `titanfall2_collision_look [距离=512] [半径=0]` 从当前相机发出射线或球体扫描，以 JSON 输出命中物体的碰撞来源、contents、形状和标签。它只读取，不修改碰撞。
+### 独立资源
+
+原有 `models/<name>.mdl.vmdl` 保持兼容。新增 `models/<name>.mdl.visual.vmdl` 只构建渲染几何、骨架和绑定姿态，不嵌入序列库和碰撞。两种模型路径下都可以按需读取以下子资源；模型的 `titanfall2_resources` 数据也提供关联路径。
+
+| 子路径 | 引擎类型 | 用途 |
+| --- | --- | --- |
+| `skeleton.skel` | `Sandbox.Animation.Skeleton` | 只读取 MDL53 参考骨架，不创建渲染网格。 |
+| `animations.json` | 文本 | 查询片段路径、include 来源、活动、标志和混合网格。 |
+| `animations/<escaped-name>.anim` | `Sandbox.Animation.Clip` | 用 TF2 解码器按需转换一个片段，处理叠加动画的缩放差值。 |
+| `physics.prefab` | `PrefabFile` | 独立克隆模型碰撞，内部使用 `PhysicsCollider`。 |
+
+例如：`mount://titanfall2/models/humans/pilots/pilot_light_ged_m.mdl.visual.vmdl/skeleton.skel`。片段名字使用 URI 转义，建议直接采用 `animations.json` 给出的路径。混合网格中的各单元作为独立片段提供；这不等于实现了 TF2 的序列分层、IK、事件或游戏动画图。宿主可用标准骨架和片段构建自己的动画图。物理 prefab 沿用 VPHY、hitbox、渲染近似的回退顺序，不自动套用 sprp 实例 contents，也不自动添加 Rigidbody。每个克隆通过 `Titanfall2PhysicsResource` 绑定自己的运行时 `PhysicsCollider`，以 `Prepared` 报告结果；prefab 保存模型来源、皮肤和 body，避免引擎匿名物理资源重名导致串用。
+
+`mount://titanfall2/particles` 返回粒子名字和 prefab 路径的文本索引；`mount://titanfall2/particles/<escaped-name>.prefab` 可作为普通 `PrefabFile` 消费。首次主动读取粒子资源时才索引 PCF，挂载注册不预先解析。每个克隆实例重建地图粒子使用的 TF2 控制器，独立持有运行时子对象，以 `Titanfall2ParticleResource.Prepared` 报告准备结果；通过根对象的 `Titanfall2ParticleControlPoints` 更新端点。它仍依赖已挂载的游戏和当前支持的 PCF 算子。
+
+世界 CM 和渲染回退碰撞已改用独立 `PhysicsGroupDescription` 与 `PhysicsCollider`，保留原始 contents 分组、查询标签及原生物理体就绪检查；原有序列化 `ModelCollider` 的就绪引用仍可读取。
+
 ### 表面语义
-　　挂载会把能读到的 surfaceprop 映射到引擎的 `Surface`（[Resource/Surface.cs](Code/Resource/Surface.cs)），用于物理摩擦/弹性/密度和脚步声：
+　　挂载优先读取同一内容快照中的原版 `scripts/surfaceproperties_manifest.txt` 及其按序声明的表面脚本，将原始名字、继承关系、密度、摩擦与弹性转换为引擎 `Surface`（[Resource/Surface.cs](Code/Resource/Surface.cs)）：
 
 　　- **MDL**：模型级 surfaceprop 用于物理体，骨骼级 surfaceprop 用于 hitbox。这是静态道具和大多数模型碰撞的表面来源。
 
@@ -521,7 +623,9 @@ These projects informed the earlier reusable mount-framework design. The researc
 
 　　- **rBSP 世界和 RPAK MATL**：CM 碰撞数据没有材质索引，零售 MATL 的表面名在资产头的字符串指针里、尚未解析，因此世界碰撞和 RPAK 材质保持引擎默认表面。
 
-　　- 引擎没有的表面名按 [Resource/Surface.cs](Code/Resource/Surface.cs) 的别名表映射（例如 `concrete`→`dirt`、`tile`→`ceramic`）；未知名字回退到 `default`，每个名字只提示一次。
+　　- 原始定义不存在时才使用引擎别名表；未知名字回退到 `default`，每个名字只提示一次。材质和 hitbox 使用完整挂载路径，避免与其他游戏的同名表面冲突。
+
+`mount://titanfall2/surfaceproperties` 提供文本索引，`<escaped-name>.surface` 子资源是标准 `Surface`；对应的 `<escaped-name>.json` 保留继承后的全部原始属性，包括 TF2 脚步/撞击标识、移动系数等。没有对应引擎消费者的字段仅作为元数据提供，不自动转换 Miles 事件、移动行为或 Source gamematerial 字母。rBSP CM 和未解析的 RPAK 表面仍保留默认表面，不用渲染材质猜测 CM 表面。
 ## 运行时贴花
 　　`Titanfall2DecalFactory`（[Resource/Decals.cs](Code/Resource/Decals.cs)）把挂载的泰坦陨落 2 贴花材质解包成原生 `Decal` 需要的贴图，供游戏代码做弹孔、焦痕等动态效果：
 
@@ -653,6 +757,7 @@ These projects informed the earlier reusable mount-framework design. The researc
 
 　　| `CACHE_MB` | 2048 | 128–8192 | 处理缓存的磁盘预算（MB） |
 
+　　| `SHOW_WEAKPOINT_MARKERS` | 关闭 | 开/关 | 显示挂载模型的 AR 弱点图块。重启生效；开启恢复原网格，不模拟瞄准条件，不改变伤害。 |
 　　| `TEXTURE_MAX` | 跟随玩家纹理设置 | 64–16384 | 显式覆盖贴图最大边长；未设置、空值或非法数值时跟随玩家设置。低显存可显式设 512 |
 
 　　| `LIGHTMAP_16BIT` | 开 | 开/关 | 默认单级光照页使用 SkyB（BGR565）与 RealTimeB（BGRA4444）：光照片 17→13 B/px。SkyB 使用原生上传验证过的 BGR565（R 高位、B 低位），不能替换为会返回有效但数据失真的 RGB565。多级 mip 下 RealTimeB 使用 RGBA8888，避开原生 BGRA4444 下级 mip 失真。设 0 全部回到 RGBA8888 |
@@ -1122,7 +1227,7 @@ These projects informed the earlier reusable mount-framework design. The researc
 
 　　- 每个 MDL 还注册一个静态实例模型（`.t2static`），它包含批次使用的前四档几何，其余 LOD 槽位复用最深的可用档，供实例批次切换。
 
-　　- 动画来自模型自身和它 include 的模型，按骨骼名称映射到目标骨架。每个序列只取第一个动画，并且总是先添加 `bindpose`。
+　　- 动画来自模型自身和它 include 的模型，按骨骼名称映射到目标骨架。兼容模型每个序列只取第一个动画；独立片段还提供其余混合网格单元。模型先添加 `bindpose`。
 
 　　- 模型缓存键包含转换格式 ID 和内容快照指纹（`ContentFingerprint`）；转换规则改变时须更新 `Titanfall2BuildIdentity.VersionId`。
 ### 静态道具批次
@@ -1296,7 +1401,7 @@ These projects informed the earlier reusable mount-framework design. The researc
 
 　　- **游戏逻辑**：门、触发器、脚本和网络同步属于游戏代码，挂载只提供几何、碰撞和实体数据。
 
-　　- **动画**：每个序列只导入它的第一个动画，混合序列的其余动画会被忽略。
+　　- **动画**：兼容模型仍只嵌入每个序列的第一个动画；独立资源提供其他混合网格单元，但不实现序列混合、分层和 IK。引擎标准动画资源要求统一缩放；零售数据的微小浮点误差会归一化，真正非均匀缩放会明确报错。
 
 　　- **粒子**：
 

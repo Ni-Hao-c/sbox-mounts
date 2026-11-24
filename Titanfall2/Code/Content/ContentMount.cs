@@ -36,6 +36,9 @@ public partial class Titanfall2Mount
 	internal IReadOnlyList<ContentRegistration> PrepareContentCatalog( HashSet<string> registered, Titanfall2ContentSnapshot snapshot )
 	{
 		var catalog = new List<ContentRegistration>();
+		_surfaceCatalog = new Titanfall2SurfaceCatalog( snapshot );
+		catalog.Add( new( ResourceType.Text, "surfaceproperties", new Titanfall2SurfaceCatalogLoader( _surfaceCatalog ) ) );
+		catalog.Add( new( ResourceType.Text, "particles", new Titanfall2ParticleCatalogLoader() ) );
 		// GUID dependencies need all native winners, including two GUIDs with one name.
 		foreach ( var entry in snapshot.Entries.Where( entry => entry.Archive is not null ) )
 		{
@@ -171,6 +174,8 @@ public partial class Titanfall2Mount
 				case ".rmdl":
 					_modelSources.TryAdd( NormalizeModelSourcePath( entry.Path ), source );
 					catalog.Add( new( ResourceType.Model, entry.Path, new ModelLoader( source ) ) );
+					// Opt into independently consumed clips and physics without eagerly decoding them.
+					catalog.Add( new( ResourceType.Model, entry.Path + ".visual", new ModelLoader( source, separateResources: true ) ) );
 					// The static-instance resource is one .t2static model that carries every LOD.
 					var allLodsPath = ModelLoader.GetStaticInstanceAllLodsPath( entry.Path );
 					if ( registered.Add( allLodsPath ) )
@@ -185,6 +190,27 @@ public partial class Titanfall2Mount
 					break;
 			}
 		}
+		// Individual TXTR/VTF resources retain priority over named UI-atlas sprites.
+		AddUiAtlasRegistrations( catalog, registered, snapshot );
+		AddGameplayRegistrations( catalog, snapshot, message => Log.Warning( message ) );
+		ConfigureModelBrowser( catalog );
 		return catalog.AsReadOnly();
 	}
+
+	/// <summary>Show one complete model per source; rendering and gameplay variants stay addressable.</summary>
+	internal static void ConfigureModelBrowser( IEnumerable<ContentRegistration> catalog )
+	{
+		foreach ( var asset in catalog )
+		{
+			if ( asset.Type != ResourceType.Model ) continue;
+			if ( !IsPublicModelPath( asset.Path ) ) asset.Loader.Flags |= ResourceFlags.DeveloperOnly;
+		}
+	}
+
+	// Static-instance variants deliberately drop the skeleton. Keep the source model
+	// so browsing a character or articulated prop does not change its capabilities.
+	internal static bool IsPublicModelPath( string path ) => !string.IsNullOrEmpty( path )
+		&& !path.Replace( '\\', '/' ).StartsWith( "maps/", StringComparison.OrdinalIgnoreCase )
+		&& (path.EndsWith( ".mdl", StringComparison.OrdinalIgnoreCase )
+			|| path.EndsWith( ".rmdl", StringComparison.OrdinalIgnoreCase ));
 }

@@ -288,7 +288,7 @@ sealed class Titanfall2MaterialDescriptor
 		RuntimeExpressions.AddRange( definition.GetRuntimeExpressions() );
 	}
 
-	public Material CreateMaterial( Titanfall2Mount mount, string resourcePath, Action<string> warn )
+	public Material CreateMaterial( Titanfall2Mount mount, string resourcePath, Action<string> warn, bool previewMaterial = false )
 	{
 		// Dark atmosphere cards share the Godray geometry/fade path, but retail
 		// uses ordinary premultiplied blending for them, not additive lighting.
@@ -310,7 +310,7 @@ sealed class Titanfall2MaterialDescriptor
 		material.SetFeature( "F_RENDER_BACKFACES", Metadata.DoubleSided ? 1 : 0 );
 		// Physics surface comes from the source surfaceprop when the format exposes one
 		// (legacy VMT). Retail MATL surfaces are not resolved yet, so those keep the default.
-		Titanfall2Surface.ApplyTo( material, Metadata.SurfaceProperty, resourcePath );
+		Titanfall2Surface.ApplyTo( material, Metadata.SurfaceProperty, resourcePath, mount );
 
 		if ( Parameters.HasValue )
 		{
@@ -344,7 +344,9 @@ sealed class Titanfall2MaterialDescriptor
 			// reflected binding for that slot rather than overwriting it with an auxiliary map.
 			if ( !boundParameters.Add( parameter ) ) continue;
 
-			var texture = Texture.Load( $"mount://{mount.Ident}/{binding.TexturePath}.vtex", false );
+			var texturePath = $"mount://{mount.Ident}/{binding.TexturePath}.vtex";
+			if ( previewMaterial ) texturePath += "/preview.vtex";
+			var texture = Texture.Load( texturePath, false );
 			if ( texture is null || texture.IsError || !texture.IsValid )
 			{
 				warn?.Invoke( $"texture '{binding.TexturePath}' (GUID 0x{binding.TextureGuid:X16}) could not be loaded" );
@@ -394,7 +396,7 @@ sealed class Titanfall2MaterialDescriptor
 			material.Set( "g_tAlbedo", Metadata.Mode == Titanfall2MaterialMode.Opaque ? Texture.White : Texture.Transparent );
 			warn?.Invoke( "no colour/albedo texture was bound" );
 		}
-		if ( RuntimeExpressions.Count > 0 )
+		if ( !previewMaterial && RuntimeExpressions.Count > 0 )
 			Titanfall2MaterialAnimationRegistry.Register( material, Name, RuntimeExpressions );
 		return material;
 	}

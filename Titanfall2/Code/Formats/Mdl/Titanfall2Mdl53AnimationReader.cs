@@ -59,18 +59,7 @@ public static class Titanfall2Mdl53AnimationReader
 
 		for ( var frame = 0; frame < frameCount; ++frame )
 		{
-			var poses = new BonePose[boneCount];
-			Array.Copy( defaults, poses, boneCount );
-
-			if ( boneCount > 0 && (description.Flags & StudioAllZeros) == 0
-				&& TryResolveAnimationBlock( data, info.Offset, description, frame, out var animationOffset, out var localFrame ) )
-			{
-				DecodeBoneRecords( data, model, animationOffset, localFrame, sequenceHasScale, poses );
-			}
-
-			if ( poses.Length > 0 )
-				poses[0] = ApplyRootMovement( data, info.Offset, description, frame, poses[0] );
-			frames[frame] = poses;
+			frames[frame] = DecodePose( data, model, info, frame, defaults, sequenceHasScale );
 		}
 
 		var animationName = string.IsNullOrWhiteSpace( name ) ? info.Name : name;
@@ -87,6 +76,33 @@ public static class Titanfall2Mdl53AnimationReader
 			Delta = delta,
 			Frames = frames
 		};
+	}
+
+	/// <summary>Decodes only one authored frame, without allocating or evaluating the rest of the clip.</summary>
+	public static BonePose[] DecodeFrame( ReadOnlySpan<byte> data, Titanfall2Mdl53Reader.ParsedModel model,
+		int animationIndex, int frame, int sequenceFlags = 0 )
+	{
+		ArgumentNullException.ThrowIfNull( model );
+		if ( (uint)animationIndex >= model.Animations.Length ) throw new ArgumentOutOfRangeException( nameof( animationIndex ) );
+		var info = model.Animations[animationIndex];
+		var count = Math.Max( 1, info.Animation.FrameCount );
+		if ( count > MaximumAnimationFrames ) throw new InvalidDataException( "Animation frame count exceeds the safety limit." );
+		if ( (uint)frame >= count ) throw new ArgumentOutOfRangeException( nameof( frame ) );
+		return DecodePose( data, model, info, frame, CreateDefaultPose( model, (info.Animation.Flags & StudioDelta) != 0 ),
+			(sequenceFlags & StudioScale) != 0 );
+	}
+
+	static BonePose[] DecodePose( ReadOnlySpan<byte> data, Titanfall2Mdl53Reader.ParsedModel model,
+		Titanfall2Mdl53Reader.AnimationInfo info, int frame, BonePose[] defaults, bool sequenceHasScale )
+	{
+		var poses = new BonePose[defaults.Length];
+		Array.Copy( defaults, poses, poses.Length );
+		var description = info.Animation;
+		if ( poses.Length > 0 && (description.Flags & StudioAllZeros) == 0
+			&& TryResolveAnimationBlock( data, info.Offset, description, frame, out var animationOffset, out var localFrame ) )
+			DecodeBoneRecords( data, model, animationOffset, localFrame, sequenceHasScale, poses );
+		if ( poses.Length > 0 ) poses[0] = ApplyRootMovement( data, info.Offset, description, frame, poses[0] );
+		return poses;
 	}
 
 	static BonePose[] CreateDefaultPose( Titanfall2Mdl53Reader.ParsedModel model, bool delta )
@@ -273,10 +289,10 @@ public static class Titanfall2Mdl53AnimationReader
 			var offset = checked(descriptionOffset + description.FrameMovementOffset);
 			EnsureRange( data, offset, 24 );
 			movement = new NumericsVector3(
-				ExtractAnimationValue( data, offset + 16, 0, frame, ReadSingle( data, offset ) ),
-				ExtractAnimationValue( data, offset + 16, 1, frame, ReadSingle( data, offset + 4 ) ),
-				ExtractAnimationValue( data, offset + 16, 2, frame, ReadSingle( data, offset + 8 ) ) );
-			yawDegrees = ExtractAnimationValue( data, offset + 16, 3, frame, ReadSingle( data, offset + 12 ), 4 );
+				ExtractAnimationValue( data, offset + 16, 0, frame, ReadSingle( data, offset ), 4, offset ),
+				ExtractAnimationValue( data, offset + 16, 1, frame, ReadSingle( data, offset + 4 ), 4, offset ),
+				ExtractAnimationValue( data, offset + 16, 2, frame, ReadSingle( data, offset + 8 ), 4, offset ) );
+			yawDegrees = ExtractAnimationValue( data, offset + 16, 3, frame, ReadSingle( data, offset + 12 ), 4, offset );
 		}
 		else if ( description.MovementCount > 0 && description.MovementOffset > 0 )
 		{
@@ -328,14 +344,17 @@ public static class Titanfall2Mdl53AnimationReader
 		int axis,
 		int frame,
 		float scale,
-		int axisCount = 3 )
+		int axisCount = 3,
+		int? offsetOrigin = null )
 	{
 		if ( axis < 0 || axis >= axisCount ) return 0.0f;
 		EnsureRange( data, pointerBase, axisCount * sizeof( short ) );
 		var relativeOffset = ReadInt16( data, pointerBase + axis * sizeof( short ) );
 		if ( relativeOffset <= 0 || scale == 0.0f ) return 0.0f;
 
-		var valueOffset = checked(pointerBase + relativeOffset);
+		// R2 frame movement offsets are relative to the whole 24-byte movement
+		// structure (scales + offsets), while bone track offsets use the pointer group.
+		var valueOffset = checked((offsetOrigin ?? pointerBase) + relativeOffset);
 		var remainingFrame = Math.Max( frame, 0 );
 		for ( var block = 0; block < 65536; ++block )
 		{

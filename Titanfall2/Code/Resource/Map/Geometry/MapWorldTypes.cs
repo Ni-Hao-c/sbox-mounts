@@ -135,7 +135,7 @@ sealed record WorldBuildResult(
 	IReadOnlyList<WorldRenderChunk> GodrayChunks,
 	IReadOnlyList<WorldRenderChunk> WaterChunks,
 	IReadOnlyList<MountedAggregate> WorldAggregates,
-	Model CollisionModel,
+	PhysicsGroupDescription CollisionPhysics,
 	IReadOnlyList<IDisposable> OwnedResources,
 	IReadOnlyList<WorldRenderChunk> ShadowOnlyChunks = null,
 	IReadOnlyList<WorldRenderChunk> WorldShadowChunks = null,

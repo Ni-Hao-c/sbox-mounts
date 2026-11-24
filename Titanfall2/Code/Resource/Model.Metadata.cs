@@ -33,6 +33,18 @@ partial class ModelLoader
 
 	void AddModelMetadata( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel parsed, SkeletonData skeleton )
 	{
+		// Only registered parents resolve children. Procedural skin/body variants have
+		// names for native caching, but are not separate mount directory entries.
+		if ( !heldWeapon && !string.IsNullOrWhiteSpace( Path ) )
+		{
+			builder.WithData( new Titanfall2ModelResourceData
+			{
+				Skeleton = $"{Path}/skeleton.skel",
+				Animations = $"{Path}/animations.json",
+				PhysicsPrefab = $"{Path}/physics.prefab",
+				EmbeddedAnimations = !separateResources
+			} );
+		}
 		var hitboxes = new List<Titanfall2ModelData.Hitbox>();
 		var attachments = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 		foreach ( var attachment in parsed.Attachments )
@@ -70,7 +82,7 @@ partial class ModelLoader
 				if ( string.IsNullOrWhiteSpace( surface ) ) surface = parsed.SurfaceProperty;
 				if ( string.IsNullOrWhiteSpace( surface ) ) surface = "default";
 				var hitbox = set.AddBox( name, skeleton.Names[box.Bone], new BBox( min, max ) )
-					.WithSurface( Titanfall2Surface.ResolveName( surface, null ) )
+					.WithSurface( Titanfall2Surface.ResolveName( surface, ImportPath, ImportHost ) )
 					.AddTag( $"titanfall2_hitgroup_{box.Group}" );
 				if ( box.Group >= 0 && box.Group < HitgroupNames.Length ) hitbox.AddTag( HitgroupNames[box.Group] );
 				if ( box.CriticalOverride != 0 ) hitbox.AddTag( "titanfall2_critical_override" );
@@ -221,6 +233,16 @@ partial class ModelLoader
 			model, unchecked((uint)parsed.Header.Contents), collision.Description );
 		return model;
 	}
+}
+
+/// <summary>Independent mounted resources associated with this Titanfall 2 model.</summary>
+[Sandbox.ModelEditor.GameData( "titanfall2_resources" )]
+public sealed class Titanfall2ModelResourceData
+{
+	public string Skeleton { get; set; }
+	public string Animations { get; set; }
+	public string PhysicsPrefab { get; set; }
+	public bool EmbeddedAnimations { get; set; }
 }
 
 public partial class Titanfall2Mount

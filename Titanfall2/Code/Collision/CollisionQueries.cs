@@ -2,10 +2,10 @@
 public static class Titanfall2CollisionQueries
 {
 	public const string ClassifiedTag = "ttf2_contents";
-	// PhysicsTrace restricts an "any tag" query to NumTagFields (8) tags; extra tags are
-	// silently ignored. A 32-bit retail contents mask can set nine or more bits (Shot
-	// does), so the bits are split into groups of eight and each group runs its own trace.
-	const int TagsPerTrace = 8;
+	// Keep one tag slot empty. Filling all eight native slots loses the any-tag
+	// predicate in the runtime (verified against a movement-only clip). Wider retail
+	// masks therefore run in batches of seven and keep the nearest blocking result.
+	const int TagsPerTrace = 7;
 	static readonly string[] BitTags = Enumerable.Range( 0, 32 ).Select( bit => $"ttf2_content_{bit}" ).ToArray();
 	// Traces run every frame, so a mask's tag groups are built once instead of allocating
 	// filtered arrays per call. Retail uses a small fixed set of masks.
@@ -16,7 +16,20 @@ public static class Titanfall2CollisionQueries
 		=> Run( trace, (uint)mask, includeOtherObjects );
 
 	public static SceneTraceResult Run( SceneTrace trace, uint mask, bool includeOtherObjects = true )
+		=> Run( trace, mask, includeOtherObjects, out _ );
+
+	// BaseCombatWeapon exposes a trace-builder hook, rather than a result hook.
+	// Select the winning contents batch first, then let its normal volley/claim path
+	// run that builder. This costs one extra trace, but preserves native ammo and RPCs.
+	internal static SceneTrace SelectTrace( SceneTrace trace, Titanfall2TraceMask mask )
 	{
+		Run( trace, (uint)mask, true, out var selected );
+		return selected;
+	}
+
+	static SceneTraceResult Run( SceneTrace trace, uint mask, bool includeOtherObjects, out SceneTrace selected )
+	{
+		selected = trace.WithoutTags( ClassifiedTag );
 		var chunks = TagsFor( mask );
 		// No contents selected: nothing imported can match, and the caller explicitly
 		// excluded ordinary scene objects. Returning the whole world here (the old
@@ -28,15 +41,28 @@ public static class Titanfall2CollisionQueries
 		var importedAny = false;
 		foreach ( var tags in chunks )
 		{
-			var hit = trace.HitTriggers().WithTag( ClassifiedTag ).WithAnyTags( tags ).Run();
-			if ( !hit.Hit ) continue;
-			if ( importedAny && hit.Fraction >= imported.Fraction ) continue;
+			// Keep required provenance separate from the OR set of selected contents.
+			var candidate = trace.HitTriggers().WithAllTags( ClassifiedTag ).WithAnyTags( tags );
+			var hit = candidate.Run();
+			if ( !hit.Hit && !hit.StartedSolid ) continue;
+			if ( importedAny && Fraction( hit ) >= Fraction( imported ) ) continue;
 			imported = hit;
 			importedAny = true;
+			selected = candidate;
 		}
 		if ( !includeOtherObjects ) return imported;
-		var other = trace.WithoutTags( ClassifiedTag ).Run();
-		return other.Hit && (!importedAny || other.Fraction < imported.Fraction) ? other : imported;
+		var ordinary = trace.WithoutTags( ClassifiedTag );
+		var other = ordinary.Run();
+		// A miss still carries the requested endpoint. Returning a default imported
+		// result here redirected camera/muzzle aiming toward world origin in open air.
+		if ( !importedAny || ((other.Hit || other.StartedSolid) && Fraction( other ) < Fraction( imported )) )
+		{
+			selected = ordinary;
+			return other;
+		}
+		return imported;
+
+		static float Fraction( SceneTraceResult hit ) => hit.StartedSolid ? 0 : hit.Fraction;
 	}
 
 	static string[][] TagsFor( uint mask ) => TagCache.GetOrAdd( mask, static value =>
@@ -87,7 +113,7 @@ public static class Titanfall2CollisionQueries
 		];
 	}
 
-	internal static void Classify( GameObject gameObject, ModelCollider collider, uint contents )
+	internal static void Classify( GameObject gameObject, Collider collider, uint contents )
 	{
 		gameObject.Tags.Add( ClassifiedTag );
 		for ( var bit = 0; bit < 32; ++bit )
@@ -110,7 +136,7 @@ public static class Titanfall2CollisionQueries
 [Library, Hide]
 public sealed class Titanfall2CollisionManifest : Component
 {
-	[Property, Hide] public ModelCollider[] Colliders { get; set; } = [];
+	[Property, Hide] public Collider[] Colliders { get; set; } = [];
 	PhysicsBody[] _bodies = [];
 	public bool IsReady()
 	{

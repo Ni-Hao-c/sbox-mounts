@@ -1,8 +1,14 @@
 /// <summary>
 /// Loads a texture from a Titanfall 2 loose file or RPak entry.
 /// </summary>
-class Titanfall2TextureLoader( ITitanfall2AssetSource source, bool animatedVtfAtlas = false ) : ResourceLoader<Titanfall2Mount>
+class Titanfall2TextureLoader( ITitanfall2AssetSource source, bool animatedVtfAtlas = false, int? maximumDimensionOverride = null ) : ResourceLoader<Titanfall2Mount>
 {
+	protected override ResourceLoader ResolveChild( string name, out ResourceType type )
+	{
+		type = ResourceType.Texture;
+		return maximumDimensionOverride is null && name.Equals( "preview.vtex", StringComparison.OrdinalIgnoreCase )
+			? new Titanfall2TextureLoader( _source, maximumDimensionOverride: 512 ) : null;
+	}
 	readonly ITitanfall2AssetSource _source = source;
 	readonly bool _animatedVtfAtlas = animatedVtfAtlas;
 	readonly object _prepareLock = new();
@@ -21,7 +27,7 @@ class Titanfall2TextureLoader( ITitanfall2AssetSource source, bool animatedVtfAt
 		{
 			// The cache key and worker decode must use one snapshot even if the player
 			// applies another quality level while this texture is being prepared.
-			var maximumDimension = Titanfall2StreamingSettings.TextureMaxDimension;
+			var maximumDimension = Math.Min( Titanfall2StreamingSettings.TextureMaxDimension, maximumDimensionOverride ?? int.MaxValue );
 			var identity = Titanfall2StreamingSettings.ProcessedCache
 				? $"{Host.ContentFingerprint}|{Path}|texture:{maximumDimension}" : null;
 			if ( identity is not null && Titanfall2TextureCache.TryRead( identity, out var cached ) ) return new( cached, null, null );
@@ -86,7 +92,8 @@ class Titanfall2TextureLoader( ITitanfall2AssetSource source, bool animatedVtfAt
 
 		if ( VtfTextureDecoder.IsVtf( data ) )
 		{
-			if ( VtfTextureDecoder.TryCreate( data, _animatedVtfAtlas, out var vtfTexture, out error ) ) return vtfTexture;
+			if ( VtfTextureDecoder.TryCreate( data, _animatedVtfAtlas, out var vtfTexture, out error,
+				maximumDimensionOverride.HasValue ? Math.Min( maximumDimensionOverride.Value, Titanfall2StreamingSettings.TextureMaxDimension ) : null ) ) return vtfTexture;
 			Titanfall2Log.Warning( $"Failed to decode Titanfall 2 VTF texture '{Path}': {error}" );
 			return _animatedVtfAtlas ? Texture.Transparent : Texture.White;
 		}

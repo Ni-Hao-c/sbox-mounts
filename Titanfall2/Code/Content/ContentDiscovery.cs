@@ -89,9 +89,9 @@ static class Titanfall2ContentDiscovery
 				var name = string.IsNullOrWhiteSpace( asset.Name ) ? $"_guid/{asset.Guid:x16}" : asset.Name;
 				if ( !Titanfall2ContentSnapshot.TryNormalize( name, out var normalized ) ) throw new InvalidDataException( $"Invalid RPAK name: {name}" );
 				entries.Add( new( normalized, asset.Type, $"{layer}:{Path.GetFileName( path )}", identity, Archive: archive, Asset: asset ) );
-				if ( asset.Type is not ("txtr" or "matl" or "shds" or "shdr") ) unsupported++;
+				if ( asset.Type is not ("txtr" or "matl" or "shds" or "shdr") && !(asset.Type == "uimg" && asset.Version is 10 or 11) ) unsupported++;
 			}
-			if ( required && unsupported > 0 ) diagnostics.Add( $"{path}: {unsupported} logical assets indexed without an engine loader (RPAK models/UI/etc. are not converted)." );
+			if ( required && unsupported > 0 ) diagnostics.Add( $"{path}: {unsupported} logical assets indexed without an engine loader (RPAK models/executable RUI/etc. are not converted)." );
 		}
 	}
 

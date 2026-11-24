@@ -20,11 +20,11 @@ static class VtfTextureDecoder
 			? Math.Max( 1, (int)BinaryPrimitives.ReadUInt16LittleEndian( bytes.Slice( 24, 2 ) ) )
 			: 0;
 
-	public static bool TryCreate( byte[] bytes, bool animatedAtlas, out Texture texture, out string error )
+	public static bool TryCreate( byte[] bytes, bool animatedAtlas, out Texture texture, out string error, int? maximumDimension = null )
 	{
 		texture = null;
-		if ( IsCube( bytes ) ) return TryCreateCube( bytes, out texture, out error );
-		if ( !TryRead( bytes, animatedAtlas, out var decoded, out error ) ) return false;
+		if ( IsCube( bytes ) ) return TryCreateCube( bytes, out texture, out error, maximumDimension );
+		if ( !TryRead( bytes, animatedAtlas, out var decoded, out error, maximumDimension ) ) return false;
 
 		try
 		{
@@ -52,10 +52,10 @@ static class VtfTextureDecoder
 		}
 	}
 
-	internal static bool TryCreateCube( byte[] bytes, out Texture texture, out string error )
+	internal static bool TryCreateCube( byte[] bytes, out Texture texture, out string error, int? maximumDimension = null )
 	{
 		texture = null;
-		if ( !TryReadCube( bytes, out var decoded, out error ) ) return false;
+		if ( !TryReadCubeFrame( bytes, 0, out var decoded, out error, maximumDimension ) ) return false;
 
 		try
 		{
@@ -521,12 +521,12 @@ static class VtfTextureDecoder
 		return decoded with { MipCount = upload.MipCount, Data = upload.Data };
 	}
 
-	internal static bool TryReadCubeFrame( byte[] bytes, int frameIndex, out VtfCubeTextureData texture, out string error )
+	internal static bool TryReadCubeFrame( byte[] bytes, int frameIndex, out VtfCubeTextureData texture, out string error, int? maximumDimension = null )
 	{
 		// Same checked-overflow exposure as TryRead; TryCreateCube calls this outside its try.
 		try
 		{
-			return TryReadCubeFrameCore( bytes, frameIndex, out texture, out error, Titanfall2StreamingSettings.TextureMaxDimension );
+			return TryReadCubeFrameCore( bytes, frameIndex, out texture, out error, maximumDimension ?? Titanfall2StreamingSettings.TextureMaxDimension );
 		}
 		catch ( Exception exception )
 		{

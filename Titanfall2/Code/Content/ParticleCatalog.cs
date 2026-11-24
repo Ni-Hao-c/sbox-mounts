@@ -5,10 +5,19 @@ public partial class Titanfall2Mount
 {
 	readonly List<ParticleFileSource> _particleFiles = [];
 	readonly Dictionary<string, Titanfall2ParticleDefinition> _particleDefinitions = new( StringComparer.OrdinalIgnoreCase );
+	readonly HashSet<string> _indexedParticleFiles = new( StringComparer.OrdinalIgnoreCase );
 	readonly object _particleCatalogLock = new();
+	readonly object _particleIndexLock = new();
 	int _nextParticleFile;
 	int _particleFileFailures;
 	int _particleFailureLogs;
+	float _weaponWarmTime = -1;
+	internal void WarmWeaponParticles()
+	{
+		if ( IsParticleCatalogComplete || _weaponWarmTime == Time.Now ) return;
+		_weaponWarmTime = Time.Now;
+		IndexParticleFiles( 2, 2 );
+	}
 
 	internal int ParticleFileCount
 	{
@@ -17,7 +26,7 @@ public partial class Titanfall2Mount
 
 	internal int IndexedParticleFileCount
 	{
-		get { lock ( _particleCatalogLock ) return _nextParticleFile; }
+		get { lock ( _particleCatalogLock ) return _indexedParticleFiles.Count; }
 	}
 
 	internal int ParticleDefinitionCount
@@ -27,18 +36,22 @@ public partial class Titanfall2Mount
 
 	internal bool IsParticleCatalogComplete
 	{
-		get { lock ( _particleCatalogLock ) return _nextParticleFile >= _particleFiles.Count; }
+		get { lock ( _particleIndexLock ) lock ( _particleCatalogLock ) return _nextParticleFile >= _particleFiles.Count; }
 	}
 
 	internal void ResetParticleCatalog()
 	{
+		lock ( _particleIndexLock )
 		lock ( _particleCatalogLock )
 		{
 			_particleFiles.Clear();
 			_particleDefinitions.Clear();
+			_readyShotParticles.Clear();
+			_indexedParticleFiles.Clear();
 			_nextParticleFile = 0;
 			_particleFileFailures = 0;
 			_particleFailureLogs = 0;
+			_weaponWarmTime = -1;
 		}
 	}
 
@@ -62,6 +75,13 @@ public partial class Titanfall2Mount
 	/// </summary>
 	internal ParticleCatalogProgress IndexParticleFiles( int maximumFiles, float maximumMilliseconds )
 	{
+		// Do not publish completion before another consumer has merged the last PCF.
+		// Map streaming and standalone prefab discovery share this cursor.
+		lock ( _particleIndexLock ) return IndexParticleFilesCore( maximumFiles, maximumMilliseconds );
+	}
+
+	ParticleCatalogProgress IndexParticleFilesCore( int maximumFiles, float maximumMilliseconds )
+	{
 		maximumFiles = Math.Max( 1, maximumFiles );
 		maximumMilliseconds = MathF.Max( 0.1f, maximumMilliseconds );
 		var timer = Stopwatch.StartNew();
@@ -74,27 +94,10 @@ public partial class Titanfall2Mount
 			{
 				if ( _nextParticleFile >= _particleFiles.Count ) break;
 				file = _particleFiles[_nextParticleFile++];
+				if ( !_indexedParticleFiles.Add( file.Path ) ) continue;
 			}
 			processed++;
-
-			if ( !file.Source.TryReadAllBytes( out var bytes, out var readError ) )
-			{
-				RecordParticleFailure( file.Path, readError );
-				continue;
-			}
-			if ( !Titanfall2PcfReader.TryReadDefinitions( bytes, file.Path, out var definitions, out var parseError ) )
-			{
-				RecordParticleFailure( file.Path, parseError );
-				continue;
-			}
-
-			lock ( _particleCatalogLock )
-			{
-				foreach ( var definition in definitions )
-				{
-					if ( _particleDefinitions.TryAdd( definition.Name, definition ) ) added++;
-				}
-			}
+			added += IndexParticleFile( file );
 		}
 
 		return new ParticleCatalogProgress(
@@ -107,11 +110,45 @@ public partial class Titanfall2Mount
 			IsParticleCatalogComplete );
 	}
 
+	int IndexParticleFile( ParticleFileSource file )
+	{
+		if ( !file.Source.TryReadAllBytes( out var bytes, out var readError ) )
+		{ RecordParticleFailure( file.Path, readError ); return 0; }
+		if ( !Titanfall2PcfReader.TryReadDefinitions( bytes, file.Path, out var definitions, out var parseError ) )
+		{ RecordParticleFailure( file.Path, parseError ); return 0; }
+		var added = 0;
+		lock ( _particleCatalogLock )
+			foreach ( var definition in definitions )
+				if ( _particleDefinitions.TryAdd( definition.Name, definition ) ) added++;
+		return added;
+	}
+
+	void IndexPriorityParticleLibrary( string path )
+	{
+		if ( path is null ) return;
+		lock ( _particleIndexLock )
+		{
+			ParticleFileSource file;
+			lock ( _particleCatalogLock )
+			{
+				if ( _indexedParticleFiles.Contains( path ) ) return;
+				file = _particleFiles.FirstOrDefault( file => file.Path.Equals( path, StringComparison.OrdinalIgnoreCase ) );
+				if ( file.Source is null || !_indexedParticleFiles.Add( file.Path ) ) return;
+			}
+			IndexParticleFile( file );
+		}
+	}
+
 	void RecordParticleFailure( string path, string error )
 	{
 		lock ( _particleCatalogLock ) _particleFileFailures++;
 		if ( _particleFailureLogs++ < 16 )
 			Titanfall2Log.Warning( $"Unable to index Titanfall 2 particle library '{path}': {error}" );
+	}
+
+	internal string[] GetParticleDefinitionNames()
+	{
+		lock ( _particleCatalogLock ) return _particleDefinitions.Keys.OrderBy( name => name, StringComparer.OrdinalIgnoreCase ).ToArray();
 	}
 
 	readonly record struct ParticleFileSource( string Path, ITitanfall2AssetSource Source );

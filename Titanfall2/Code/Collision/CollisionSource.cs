@@ -65,6 +65,8 @@ public sealed class Titanfall2CollisionSource : Component
 			ObjectName = hit.GameObject?.Name,
 			ColliderType = hit.Collider?.GetType().Name,
 			ShapeType = hit.Shape?.GetType().Name,
+			PhysicsResource = (hit.Collider as PhysicsCollider)?.Physics?.ResourcePath,
+			SurfaceResource = hit.Surface?.ResourcePath,
 			ModelResource = model?.ResourcePath,
 			ModelBounds = model?.Bounds,
 			WorldScale = hit.Collider?.GameObject.WorldScale,

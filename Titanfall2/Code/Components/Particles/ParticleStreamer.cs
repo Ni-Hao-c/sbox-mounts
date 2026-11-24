@@ -509,9 +509,9 @@ static class Titanfall2ParticleFactory
 		var gameObject = new GameObject( parent, true, definition.Name );
 		gameObject.LocalTransform = Transform.Zero;
 		var controlPoints = gameObject.AddComponent<Titanfall2ParticleControlPoints>();
-		controlPoints.Configure( parent.Components.GetInAncestorsOrSelf<Titanfall2ParticleControlPoints>(), definition.ControlPoints );
+		controlPoints.Configure( parent.GetComponentInParent<Titanfall2ParticleControlPoints>( true ), definition.ControlPoints );
 		var geometry = ConfigureSimulation( gameObject, definition, controlPoints );
-		var effect = gameObject.Components.Get<ParticleEffect>();
+		var effect = gameObject.GetComponent<ParticleEffect>( true );
 		var hasRenderer = ConfigureRenderer( gameObject, mount, definition, geometry );
 		var hasChildren = false;
 
@@ -727,7 +727,7 @@ static class Titanfall2ParticleFactory
 				// overbright factor in that path rather than clipping it to an 8-bit tint.
 				var tint = materialDefinition.GetVector( "$color", Vector4.One );
 				var brightness = Math.Clamp( materialDefinition.GetFloat( "$overbrightfactor", 1f ), 0f, 64f ) * definition.ColorHdrScale;
-				gameObject.Components.Get<ParticleEffect>().Tint = new Color(
+				gameObject.GetComponent<ParticleEffect>( true ).Tint = new Color(
 					tint.x * brightness, tint.y * brightness, tint.z * brightness,
 					Math.Clamp( materialDefinition.GetFloat( "$alpha", 1f ), 0f, 1f ) );
 				var renderer = gameObject.AddComponent<ParticleSpriteRenderer>();
@@ -736,7 +736,7 @@ static class Titanfall2ParticleFactory
 					if ( geometry is null )
 					{
 						geometry = gameObject.AddComponent<Titanfall2ParticleGeometry>();
-						geometry.Configure( definition, gameObject.Components.Get<Titanfall2ParticleControlPoints>(), CreateStretch( definition ) );
+						geometry.Configure( definition, gameObject.GetComponent<Titanfall2ParticleControlPoints>( true ), CreateStretch( definition ) );
 					}
 					geometry.ConfigureSizeFade( materialDefinition.GetFloat( "$startfadesize", 10f ), materialDefinition.GetFloat( "$endfadesize", 20f ) );
 				}
@@ -757,7 +757,7 @@ static class Titanfall2ParticleFactory
 						} ).ToList()
 					};
 					var frame = sprite.Animations.FirstOrDefault()?.Frames.FirstOrDefault()?.Texture;
-					geometry?.Configure( definition, gameObject.Components.Get<Titanfall2ParticleControlPoints>(),
+					geometry?.Configure( definition, gameObject.GetComponent<Titanfall2ParticleControlPoints>( true ),
 						CreateStretch( definition ), frame is not null ? frame.Width / (float)frame.Height : 1f );
 				}
 				renderer.Sprite = sprite;
@@ -847,7 +847,7 @@ static class Titanfall2ParticleFactory
 				// which the mount shaders multiply into albedo.
 				if ( (definition.Renderer & (Titanfall2ParticleRenderer.Sprite | Titanfall2ParticleRenderer.Trail
 					| Titanfall2ParticleRenderer.Rope | Titanfall2ParticleRenderer.Light)) == 0 )
-					gameObject.Components.Get<ParticleEffect>().ApplyColor = false;
+					gameObject.GetComponent<ParticleEffect>( true ).ApplyColor = false;
 				created = true;
 			}
 		}

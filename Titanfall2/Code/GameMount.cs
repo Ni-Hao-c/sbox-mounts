@@ -105,6 +105,7 @@ public partial class Titanfall2Mount : BaseGameMount
 	/// </summary>
 	void ClearRegistrationTables()
 	{
+		_surfaceCatalog = null;
 		_texturePaths.Clear();
 		_shaderSetNames.Clear();
 		_shaderSetSources.Clear();
@@ -149,6 +150,13 @@ public partial class Titanfall2Mount : BaseGameMount
 
 	protected override void Shutdown()
 	{
+		ClearUiAtlasCache();
+		_combatTables.Clear();
+		_weaponAudio.Clear();
+		_ordnanceSoundSamples.Clear();
+		_weaponAnimationSounds.Clear();
+		_combatDecals.Clear();
+		_surfaceCatalog = null;
 		Titanfall2GraphicsSettings.Disconnect();
 		InvalidateSceneReleaseWork();
 		_contentSnapshot = null;
@@ -449,11 +457,16 @@ public partial class Titanfall2Mount : BaseGameMount
 		var queryTokens = Tokenize( bareKey );
 		if ( queryTokens.Length > 0 )
 		{
+			var isWeaponQuery = queryTokens[0] == "wpn";
+			var wants3p = queryTokens.Contains( "3p" );
 			var bestScore = 0.55;
 			foreach ( var pair in _milesSoundAssets )
 			{
 				var bare = StripSoundPrefix( pair.Key );
-				var score = ScoreTokens( queryTokens, Tokenize( bare ) );
+				if ( isWeaponQuery && bare.StartsWith( "diag_", StringComparison.OrdinalIgnoreCase ) ) continue;
+				var candidateTokens = Tokenize( bare );
+				var score = ScoreTokens( queryTokens, candidateTokens );
+				if ( isWeaponQuery && !wants3p && candidateTokens.Contains( "1p" ) ) score += 0.04;
 				if ( score < bestScore ) continue;
 				if ( score == bestScore && bestKey is not null && bare.Length >= bestKey.Length ) continue;
 				bestScore = score;
@@ -475,7 +488,15 @@ public partial class Titanfall2Mount : BaseGameMount
 	}
 
 	static string[] Tokenize( string value )
-		=> value.ToLowerInvariant().Split( ['_', '-', '.', '/', ' '], StringSplitOptions.RemoveEmptyEntries );
+	{
+		var raw = value.ToLowerInvariant().Split( ['_', '-', '.', '/', ' '], StringSplitOptions.RemoveEmptyEntries );
+		for ( var i = 0; i < raw.Length; i++ )
+		{
+			if ( raw[i] == "weapon" ) raw[i] = "wpn";
+			else if ( raw[i] == "reloadempty" ) raw[i] = "emptyreload";
+		}
+		return raw;
+	}
 
 	static double ScoreTokens( string[] query, string[] candidate )
 	{
@@ -748,6 +769,14 @@ public partial class Titanfall2Mount : BaseGameMount
 						{
 							_legacyParticleSheetFrameRates[sheetKey] = sheetFrameRate;
 							_legacyParticleTextureFrames.Add( sheetKey, frames );
+						}
+						else if ( VtfTextureDecoder.TryCreate( bytes, false, out var singleFrame, out error ) )
+						{
+							// A legacy particle's static VTF carries its alpha mask too. Falling
+							// through to the same-named RPAK resource can bind an opaque variant
+							// (dirt_grit), drawing square cards instead of masked debris.
+							frames = [singleFrame];
+							_legacyParticleTextureFrames.Add( normalized, frames );
 						}
 					}
 					if ( frames is { Length: > 0 } )

@@ -4,7 +4,7 @@ public sealed class Titanfall2WorldReady : Component
 {
 	public const string ReadyTag = "ttf2_map_ready";
 	[Property, Hide] public Titanfall2StaticPropStreamer Props { get; set; }
-	[Property, Hide] public ModelCollider WorldCollision { get; set; }
+	[Property, Hide] public Collider WorldCollision { get; set; }
 	PhysicsBody _worldBody;
 	Titanfall2StaticPropStreamer _verifiedProps;
 	int _verifiedPropCount;
@@ -27,7 +27,7 @@ public sealed class Titanfall2WorldReady : Component
 		var ready = Props.IsValid() && Props.Scene == Scene && Props.Active
 			&& Props.KeepAllCollisions && Props.ResidentCollisionsReady
 			&& WorldCollision.IsValid() && WorldCollision.Scene == Scene && WorldCollision.Active
-			&& ModelLoader.IsUsableModel( WorldCollision.Model ) && WorldCollision.Model.Physics is { Parts.Count: > 0 };
+			&& HasPhysics( WorldCollision );
 		if ( !ready )
 		{
 			ClearReady();
@@ -76,6 +76,14 @@ public sealed class Titanfall2WorldReady : Component
 		_verifiedProps = null;
 		_verifiedPropCount = 0;
 	}
+
+	// Keep old serialized ModelColliders readable while new maps use independent physics resources.
+	static bool HasPhysics( Collider collider ) => collider switch
+	{
+		PhysicsCollider physics => physics.Physics.IsValid() && physics.Physics.Parts.Count > 0,
+		ModelCollider model => ModelLoader.IsUsableModel( model.Model ) && model.Model.Physics is { Parts.Count: > 0 },
+		_ => false
+	};
 
 	protected override void OnDisabled() => ClearReady();
 }

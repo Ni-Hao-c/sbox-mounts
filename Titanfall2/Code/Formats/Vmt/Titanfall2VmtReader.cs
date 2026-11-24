@@ -330,6 +330,7 @@ sealed class Titanfall2VmtDefinition
 	{
 		internal string Name { get; }
 		internal Dictionary<string, string> Values { get; } = new( StringComparer.OrdinalIgnoreCase );
+		internal List<KeyValuePair<string, string>> OrderedValues { get; } = [];
 		internal List<VmtBlock> Children { get; } = [];
 
 		internal VmtBlock( string name ) => Name = name;
@@ -345,6 +346,30 @@ readonly record struct VmtNoiseRange( Vector2 Minimum, Vector2 Maximum, bool IsD
 
 static class Titanfall2VmtReader
 {
+	// Respawn's surface scripts use the same text grammar, with repeated manifest keys.
+	// This shares tokenization only; binary formats and property meanings stay separate.
+	internal static bool TryReadBlocks( byte[] bytes, out IReadOnlyList<Titanfall2VmtDefinition.VmtBlock> blocks, out string error )
+	{
+		var result = new List<Titanfall2VmtDefinition.VmtBlock>();
+		blocks = result;
+		error = null;
+		if ( bytes is null || bytes.Length == 0 ) { error = "KeyValues input is empty."; return false; }
+		try
+		{
+			var reader = new TokenReader( DecodeText( bytes ) );
+			while ( reader.TryRead( out var name ) )
+			{
+				if ( result.Count >= 16384 || name is "{" or "}" || !reader.TryRead( out var open ) || open != "{" )
+				{ error = "Invalid KeyValues top-level block."; return false; }
+				var block = new Titanfall2VmtDefinition.VmtBlock( name );
+				if ( !TryReadBlock( reader, block, out error ) ) return false;
+				result.Add( block );
+			}
+			return result.Count > 0;
+		}
+		catch ( Exception exception ) { error = exception.Message; return false; }
+	}
+
 	internal static bool TryRead( byte[] bytes, out Titanfall2VmtDefinition definition, out string error )
 	{
 		definition = null;
@@ -418,6 +443,7 @@ static class Titanfall2VmtReader
 			else
 			{
 				block.Values[key] = value;
+				block.OrderedValues.Add( new( key, value ) );
 			}
 		}
 		error = $"VMT block '{block.Name}' is not closed.";

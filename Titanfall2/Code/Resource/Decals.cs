@@ -99,7 +99,7 @@ public static class Titanfall2DecalFactory
 		var decal = child.AddComponent<Decal>( false );
 		decal.Decals = [definition];
 		decal.Rotation = 0;
-		decal.Size = size;
+		decal.Size = new Vector2( size.x / definition.Width, size.y / definition.Height );
 		decal.Depth = depth;
 		decal.Transient = transient;
 		if ( transient )
@@ -162,8 +162,9 @@ public static class Titanfall2DecalFactory
 			return name;
 
 		name = name.TrimStart( '/' );
-		if ( !name.StartsWith( "materials/", StringComparison.OrdinalIgnoreCase ) )
-			name = "materials/" + name;
+		// Mount registrations use logical names, without the VPK's materials/ prefix.
+		if ( name.StartsWith( "materials/", StringComparison.OrdinalIgnoreCase ) )
+			name = name[10..];
 
 		if ( name.EndsWith( ".vmt", StringComparison.OrdinalIgnoreCase ) )
 			name = name[..^4] + ".vmat";

@@ -5,6 +5,8 @@
 /// </summary>
 static class Titanfall2StreamingSettings
 {
+	// Until the per-view retail AR proxy is supported, do not draw its overlay by default.
+	public static readonly bool ShowWeakpointMarkers = GetBool( "SBOX_TITANFALL2_SHOW_WEAKPOINT_MARKERS", false );
 	// Share compatible world materials by lightmap page; 0 selects the compatibility backend.
 	public static readonly bool WorldMaterialTable = GetBool( "SBOX_TITANFALL2_WORLD_MATERIAL_TABLE", true );
 	// 0 uses the CPU renderer for compatibility.

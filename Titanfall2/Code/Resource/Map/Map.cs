@@ -38,7 +38,7 @@ partial class MapLoader(
 	{
 		_cachedWorldBuild?.Dispose();
 		_cachedWorldBuild = null;
-		_classifiedWorldModels.Clear();
+		_worldPhysics.Clear();
 		_materialPrefetch = null;
 		_environmentEntities = null;
 		_externalEnvironmentEntities = null;
@@ -232,7 +232,7 @@ partial class MapLoader(
 			renderer.Model = chunk.Model;
 			renderer.RenderType = ModelRenderer.ShadowRenderType.Off;
 		}
-		ModelCollider worldCollision = null;
+		Collider worldCollision = null;
 		if ( hasOriginalWorldCollision )
 		{
 			var classified = CreateClassifiedWorldCollision( world, parsed );
@@ -245,11 +245,11 @@ partial class MapLoader(
 			worldCollision = classified.FirstOrDefault( static collider => !collider.IsTrigger ) ?? classified[0];
 			world.AddComponent<Titanfall2CollisionManifest>().Colliders = classified;
 		}
-		else if ( worldBuild.CollisionModel is not null )
+		else if ( worldBuild.CollisionPhysics is not null )
 		{
 			world.Tags.Add( Titanfall2DeferredNavMeshBuilder.NavMeshBodyTag );
-			var fallbackWorldCollider = world.AddComponent<ModelCollider>();
-			fallbackWorldCollider.Model = worldBuild.CollisionModel;
+			var fallbackWorldCollider = world.AddComponent<PhysicsCollider>();
+			fallbackWorldCollider.Physics = worldBuild.CollisionPhysics;
 			fallbackWorldCollider.Static = true;
 			worldCollision = fallbackWorldCollider;
 			var source = world.AddComponent<Titanfall2CollisionSource>();

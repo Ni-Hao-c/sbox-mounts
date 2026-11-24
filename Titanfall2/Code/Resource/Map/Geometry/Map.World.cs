@@ -1,4 +1,5 @@
 using Sandbox.Mounting.PerfKit;
+using System.Runtime.InteropServices;
 using Titanfall2;
 
 partial class MapLoader
@@ -744,19 +745,16 @@ partial class MapLoader
 				? index < worldAggregateKeys.Count && cutoutMaterials.Contains( worldAggregateKeys[index].MaterialName )
 				: Titanfall2StreamingSettings.MapShadows;
 
-		Model collisionModel = null;
+		PhysicsGroupDescription collisionPhysics = null;
 		if ( collisionPositions is { Count: > 0 } && collisionIndices is { Count: > 0 } )
 		{
-			var collisionBuilder = Model.Builder.WithName( $"titanfall2/map/{parsed.MapName}_collision" );
-			// List overloads upload straight from the existing lists; ToArray() here copied 37MB of
-			// collision data for nothing.
-			collisionBuilder.AddCollisionMesh( collisionPositions, collisionIndices );
-			collisionBuilder.AddTraceMesh( collisionPositions, collisionIndices );
-			collisionModel = collisionBuilder.Create();
+			var body = new PhysicsBodyBuilder();
+			body.AddMesh( CollectionsMarshal.AsSpan( collisionPositions ), collisionIndices.Select( index => (uint)index ).ToArray(), [] );
+			collisionPhysics = PhysicsGroupDescription.Create( $"{Path}/fallback.vphys", [body] );
 			Log.Info( $"Titanfall 2 fallback render collision submitted: {Path} ({collisionIndices.Count / 3} triangles)" );
 		}
 		var ownedResources = (lightmaps?.OwnedResources ?? Array.Empty<IDisposable>()).ToList();
-		var result = new WorldBuildResult( translucentChunks, decalChunks, godrayChunks, waterChunks, worldAggregates, collisionModel,
+		var result = new WorldBuildResult( translucentChunks, decalChunks, godrayChunks, waterChunks, worldAggregates, collisionPhysics,
 			ownedResources, shadowOnlyChunks, worldShadowChunks, aggregateCastShadows, materialBatch?.Owned.Sources,
 			materialBatch is not null ? Titanfall2WorldMaterialBatch.Register( materialBatch.Owned.Sources ) : null );
 		return result;
