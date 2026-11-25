@@ -1,0 +1,60 @@
+namespace GoldSrc.HalfLife;
+
+public sealed partial class RocketLauncher
+{
+	[Sync( SyncFlags.FromHost )] bool LaserEnabled { get; set; } = true;
+	[Sync( SyncFlags.FromHost )] internal int ActiveRockets { get; set; }
+	TimeUntil _nextToggle, _spotSuspended;
+	SpriteRenderer _dot;
+
+	internal Vector3? SpotPosition { get; private set; }
+	bool GuidingRocket => LaserEnabled && ActiveRockets > 0;
+
+	public override bool CanReload() => !GuidingRocket && base.CanReload();
+	protected override bool OnHolstering( BaseInventoryItem next ) => !GuidingRocket && base.OnHolstering( next );
+
+	public override void SecondaryAttack() => ToggleLaser();
+
+	[Rpc.Host( NetFlags.OwnerOnly )]
+	void ToggleLaser()
+	{
+		if ( !IsActive || IsReloading || _nextToggle > 0 || _spotSuspended > 0 ) return;
+		LaserEnabled = !LaserEnabled;
+		_nextToggle = SecondaryDelay;
+	}
+
+	protected override void OnReloadStarted()
+	{
+		base.OnReloadStarted();
+		if ( LaserEnabled ) _spotSuspended = 2.1f;
+	}
+
+	protected override void OnUpdate()
+	{
+		base.OnUpdate();
+		if ( !IsActive || !Owner.IsValid() || !LaserEnabled || IsReloading || _spotSuspended > 0 )
+		{
+			SpotPosition = null;
+			if ( _dot.IsValid() ) _dot.Enabled = false;
+			return;
+		}
+
+		var sight = Owner.EyeTransform.ForwardRay;
+		var hit = BulletTrace( sight, 8192, 0 ).Run();
+		SpotPosition = hit.EndPosition;
+		if ( Application.IsDedicatedServer ) return;
+		if ( !_dot.IsValid() && Sandbox.Mounting.Directory.Get( "hl1" ) is HalfLifeMount mount && mount.GetIndexedSprite( "laserdot" ) is { } sprite )
+		{
+			var go = new GameObject( GameObject, true, "RPG laser spot" );
+			go.NetworkMode = NetworkMode.Never;
+			_dot = go.AddComponent<SpriteRenderer>();
+			_dot.Sprite = sprite;
+			var image = sprite.Animations[0].Frames[0].Texture;
+			_dot.Size = new Vector2( image.Width, image.Height );
+			_dot.Additive = true;
+		}
+		if ( !_dot.IsValid() ) return;
+		_dot.Enabled = hit.Hit;
+		_dot.WorldPosition = hit.EndPosition - sight.Forward * 0.5f;
+	}
+}

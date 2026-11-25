@@ -193,32 +193,39 @@ internal partial class BspFile
 	{
 		int blobEnd = blobStart + blobSize;
 		int pos = blobStart;
-		ValidateRange( pos, 28, blobEnd, "Physics surface header" );
-		int vphysicsId = BitConverter.ToInt32( data, pos );
-		int ivpSurfaceStart;
-		if ( vphysicsId == 0x59485056 )
+		const int MoppId = 0x50504f4d;
+		ValidateRange( pos, 8, blobEnd, "Physics solid header" );
+		short? modelType = null;
+		int ivpSurfaceStart = pos;
+		if ( BitConverter.ToInt32( data, pos ) == 0x59485056 )
 		{
-			short modelType = BitConverter.ToInt16( data, pos + 6 );
+			modelType = BitConverter.ToInt16( data, pos + 6 );
 			if ( modelType == 1 )
 			{
-				Log.Warning( "Skipping BSP type-1 physics solid; world collision will be incomplete." );
-				return;
+				ValidateRange( pos, 12, blobEnd, "Physics MOPP header" );
+				ivpSurfaceStart += 12;
+				int size = BitConverter.ToInt32( data, pos + 8 );
+				ValidateRange( ivpSurfaceStart, size, blobEnd, "Physics MOPP data" );
+				blobEnd = ivpSurfaceStart + size;
 			}
-
-			if ( modelType != 0 )
-				throw new NotSupportedException( $"Unsupported BSP physics model type {modelType}; expected an IVP compact surface." );
-			ivpSurfaceStart = pos + 28;
-		}
-		else
-		{
-			ivpSurfaceStart = pos;
+			else if ( modelType == 0 )
+				ivpSurfaceStart += 28;
+			else
+				throw new NotSupportedException( $"Unsupported BSP physics model type {modelType}." );
 		}
 
 		ValidateRange( ivpSurfaceStart, 48, blobEnd, "IVP compact surface" );
-		int offsetLedgetreeRoot = BitConverter.ToInt32( data, ivpSurfaceStart + 32 );
 		int ivpsMagic = BitConverter.ToInt32( data, ivpSurfaceStart + 44 );
+		if ( modelType.HasValue && (ivpsMagic == MoppId) != (modelType == 1) )
+			throw new InvalidDataException( "BSP physics model type does not match its compact surface." );
+		if ( ivpsMagic == MoppId )
+		{
+			meshes.Add( ReadMoppMesh( data, ivpSurfaceStart, blobEnd, scale, surface, materialTable, passAudio ) );
+			return;
+		}
 		if ( ivpsMagic != 0x53505649 )
 			throw new NotSupportedException( "BSP collision data is not an IVPS compact surface." );
+		int offsetLedgetreeRoot = BitConverter.ToInt32( data, ivpSurfaceStart + 32 );
 		int treeRoot = ResolvePhysicsOffset( ivpSurfaceStart, offsetLedgetreeRoot, 28, blobStart, blobEnd );
 		var stack = new Stack<int>();
 		var visited = new HashSet<int>();
@@ -259,6 +266,36 @@ internal partial class BspFile
 
 		if ( mesh is not null )
 			meshes.Add( mesh );
+	}
+
+	BspPhysicsMesh ReadMoppMesh( byte[] data, int start, int end, float scale, string surface, Dictionary<byte, string> materialTable, bool passAudio )
+	{
+		int size = (int)(BitConverter.ToUInt32( data, start + 28 ) >> 8);
+		ValidateRange( start, size, end, "IVP compact MOPP" );
+		if ( size < 48 )
+			throw new InvalidDataException( "Incomplete IVP compact MOPP." );
+		end = start + size;
+		int tree = ResolvePhysicsOffset( start, BitConverter.ToInt32( data, start + 32 ), 0, start + 48, end );
+		int ledges = ResolvePhysicsOffset( start, BitConverter.ToInt32( data, start + 36 ), 16, start + 48, tree );
+		int hullSize = BitConverter.ToInt32( data, start + 40 );
+		ValidateRange( 0, hullSize, tree - ledges - 16, "MOPP outer hull" );
+		int ledge = ledges + hullSize;
+
+		// IVP_Compact_Ledge_Solver::get_all_ledges stops at the first ledge's shared point array.
+		int points = ResolvePhysicsOffset( ledge, BitConverter.ToInt32( data, ledge ), 16, ledge + 16, tree );
+		var mesh = new BspPhysicsMesh { SurfaceName = surface, PassAudio = passAudio };
+		var vertices = new Dictionary<int, uint>();
+		while ( ledge < points )
+		{
+			ValidateRange( ledge, 48, points, "MOPP triangle ledge" );
+			int stride = (int)(BitConverter.ToUInt32( data, ledge + 8 ) >> 8) * 16;
+			if ( stride < 48 || BitConverter.ToInt16( data, ledge + 12 ) != 2 )
+				throw new InvalidDataException( "Invalid MOPP triangle ledge." );
+			ValidateRange( ledge, stride, points, "MOPP ledge size" );
+			ExtractLedgeMesh( data, ledge, points, tree, mesh, vertices, scale, surface, materialTable );
+			ledge += stride;
+		}
+		return mesh;
 	}
 
 	internal static int ResolvePhysicsOffset( int origin, int offset, int size, int blobStart, int blobEnd )

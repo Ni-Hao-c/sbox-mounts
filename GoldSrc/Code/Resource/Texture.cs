@@ -2,7 +2,7 @@
 
 namespace GoldSrc;
 
-class WadTextureLoader( Wad wad, string lumpName ) : ResourceLoader<GameMount>
+class WadTextureLoader( Wad wad, string lumpName, bool decal ) : ResourceLoader<GameMount>
 {
 	protected override object Load()
 	{
@@ -43,7 +43,8 @@ class WadTextureLoader( Wad wad, string lumpName ) : ResourceLoader<GameMount>
 
 		// Only masked textures ({name) treat palette index 255 as transparent,
 		// black it out so the key colour doesn't bleed into the edges
-		var masked = lumpName.StartsWith( '{' );
+		var indexedAlpha = decal && !(palette[765] == 0 && palette[766] == 0 && palette[767] == 255);
+		var masked = !indexedAlpha && lumpName.StartsWith( '{' );
 		if ( masked )
 		{
 			palette[(255 * 3) + 0] = 0;
@@ -57,12 +58,12 @@ class WadTextureLoader( Wad wad, string lumpName ) : ResourceLoader<GameMount>
 		for ( var i = 0; i < length; i++ )
 		{
 			var index = data[i];
-			var paletteOffset = index * 3;
+			var paletteOffset = indexedAlpha ? 765 : index * 3;
 
 			imageData[offset++] = palette[paletteOffset];
 			imageData[offset++] = palette[paletteOffset + 1];
 			imageData[offset++] = palette[paletteOffset + 2];
-			imageData[offset++] = (masked && index == 255) ? (byte)0 : (byte)255;
+			imageData[offset++] = indexedAlpha ? index : masked && index == 255 ? (byte)0 : (byte)255;
 		}
 
 		return Texture.Create( width, height )

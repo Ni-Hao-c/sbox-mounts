@@ -17,3 +17,27 @@
 **/.tmp/
 **/.build-temp/
 *.tmp
+
+# This file describes files and paths that should not be tracked by Git version control
+# https://git-scm.com/docs/gitignore
+
+# Auto-generated code editor files
+*/.vs/*
+*/.vscode/*
+*.slnx
+*.user
+*.csproj
+*idea
+*/obj
+*/bin
+*/Properties/*
+*/code/obj/*
+*/code/Properties/*
+*launchSettings.json
+
+# Auto-generated asset related files
+*/.sbox/*
+*.generated.*
+*.*_c
+*.los
+*.vpk

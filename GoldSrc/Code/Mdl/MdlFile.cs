@@ -37,10 +37,26 @@ class File
 	public IEnumerable<SequenceDesc> Sequences => _sequences;
 
 	public IEnumerable<BoundingBox> HitBoxes => _hitBoxes;
+	public IEnumerable<Attachment> Attachments => _attachments;
+
+	public static Event[] ReadEvents( BinaryReader reader, SequenceDesc sequence )
+	{
+		const int eventSize = 76;
+		if ( sequence.NumEvents <= 0 || sequence.EventIndex < 0 ||
+			(long)sequence.EventIndex + (long)sequence.NumEvents * eventSize > reader.BaseStream.Length )
+			return [];
+
+		reader.BaseStream.Position = sequence.EventIndex;
+		var events = new Event[sequence.NumEvents];
+		for ( var i = 0; i < events.Length; i++ )
+			events[i] = new Event( reader );
+		return events;
+	}
 
 	public class BoneTransforms
 	{
 		public Transform[] Transforms;
+		public Transform[] PitchFrames;
 	}
 
 	public BoneTransforms[] SequenceTransforms;
@@ -123,10 +139,10 @@ class File
 
 		if ( destArray != null )
 		{
-			Array.Copy( _boneNormals, _modelVertexOffsets[modelOffset], destArray, destOffset, model.NumVerts );
+			Array.Copy( _boneNormals, _modelNormalOffsets[modelOffset], destArray, destOffset, model.NumNorms );
 		}
 
-		return model.NumVerts;
+		return model.NumNorms;
 	}
 
 	public int GetTriVerts( int bodyPartIndex, int modelIndex, int meshIndex, TriVert[] destArray, int destOffset = 0 )
@@ -319,7 +335,7 @@ class File
 	private File( Stream stream )
 	{
 		var ms = stream;
-		using var br = new BinaryReader( ms );
+		using var br = new BinaryReader( ms, Encoding.UTF8, leaveOpen: true );
 
 		_header = new Header( br );
 
@@ -351,8 +367,8 @@ class File
 		_meshes = new Mesh[_models.Sum( x => x.NumMesh )];
 		_vertices = new Vector3[_models.Sum( x => x.NumVerts )];
 		_boneVertices = new byte[_vertices.Length];
-		_boneNormals = new byte[_vertices.Length];
 		_normals = new Vector3[_models.Sum( x => x.NumNorms )];
+		_boneNormals = new byte[_normals.Length];
 		_meshTriVertOffsets = new int[_meshes.Length];
 
 		var meshesRead = 0;
@@ -377,7 +393,7 @@ class File
 			for ( var i = 0; i < model.NumVerts; i++ ) _boneVertices[verticesRead + i] = br.ReadByte();
 
 			ms.Seek( model.NormInfoIndex, SeekOrigin.Begin );
-			for ( var i = 0; i < model.NumVerts; i++ ) _boneNormals[verticesRead + i] = br.ReadByte();
+			for ( var i = 0; i < model.NumNorms; i++ ) _boneNormals[normalsRead + i] = br.ReadByte();
 
 			verticesRead += model.NumVerts;
 
@@ -488,10 +504,10 @@ class File
 			var width = textureData.Width;
 			var height = textureData.Height;
 
-			_textures[i] = Texture.Create( width, height )
-				.WithData( imageData )
-				.WithMips()
-				.Finish();
+			var texture = Texture.Create( width, height ).WithData( imageData );
+			if ( (textureData.Flags & LightingFlags.NoMips) == 0 )
+				texture = texture.WithMips();
+			_textures[i] = texture.Finish();
 		}
 
 		_skinRefs = new short[_header.NumSkinFamilies * _header.NumSkinRef];
@@ -519,47 +535,59 @@ class File
 		for ( var i = 0; i < _sequences.Length; i++ ) _sequences[i] = new SequenceDesc( br );
 	}
 
-	public void LoadAnimations( List<BinaryReader> readers )
+	public void LoadAnimations( IReadOnlyList<BinaryReader> readers, bool includePitchBlends )
 	{
 		SequenceTransforms = new BoneTransforms[_sequences.Length];
 
 		for ( var sequenceIndex = 0; sequenceIndex < _sequences.Length; ++sequenceIndex )
 		{
 			var seq = _sequences[sequenceIndex];
+			if ( seq.SeqGroup < 0 || seq.SeqGroup >= readers.Count || readers[seq.SeqGroup] is null ||
+				seq.NumFrames <= 0 || seq.Fps <= 0 || !float.IsFinite( seq.Fps ) )
+				continue;
 			var br = readers[seq.SeqGroup];
 
-			var anims = new Anim[_header.NumBones];
-			br.BaseStream.Seek( seq.AnimIndex, SeekOrigin.Begin );
-			for ( var i = 0; i < anims.Length; i++ )
+			var frames = new BoneTransforms { Transforms = ReadFrames( br, seq, seq.AnimIndex ) };
+			if ( includePitchBlends && seq.NumBlends == 2 && seq.BlendType[0] == (int)MotionFlags.XR )
+				frames.PitchFrames = ReadFrames( br, seq, seq.AnimIndex + _header.NumBones * 12 );
+			SequenceTransforms[sequenceIndex] = frames;
+		}
+	}
+
+	Transform[] ReadFrames( BinaryReader br, SequenceDesc seq, int start )
+	{
+		var anims = new Anim[_header.NumBones];
+		br.BaseStream.Seek( start, SeekOrigin.Begin );
+		for ( var i = 0; i < anims.Length; i++ )
+		{
+			anims[i] = new Anim( br );
+		}
+
+		var transforms = new Transform[_header.NumBones * seq.NumFrames];
+
+		const int animSize = 12;
+
+		for ( var boneIndex = 0; boneIndex < _header.NumBones; ++boneIndex )
+		{
+			var bone = _bones[boneIndex];
+			var anim = anims[boneIndex];
+			var animOffset = start + (boneIndex * animSize);
+
+			for ( var frameIndex = 0; frameIndex < seq.NumFrames; ++frameIndex )
 			{
-				anims[i] = new Anim( br );
-			}
+				var position = CalcBonePosition( br, frameIndex, bone, anim, animOffset );
+				var rotation = CalcBoneRotation( br, frameIndex, bone, anim, animOffset );
 
-			SequenceTransforms[sequenceIndex] = new BoneTransforms { Transforms = new Transform[_header.NumBones * seq.NumFrames] };
-
-			const int animSize = 12;
-
-			for ( var boneIndex = 0; boneIndex < _header.NumBones; ++boneIndex )
-			{
-				var bone = _bones[boneIndex];
-				var anim = anims[boneIndex];
-				var animOffset = seq.AnimIndex + (boneIndex * animSize);
-
-				for ( var frameIndex = 0; frameIndex < seq.NumFrames; ++frameIndex )
+				if ( seq.MotionBone == boneIndex )
 				{
-					var position = CalcBonePosition( br, frameIndex, bone, anim, animOffset );
-					var rotation = CalcBoneRotation( br, frameIndex, bone, anim, animOffset );
-
-					if ( seq.MotionBone == boneIndex )
-					{
-						if ( seq.MotionType.Contains( MotionFlags.X ) ) position = position.WithX( 0 );
-						if ( seq.MotionType.Contains( MotionFlags.Y ) ) position = position.WithY( 0 );
-						if ( seq.MotionType.Contains( MotionFlags.Z ) ) position = position.WithZ( 0 );
-					}
-
-					SequenceTransforms[sequenceIndex].Transforms[(frameIndex * _header.NumBones) + boneIndex] = new Transform( position, rotation );
+					if ( seq.MotionType.Contains( MotionFlags.X ) ) position = position.WithX( 0 );
+					if ( seq.MotionType.Contains( MotionFlags.Y ) ) position = position.WithY( 0 );
+					if ( seq.MotionType.Contains( MotionFlags.Z ) ) position = position.WithZ( 0 );
 				}
+
+				transforms[(frameIndex * _header.NumBones) + boneIndex] = new Transform( position, rotation );
 			}
 		}
+		return transforms;
 	}
 }

@@ -2,6 +2,7 @@
   "Title": "GoldSrc",
   "Type": "addon",
   "Org": "local",
+  "OrgTitle": null,
   "Ident": "goldsrc",
   "Schema": 1,
   "IncludeSourceFiles": false,
@@ -9,8 +10,7 @@
   "PublishUsedAssetsOnly": false,
   "PackageReferences": [],
   "EditorReferences": null,
-  "Mounts": [
-  ],
+  "Mounts": [],
   "IsStandaloneOnly": false,
   "AI": {
     "EnableMcpCommunication": true

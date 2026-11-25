@@ -6,8 +6,38 @@ Players can then use that content in the Sandbox mode and other workshop games.
 
 See the full [Mount API docs](https://sbox.game/dev/doc/game-mounts/) to learn more.
 
+## Supported games
+
+✅ supported · ⚠️ partial · ❌ not supported · ➖ not applicable
+
+| Game | Ident | Engine | Maps | NPCs | Weapons | Models | Anims | Sounds | Materials |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Garry's Mod](https://store.steampowered.com/app/4000) | `gmod` | Source | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Half-Life&nbsp;2 (+&nbsp;Episodes)](https://store.steampowered.com/app/220) | `hl2` | Source | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Half-Life](https://store.steampowered.com/app/70) | `hl1` | GoldSrc | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Counter-Strike](https://store.steampowered.com/app/10) | `cstrike` | GoldSrc | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Counter-Strike: Condition&nbsp;Zero](https://store.steampowered.com/app/80) | `czero` | GoldSrc | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Counter-Strike: Source](https://store.steampowered.com/app/240) | `css` | Source | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Day of Defeat](https://store.steampowered.com/app/30) | `dod` | GoldSrc | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Deathmatch Classic](https://store.steampowered.com/app/40) | `dmc` | GoldSrc | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Cry of Fear](https://store.steampowered.com/app/223710) | `cof` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [DOOM + DOOM II](https://store.steampowered.com/app/2280) | `doom` | Doom | ✅ | ❌ | ❌ | ➖ | ✅ | ✅ | ✅ |
+| [Half-Life: Blue&nbsp;Shift](https://store.steampowered.com/app/130) | `bshift` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Half-Life: Opposing&nbsp;Force](https://store.steampowered.com/app/50) | `opfor` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Natural Selection 2](https://store.steampowered.com/app/4920) | `ns2` | Spark | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Ricochet](https://store.steampowered.com/app/60) | `ricochet` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Sven Co-op](https://store.steampowered.com/app/225840) | `svencoop` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Team Fortress Classic](https://store.steampowered.com/app/20) | `tfc` | GoldSrc | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| [Serious Sam HD: The First Encounter](https://store.steampowered.com/app/41050) | `ss_hd_tfe` | Serious Engine 3 | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| [Serious Sam HD: The Second Encounter](https://store.steampowered.com/app/41014) | `ss_hd_tse` | Serious Engine 3 | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| [Quake](https://store.steampowered.com/app/2310) | `quake` | Quake | ⚠️ | ❌ | ❌ | ✅ | ⚠️ | ✅ | ✅ |
+| [Quake III Arena](https://store.steampowered.com/app/2200) | `quake3` | idTech 3 | ✅ | ❌ | ❌ | ⚠️ | ❌ | ✅ | ✅ |
+| [Return to Castle Wolfenstein](https://store.steampowered.com/app/9010) | `rtcw` | idTech 3 | ✅ | ❌ | ❌ | ⚠️ | ❌ | ✅ | ✅ |
+| [Wolfenstein: Enemy&nbsp;Territory](https://store.steampowered.com/app/1873030) | `wolfet` | idTech 3 | ✅ | ❌ | ❌ | ⚠️ | ❌ | ✅ | ✅ |
+
+
 ## Development
-You will need a copy of s&box to develop mounts. You can get it on [Steam](https://store.steampowered.com/app/590830/sbox/), or by building [from source](https://github.com/Facepunch/sbox-public).
+You will need a copy of s&box to develop mounts. You can get it on [Steam](https://store.steampowered.com/app/590830/sbox/) and switch to the [staging branch](https://sbox.game/dev/doc/getting-started/staging-branch), or  [build it from source](https://github.com/Facepunch/sbox-public).
 
 The mounts in this repo are grouped by engine into projects. Open an `.sbproj` in the s&box editor to start working.
 
