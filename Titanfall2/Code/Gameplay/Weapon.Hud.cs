@@ -6,7 +6,7 @@ public sealed partial class Titanfall2Weapon
 	Titanfall2WeaponAmmoDisplay _ammoDisplay;
 	internal bool HasLocalFirstPersonHud => Active && !Application.IsDedicatedServer && !Application.IsHeadless
 		&& !IsProxy && IsHeld && IsActive && Owner.IsValid() && Owner is { IsProxy: false, ThirdPerson: false, Active: true }
-		&& Inventory.IsValid() && !Inventory.ManualPumping && ViewModel.IsValid() && ViewModel.Enabled;
+		&& Inventory.IsValid() && ViewModel.IsValid() && ViewModel.Enabled;
 	internal float HudZoom => _adsBlend;
 	internal int CrosshairDrawSerial { get; private set; }
 	internal float CrosshairArmOpacity { get; private set; }
