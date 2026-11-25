@@ -63,23 +63,33 @@ public partial class Titanfall2Mount
 		definition = null;
 		if ( string.IsNullOrWhiteSpace( name ) ) return false;
 		if ( _milesArchive?.Events is { } events && events.TryGet( name, out definition, out _ ) ) return true;
-		// exp_defender uses the legacy dotted spellings; the installed Miles
+		// Retail impact tables use these legacy dotted spellings; the installed Miles
 		// bank contains these exact underscore events. Keep this verified alias
 		// set bounded instead of applying punctuation/fuzzy matching to all sounds.
-		if ( DefenderImpactEventAliases.TryGetValue( name, out var alias )
+		if ( RetailImpactEventAliases.TryGetValue( name, out var alias )
 			&& _milesArchive?.Events is { } aliasEvents && aliasEvents.TryGet( alias, out definition, out _ ) ) return true;
 		if ( _missingWeaponEvents.Add( name ) && Titanfall2Log.VerboseLogging )
 			Titanfall2Log.Warning( $"TF2 exact sound event '{name}' is unavailable; no fuzzy substitution was made." );
 		return false;
 	}
 
-	static readonly Dictionary<string, string> DefenderImpactEventAliases = new( StringComparer.OrdinalIgnoreCase )
+	static readonly Dictionary<string, string> RetailImpactEventAliases = new( StringComparer.OrdinalIgnoreCase )
 	{
 		["Default.Energy.BulletImpact_3P_vs_3P"] = "default_energy_bulletimpact_3p_vs_3p",
 		["Titan.Energy.BulletImpact_3P_vs_3P"] = "titan_energy_bulletimpact_3p_vs_3p",
 		["Android.Energy.BulletImpact_3P_vs_3P"] = "android_energy_bulletimpact_3p_vs_3p",
 		["TitanBubbleShield.Energy.BulletImpact_3P_vs_3P"] = "titanbubbleshield_energy_bulletimpact_3p_vs_3p",
-		["TitanShield.Energy.BulletImpact_3P_vs_3P"] = "titanshield_energy_bulletimpact_3p_vs_3p"
+		["TitanShield.Energy.BulletImpact_3P_vs_3P"] = "titanshield_energy_bulletimpact_3p_vs_3p",
+		["Concrete.Heavy.BulletImpact_3P_vs_3P"] = "concrete_heavy_bulletimpact_3p_vs_3p",
+		["Dirt.Heavy.BulletImpact_3P_vs_3P"] = "dirt_heavy_bulletimpact_3p_vs_3p",
+		["Titan.AmpedXO16.BulletImpact_3P_vs_3P"] = "titan_ampedxo16_bulletimpact_3p_vs_3p",
+		["Flesh.LSTAR.BulletImpact_3P_vs_3P"] = "flesh_lstar_bulletimpact_3p_vs_3p",
+		["MetalGrate.Heavy.BulletImpact_3P_vs_3P"] = "metalgrate_heavy_bulletimpact_3p_vs_3p",
+		["Grass.Heavy.BulletImpact_3P_vs_3P"] = "grass_heavy_bulletimpact_3p_vs_3p",
+		["Mud.Heavy.BulletImpact_3P_vs_3P"] = "mud_heavy_bulletimpact_3p_vs_3p",
+		["Default.Heavy.BulletImpact_3P_vs_3P"] = "default_heavy_bulletimpact_3p_vs_3p",
+		["SolidMetal.Heavy.BulletImpact_3P_vs_3P"] = "solidmetal_heavy_bulletimpact_3p_vs_3p",
+		["Sand.Heavy.BulletImpact_3P_vs_3P"] = "sand_heavy_bulletimpact_3p_vs_3p"
 	};
 
 	internal bool TryGetExactSound( string name, bool loop, out SoundFile sound )

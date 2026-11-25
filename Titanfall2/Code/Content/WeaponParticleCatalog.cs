@@ -64,6 +64,7 @@ public partial class Titanfall2Mount
 			"p_projectile_lstar" => "particles/wpn_lstar.pcf",
 			"p_lstar_cooldown" or "p_lstar_cooldown_vent" or "p_lstar_overheat" or "p_lstar_overheat_smoke" => "particles/wpn_muzzleflash_lstar.pcf",
 			"p_impact_lstar_default" or "p_impact_lstar_flesh" or "p_impact_lstar_victim" => "particles/impact_fx_lstar.pcf",
+			"p_impact_water" or "p_impact_xo_shield_cp" => "particles/impact_fx.pcf",
 			"xo_spark_med" => "particles/xo_titan_sparks.pcf",
 			"p_doubletake_proj" => "particles/wpn_doubletake.pcf",
 			"wpn_grenade_frag_softball" or "wpn_grenade_frag_mag" or "wpn_grenade_frag_blue" => "particles/wpn_grenade.pcf",

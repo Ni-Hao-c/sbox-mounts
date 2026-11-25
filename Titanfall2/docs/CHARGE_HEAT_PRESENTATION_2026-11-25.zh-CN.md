@@ -22,4 +22,8 @@ L-STAR partial vent 保留 `LSTAR_VentCooldown` / `_3p`、SWAY_ROTATE 烟雾，�
 
 2026-11-25 17:31:46 至 17:34:51（本地时间）Steam 切换并更新至 Borealis 分支，BuildID 26888677。旧报告使用 `Sandbox.SceneRenderer`，此后重建使用 `Sandbox.Rendering` 与 Borealis；两组结果不能当作同一渲染环境。新 `ContentFiles.FindGame()` 从 `AppContext.BaseDirectory` 向父级寻找 `core/shaders`，不读取工作目录或 `FACEPUNCH_ENGINE`，因此专项程序应位于隔离运行环境的子目录。fixture 改用 `Graphics.FlushGPU()` 等待当前绘制设备；Borealis 分支中的旧 Source 2 `g_pRenderDevice` 调用不能证明新 GPU 队列已完成。新引擎的编译和渲染结果需单独记录。
 
+L-STAR 后续预热缺项已按零售文件修正：`P_impact_water` 与 `P_impact_xo_shield_CP` 均属于 `particles/impact_fx.pcf`，两棵图分别有 7／5 个定义，子引用在该文件内闭合。四个 dirt VMT 的 `$basetexture` 保留作者源路径 `particle/dirt/dirt_burst_full.tga`，但 VPK 中实际发布的是 `materials/particle/dirt/dirt_burst_full.vtf`（512×512，350428 字节）。统一 VMT 纹理归一化现同时识别末尾 `.tga` 与 `.vtf`，供预热和运行时共同使用；未跳过失败资源。证据、来源 SHA256 和离线闭合检查见 `artifacts/retail-runtime-research-20261125/charge-regen/lstar-prewarm-retail.json`、`lstar-prewarm-offline-check.json`。直接编译生产归一化函数的 5 个离线用例通过；没有在用户运行中的游戏上部署或执行 GPU 验证，完整预热 Ready 尚待后续统一验证。
+
 本批交付状态：更新后的官方包构建成功，31 个挂载 shader 按新 ABI 4 编译成功。换弹和投掷实际输入各 7 项通过。Charge 167/167 预热、原动画骨骼变化、音效 seek 与释放清理通过；清理检查按引擎帧末 Destroy 语义执行。完整表现专项尚未通过：Borealis 下自定义背景未绘出，充能截图未清晰显示枪身，折射像素结果不可验收；后续运行又检出 L-STAR 23 个预热失败项（纹理、定向 PCF、精确音效名），未放宽 Ready 判定。失败原始报告保存在 `weapon-presentation-borealis*.json`。用户要求加快并自行测试，因此本批部署已通过输入检查的实现，不再追加验证；不宣称画面、全部预热或真人多人已通过。
+
+十类命中音效的准确别名与原 Miles type 8 同 bank 引用已补齐，保留 Mud/Sand 自身层和 Dirt 引用的叠加，详见 `LSTAR_IMPACT_AUDIO_2026-11-25.zh-CN.md`。另从当前官方 DLL 确认隔离 fixture 的 `EngineFileSystem.AddAssetPath` 没有注册进 Borealis 的 ContentFiles；验证入口已把同一 Assets 根加入该解析器。此前空白自定义材质截图因此不能直接证明产品挂载的渲染缺陷；修正后尚未追加 GPU 运行。证据在 `artifacts/borealis-content-20261125/FINDINGS.md`。用户正在测试已部署包，本批后续源码改动未覆盖安装目录。

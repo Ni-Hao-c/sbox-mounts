@@ -16,7 +16,10 @@ static class Titanfall2LegacyPath
 		if ( string.IsNullOrWhiteSpace( path ) ) return string.Empty;
 		var normalized = path.Replace( '\\', '/' ).Trim().Trim( '"' ).TrimStart( '/' );
 		if ( normalized.StartsWith( "materials/", StringComparison.OrdinalIgnoreCase ) ) normalized = normalized[10..];
-		if ( normalized.EndsWith( ".vtf", StringComparison.OrdinalIgnoreCase ) ) normalized = normalized[..^4];
+		// Retail VMTs can retain the source-art extension (for example
+		// dirt_burst_full.tga), although the shipped texture is a .vtf.
+		if ( normalized.EndsWith( ".vtf", StringComparison.OrdinalIgnoreCase )
+			|| normalized.EndsWith( ".tga", StringComparison.OrdinalIgnoreCase ) ) normalized = normalized[..^4];
 		return normalized.Trim( '/' );
 	}
 

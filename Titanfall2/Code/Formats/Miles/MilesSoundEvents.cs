@@ -10,14 +10,16 @@ sealed class MilesSoundEventCatalog
 {
 	readonly Func<Stream> _open;
 	readonly long _length;
+	readonly string _bankName;
 	readonly int _actions, _strings, _curves, _nodes, _nodeEnd;
 	readonly Dictionary<string, int> _index = new( StringComparer.OrdinalIgnoreCase );
 	readonly Dictionary<string, (MilesSoundEvent Event, string Error)> _cache = new( StringComparer.OrdinalIgnoreCase );
 
-	internal MilesSoundEventCatalog( byte[] bank, Func<Stream> open )
+	internal MilesSoundEventCatalog( byte[] bank, Func<Stream> open, string bankName = "general" )
 	{
 		_open = open;
 		_length = bank.Length;
+		_bankName = bankName;
 		int Offset( int at )
 		{
 			var value = BinaryPrimitives.ReadUInt64LittleEndian( bank.AsSpan( at, 8 ) );
@@ -52,33 +54,58 @@ sealed class MilesSoundEventCatalog
 		lock ( _cache )
 		{
 			if ( _cache.TryGetValue( name, out var cached ) ) { result = cached.Event; error = cached.Error; return result is not null; }
-			if ( !_index.TryGetValue( name, out var address ) ) { error = "exact event not found"; return false; }
+			if ( !_index.ContainsKey( name ) ) { error = "exact event not found"; return false; }
 			try
 			{
 				using var stream = _open();
 				var reader = new Reader( this, stream );
 				var layers = new List<MilesSoundLayer>();
-				for ( var i = 0; i < 64; i++ )
+				var path = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+				Append( name, 0 );
+				result = new( name, layers.ToArray() );
+				void Append( string eventName, int depth )
 				{
-					var header = reader.Bytes( address, 4, _actions, _strings );
-					var type = header[0] & 15;
-					var size = type == 10 ? 4 : header[1] * 4;
-					if ( size < 4 ) throw new InvalidDataException( "Zero-sized Miles action." );
-					var data = reader.Bytes( address, size, _actions, _strings );
-					// Do not partially play an event with unknown commands.
-					if ( type != 0 || size < 140 ) throw new InvalidDataException( $"Unsupported Miles action {type}." );
-					var flags = U32( data, 136 );
-					MilesSoundValue Value( int offset, uint flag ) => (flags & flag) != 0
-						? new( 0, reader.Curve( U32( data, offset ) ) ) : new( F32( data, offset ), null );
-					layers.Add( new( reader.Choice( U32( data, 60 ) ), Value( 92, 1 ), Value( 88, 4 ),
-						Value( 84, 32 ), reader.Curve( U32( data, 40 ) ), F32( data, 24 ), F32( data, 8 ),
-						F32( data, 12 ), F32( data, 16 ), U16( data, 56 ), F32( data, 4 ) ) );
-					address += size;
-					if ( (header[0] & 16) == 0 ) continue;
-					result = new( name, layers.ToArray() );
-					break;
+					if ( depth >= 16 || !path.Add( eventName ) ) throw new InvalidDataException( "Cyclic or excessively deep Miles event reference." );
+					try
+					{
+						if ( !_index.TryGetValue( eventName, out var address ) ) throw new InvalidDataException( "Exact referenced Miles event not found: " + eventName );
+						for ( var i = 0; i < 64; i++ )
+						{
+							var header = reader.Bytes( address, 4, _actions, _strings );
+							var type = header[0] & 15;
+							var size = type == 10 ? 4 : header[1] * 4;
+							if ( size < 4 ) throw new InvalidDataException( "Zero-sized Miles action." );
+							var data = reader.Bytes( address, size, _actions, _strings );
+							if ( type == 8 && size == 12 && U32( data, 4 ) == 0 )
+							{
+								// Retail Heavy impacts use this exact same-bank event action:
+								// Default -> Concrete, Grass -> Dirt, Mud/Sand -> own layer + Dirt.
+								// Reject other routing/settings rather than approximating them.
+								var reference = reader.String( U32( data, 8 ) );
+								var prefix = "/" + _bankName + "/";
+								if ( !reference.StartsWith( prefix, StringComparison.OrdinalIgnoreCase ) )
+									throw new InvalidDataException( "Unsupported cross-bank Miles event reference." );
+								Append( reference[prefix.Length..], depth + 1 );
+							}
+							else
+							{
+								// Do not partially play an event with unknown commands.
+								if ( type != 0 || size < 140 ) throw new InvalidDataException( $"Unsupported Miles action {type}." );
+								if ( layers.Count >= 256 ) throw new InvalidDataException( "Miles event layer limit exceeded." );
+								var flags = U32( data, 136 );
+								MilesSoundValue Value( int offset, uint flag ) => (flags & flag) != 0
+									? new( 0, reader.Curve( U32( data, offset ) ) ) : new( F32( data, offset ), null );
+								layers.Add( new( reader.Choice( U32( data, 60 ) ), Value( 92, 1 ), Value( 88, 4 ),
+									Value( 84, 32 ), reader.Curve( U32( data, 40 ) ), F32( data, 24 ), F32( data, 8 ),
+									F32( data, 12 ), F32( data, 16 ), U16( data, 56 ), F32( data, 4 ) ) );
+							}
+							address += size;
+							if ( (header[0] & 16) != 0 ) return;
+						}
+						throw new InvalidDataException( "Unterminated Miles event action list." );
+					}
+					finally { path.Remove( eventName ); }
 				}
-				if ( result is null ) throw new InvalidDataException( "Unterminated Miles event action list." );
 			}
 			catch ( Exception exception ) { error = exception.Message; }
 			_cache[name] = (result, error);
@@ -107,7 +134,7 @@ sealed class MilesSoundEventCatalog
 			stream.Position = address; stream.ReadExactly( bytes );
 			return bytes;
 		}
-		string String( uint offset )
+		internal string String( uint offset )
 		{
 			var at = owner._strings + (long)offset;
 			var data = Bytes( at, (int)Math.Min( 1024, owner._curves - at ), owner._strings, owner._curves );
