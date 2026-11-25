@@ -18,6 +18,8 @@ public sealed partial class Titanfall2Weapon
 		// Do not select from a client's potentially stale magazine or start a local timer.
 		if ( !Networking.IsHost ) { base.Reload(); return; }
 		if ( !CanReload() ) return;
+		ResetSmartAmmo();
+		StopSpinUp();
 		var startedEmpty = Clip1 <= 0;
 		var duration = ReloadProfile.DurationFor( startedEmpty, ReloadTime );
 		RetailReload = new()
@@ -62,9 +64,12 @@ public sealed partial class Titanfall2Weapon
 
 	protected override void OnDisabled()
 	{
+		ResetSmartAmmo();
+		StopSpinUp();
 		// Holstering already calls the engine's CancelReload. Disabling the component
 		// must also cancel its pending task so re-enabling cannot complete an old reload.
 		CancelReload();
+		DestroyWeaponHud();
 		base.OnDisabled();
 	}
 }

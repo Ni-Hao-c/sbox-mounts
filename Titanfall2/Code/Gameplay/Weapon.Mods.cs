@@ -12,6 +12,7 @@ public record struct Titanfall2WeaponModOption
 	public float ZoomOut { get; set; }
 	public float AdsFov { get; set; }
 	public Titanfall2WeaponPresentation Presentation { get; set; }
+	public Titanfall2WeaponUiDisplay[] UiDisplays { get; set; }
 }
 
 internal sealed partial record Titanfall2WeaponData
@@ -27,7 +28,7 @@ internal sealed partial record Titanfall2WeaponData
 			"pas_fast_ads" => Titanfall2WeaponModSlot.Ads, _ => Titanfall2WeaponModSlot.Optic },
 		Magazine = variant.Magazine, Reload = variant.ReloadProfile,
 		ZoomIn = variant.SpreadProfile.ZoomIn, ZoomOut = variant.SpreadProfile.ZoomOut,
-		AdsFov = variant.AdsFov, Presentation = variant.Presentation
+		AdsFov = variant.AdsFov, Presentation = variant.Presentation, UiDisplays = variant.UiDisplays
 	};
 }
 
@@ -91,6 +92,7 @@ public sealed partial class Titanfall2Weapon
 					break;
 				case Titanfall2WeaponModSlot.Optic:
 					Presentation = option.Presentation;
+					UiDisplays = option.UiDisplays;
 					AdsFov = option.AdsFov;
 					break;
 			}
@@ -101,5 +103,6 @@ public sealed partial class Titanfall2Weapon
 		if ( WorldModel.IsValid() ) Presentation.ApplyBodyGroups( WorldModel.GetComponent<BaseWeaponModel>()?.Renderer );
 		if ( ViewModel.IsValid() ) Presentation.ApplyBodyGroups( ViewModel.GetComponent<BaseWeaponModel>()?.Renderer );
 		_appliedAttachmentSelection = AttachmentSelection;
+		BeginWeaponPrewarm();
 	}
 }

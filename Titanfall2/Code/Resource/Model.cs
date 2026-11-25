@@ -610,6 +610,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		Titanfall2Log.Trace( $"Titanfall 2 model loaded: {ImportPath} ({lod.Meshes.Length} meshes, {decalMeshCount} decal meshes, "
 			+ $"{lod.VertexCount} vertices, {lod.TriangleCount} triangles, {parsed.Bones.Length} bones, "
 			+ $"{animationCount} animations, {collisionHullCount} {collisionDescription} collision hulls)" );
+		AddWeaponScreens( builder, parsed, data );
 		builder.WithData( new Titanfall2ModelCollisionData
 		{
 			SourcePath = ImportPath,

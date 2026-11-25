@@ -60,10 +60,6 @@ public sealed partial class Titanfall2Weapon
 		_scopeViewVisible = null;
 	}
 
-	public override void DrawCrosshair( Painter painter, Vector2 center )
-	{
-		if ( ScopeOpacity <= 0 ) base.DrawCrosshair( painter, center );
-	}
 }
 
 /// <summary>Native scoped sight using the mounted DCOM artwork and retail zoom timing.</summary>

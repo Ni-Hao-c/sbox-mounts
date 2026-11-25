@@ -18,7 +18,7 @@ public sealed class Titanfall2TitanCore : Component
 	public bool IsActive => ActiveRemaining > 0;
 	public bool IsCharging => ChargeupRemaining > 0;
 	public bool CanActivate => Active && Supported && Actor is { Active: true, IsTitan: true, Dead: false, CanFight: true }
-		&& Charge >= 1 && !IsActive && !IsCharging;
+		&& Actor.TitanCanAct && Charge >= 1 && !IsActive && !IsCharging;
 	public string Name => Kit switch
 	{
 		Chassis.Monarch => "Upgrade Core", Chassis.Ion => "Laser Core", Chassis.Legion => "Smart Core", Chassis.Ronin => "Sword Core",
@@ -33,7 +33,7 @@ public sealed class Titanfall2TitanCore : Component
 	public float ReloadMultiplier => ArcRoundsActive && UpgradeLevel >= 2 ? 0.75f : 1;
 	public float PrimaryDamageMultiplier => ArcRoundsActive && UpgradeLevel >= 3 ? 1.25f : 1;
 	bool HasXo16 => Actor?.GunModelPath?.Contains( "/titan_xo16", StringComparison.OrdinalIgnoreCase ) == true;
-	bool HostReady => Networking.IsHost && !IsProxy && Active && Actor is { Active: true, IsTitan: true, Dead: false, CanFight: true } && Supported;
+	bool HostReady => Networking.IsHost && !IsProxy && Active && Actor is { Active: true, IsTitan: true, Dead: false, CanFight: true } && Actor.TitanCanAct && Supported;
 	bool HasPilot => Actor.Seat is { IsOccupied: true } or { IsEmbarking: true };
 	Vector3 Eye => Actor.WorldPosition + Vector3.Up * (Actor.BodyHeight * 0.79f);
 	Ray _aim;
@@ -78,7 +78,7 @@ public sealed class Titanfall2TitanCore : Component
 	/// <summary>Only a host can grant charge. Core-generated damage cannot charge the next core.</summary>
 	internal static void CreditDamage( Titanfall2Npc victim, in DamageInfo damage, float acceptedDamage, float availableHealth )
 	{
-		if ( !Networking.IsHost || victim is null || damage is null || damage.Tags.Has( "titan-core" ) ) return;
+		if ( !Networking.IsHost || victim is null || damage is null || damage.Tags.Has( "titan-core" ) || damage.Tags.Has( "titan-self-destruct" ) ) return;
 		var source = Titanfall2HostDamage.Consume( victim, damage );
 		if ( source is not { IsTitan: true, Dead: false } || source == victim || !source.IsHostileToFaction( victim.Faction ) ) return;
 		var core = source.GetComponent<Titanfall2TitanCore>();
@@ -195,6 +195,14 @@ public sealed class Titanfall2TitanCore : Component
 		_attacker = null;
 	}
 
+	internal void CancelForTitanLife()
+	{
+		if ( !Networking.IsHost || IsProxy ) return;
+		CancelActive();
+		_salvoMissiles.Clear();
+		ClearVisuals();
+	}
+
 	Vector3 SalvoAimPoint()
 	{
 		var direction = _aim.Forward.IsFinite && _aim.Forward.LengthSquared > 0.25f ? _aim.Forward.Normal : Actor.WorldRotation.Forward;
@@ -266,9 +274,11 @@ public sealed class Titanfall2TitanCore : Component
 		var direction = _aim.Forward.IsFinite && _aim.Forward.LengthSquared > 0.25f ? _aim.Forward.Normal : Actor.WorldRotation.Forward;
 		var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( Eye, Eye + direction * 6000 ).Radius( 18 )
 			.UseHitboxes().UseHitPosition().IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
+		var intercepted = Titanfall2TitanDefense.TryInterceptHitscan( Scene, ref hit, _attacker, Actor.GameObject,
+			new Titanfall2DefenseShot( 325, 325, 0, Range: 6000, Refire: false ) );
 		BeamEnd = hit.EndPosition;
 		if ( !hit.Hit || hit.StartedSolid ) return;
-		if ( IsHostileObject( hit.GameObject ) )
+		if ( !intercepted && IsHostileObject( hit.GameObject ) )
 		{
 			var tags = new TagSet(); tags.Add( "bullet" ); tags.Add( "titan-core" );
 			Titanfall2HostDamage.ShootBullet( hit, 325, 0, _attacker, Actor.GameObject, tags );

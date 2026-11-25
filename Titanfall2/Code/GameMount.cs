@@ -150,7 +150,10 @@ public partial class Titanfall2Mount : BaseGameMount
 
 	protected override void Shutdown()
 	{
+		ResetWeaponPrewarm();
 		ClearUiAtlasCache();
+		ClearWeaponUiLayouts();
+		ResetWeaponFonts();
 		_mapPreviewImages.Clear();
 		_mapPreviewNames.Clear();
 		_combatTables.Clear();
@@ -218,6 +221,7 @@ public partial class Titanfall2Mount : BaseGameMount
 
 	void ReleaseMountCaches()
 	{
+		ResetWeaponPrewarm();
 		var particleSheets = 0;
 		var particleTextures = 0;
 		lock ( _legacyParticleSpriteLock )

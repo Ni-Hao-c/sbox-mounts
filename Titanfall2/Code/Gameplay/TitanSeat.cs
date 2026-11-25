@@ -10,6 +10,8 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	[Property] public float EmbarkRange { get; set; } = 200;
 	[Property] public bool AlignWithPilot { get; set; } = true;
 	[Property] public string CoreAction { get; set; } = "flashlight";
+	[Property] public string EjectAction { get; set; } = "jump";
+	[Property] public string IonLaserAction { get; set; } = "slot2";
 	[Property] public bool ShowHud { get; set; } = true;
 	[Property] public bool ShowCockpit { get; set; } = true;
 	[Sync( SyncFlags.FromHost )] public float EmbarkRemaining { get; private set; }
@@ -37,14 +39,14 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	string _message;
 	Vector3 _dashDirection;
 
-	public override bool CanEnter( PlayerController player ) => Active && Actor is { Active: true, IsTitan: true, Dead: false }
+	public override bool CanEnter( PlayerController player ) => Active && Actor is { Active: true, IsTitan: true, TitanCanAct: true }
 		&& player.IsValid() && player.Active && player.Scene == Scene && !player.IsProxy && Networking.IsHost && !IsProxy && !Actor.IsProxy
 		&& SeatPosition.IsValid() && !BoardingPilot.IsValid() && _reentryDelay <= 0
 		&& player.GetComponentInParent<BaseChair>() is null && base.CanEnter( player )
 		&& !Scene.GetAllComponents<Titanfall2TitanSeat>().Any( seat => seat != this && seat.BoardingPilot == player )
 		&& CanReachCockpit( player );
 
-	Component.IPressable.Tooltip? Component.IPressable.GetTooltip( Component.IPressable.Event e ) => Actor is not { Dead: false } ? null
+	Component.IPressable.Tooltip? Component.IPressable.GetTooltip( Component.IPressable.Event e ) => Actor is not { TitanCanAct: true } ? null
 		: new Component.IPressable.Tooltip( Actor.DisplayName ?? "泰坦", "airline_seat_recline_normal",
 			IsOccupied ? "座舱已占用" : IsEmbarking ? "正在建立神经连接" : "登乘泰坦" );
 	bool Component.IPressable.CanPress( Component.IPressable.Event e ) => e.Source is PlayerController pilot && CanEnter( pilot );
@@ -82,7 +84,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 			EmbarkRemaining = 0;
 			return;
 		}
-		if ( Actor is not { Dead: false } || !BoardingPilot.Active || BoardingPilot.IsProxy || IsOccupied || !CanReachCockpit( BoardingPilot ) )
+		if ( Actor is not { TitanCanAct: true } || !BoardingPilot.Active || BoardingPilot.IsProxy || IsOccupied || !CanReachCockpit( BoardingPilot ) )
 		{
 			BoardingPilot = null;
 			SeatSerial++;
@@ -104,7 +106,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		pilot.GameObject.LocalTransform = global::Transform.Zero;
 		_entryGrace = 0.6f;
 		if ( AlignWithPilot ) { Actor.Friendly = true; Actor.Leader = pilot.GameObject; }
-		SetMessage( "神经连接完成 · 泰坦就绪", 3 );
+		SetMessage( "神经连接完成 · 使用键离舱 · 跳跃键弹射", 4 );
 	}
 
 	protected override void OnUpdate()
@@ -113,7 +115,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		UpdateHud();
 		UpdateCockpitView();
 		var pilot = GetOccupant();
-		if ( !Networking.IsHost || Actor is not { Dead: false } || !pilot.IsValid() || pilot.IsProxy )
+		if ( !Networking.IsHost || Actor is not { TitanCanAct: true } || !pilot.IsValid() || pilot.IsProxy )
 		{
 			IsDriving = false;
 			if ( !BoardingPilot.IsValid() ) RestoreInventory();
@@ -122,8 +124,15 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		_seatedPilot = pilot;
 		PauseInventory( pilot );
 		if ( pilot.Mode is not Sandbox.Movement.SitMoveMode ) return;
+		if ( _entryGrace <= 0 && !string.IsNullOrWhiteSpace( EjectAction ) && Input.Pressed( EjectAction ) )
+		{
+			Input.Clear( EjectAction );
+			TryEjectPilot( pilot );
+			return;
+		}
 		if ( _entryGrace <= 0 && Input.Pressed( "use" ) ) { TryDisembark( pilot ); return; }
 		var aim = pilot.EyeTransform.ForwardRay;
+		Actor.SetAnimationAimDirection( aim.Forward );
 		var core = Actor.GetComponent<Titanfall2TitanCore>();
 		core?.SetAim( aim );
 		if ( !string.IsNullOrWhiteSpace( CoreAction ) && Input.Pressed( CoreAction ) )
@@ -132,12 +141,22 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 				SetMessage( core is { Supported: true } ? "核心尚未就绪" : "此机体的核心尚未接入", 2 );
 			Input.Clear( CoreAction );
 		}
-		if ( Input.Pressed( "reload" ) ) Actor.StartReload();
-		if ( Input.Down( "attack1" ) ) Actor.Fire( aim, pilot.GameObject, piloted: true );
 		if ( Actor.GetComponent<Titanfall2TitanKit>() is { } kit )
 		{
-			if ( Input.Pressed( "attack2" ) && !kit.TryOffense( aim, pilot.GameObject ) ) SetMessage( kit.LastOffenseFailure ?? "攻击技能冷却中", 2 );
-			if ( Input.Pressed( "duck" ) && !kit.TryDefense( aim, pilot.GameObject ) ) SetMessage( "防御技能冷却中", 2 );
+			if ( kit.Kit == Titanfall2TitanKit.Chassis.Ion )
+			{
+				kit.SetIonInput( pilot, aim, Input.Down( "attack2" ), Input.Down( "duck" ) );
+				if ( !string.IsNullOrWhiteSpace( IonLaserAction ) && Input.Pressed( IonLaserAction ) )
+				{
+					if ( !kit.TryOffense( aim, pilot.GameObject ) ) SetMessage( kit.LastOffenseFailure ?? "激光肩炮未就绪", 2 );
+					Input.Clear( IonLaserAction );
+				}
+			}
+			else
+			{
+				if ( Input.Pressed( "attack2" ) && !kit.TryOffense( aim, pilot.GameObject ) ) SetMessage( kit.LastOffenseFailure ?? "攻击技能冷却中", 2 );
+				if ( Input.Pressed( "duck" ) && !kit.TryDefense( aim, pilot.GameObject ) ) SetMessage( "防御技能冷却中", 2 );
+			}
 			if ( Input.Pressed( "run" ) && kit.TryDash() )
 			{
 				var move = Input.AnalogMove;
@@ -145,12 +164,14 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 				_dashTime = 0.2f;
 			}
 		}
+		if ( Input.Pressed( "reload" ) ) Actor.StartReload();
+		if ( Input.Down( "attack1" ) ) Actor.Fire( aim, pilot.GameObject, piloted: true );
 	}
 
 	protected override void OnFixedUpdate()
 	{
 		IsDriving = false;
-		if ( !Networking.IsHost || Actor is not { Dead: false } || BoardingPilot.IsValid()
+		if ( !Networking.IsHost || Actor is not { TitanCanAct: true } || BoardingPilot.IsValid()
 			|| GetOccupant() is not { IsProxy: false } pilot || pilot.Mode is not Sandbox.Movement.SitMoveMode ) return;
 		if ( _dashTime > 0 ) { if ( !TryDrive( _dashDirection * (800 * Time.Delta) ) ) _dashTime = 0; return; }
 		var angles = pilot.EyeAngles;
@@ -164,7 +185,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 
 	internal bool TryDrive( Vector3 displacement )
 	{
-		if ( !Networking.IsHost || !Active || Actor is not { Active: true, Dead: false } || !displacement.IsFinite || displacement.LengthSquared <= 0.001f ) return false;
+		if ( !Networking.IsHost || !Active || Actor is not { Active: true, TitanCanAct: true } || !displacement.IsFinite || displacement.LengthSquared <= 0.001f ) return false;
 		var radius = MathF.Max( 4, Actor.BodyRadius - 2 );
 		var hull = new BBox( new Vector3( -radius, -radius, 0 ), new Vector3( radius, radius, Actor.BodyHeight - 2 ) );
 		var origin = WorldPosition + Vector3.Up * 2;
@@ -252,6 +273,42 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		return true;
 	}
 
+	/// <summary>Host-authoritative active ejection. Ordinary disembarkation does not destroy the chassis.</summary>
+	public bool TryEjectPilot( PlayerController pilot )
+	{
+		if ( !Networking.IsHost || IsProxy || !Active || Actor is not { Active: true, IsTitan: true, TitanCanAct: true }
+			|| !pilot.IsValid() || pilot.IsProxy || !pilot.Active || !ContainsPilot( pilot ) || GetOccupant() != pilot ) return false;
+		var radius = Math.Clamp( pilot.BodyRadius, 8, 48 );
+		var hull = new BBox( new Vector3( -radius, -radius, 1 ), new Vector3( radius, radius, Math.Clamp( pilot.BodyHeight, 32, 128 ) ) );
+		var above = WorldPosition + Vector3.Up * (Actor.BodyHeight + 12);
+		var clearance = TraceHull( hull, pilot.WorldPosition, above, Titanfall2TraceMask.PlayerSolid );
+		Vector3 exit;
+		if ( !clearance.StartedSolid && !clearance.Hit ) exit = above;
+		else if ( !TryFindExit( pilot, out exit, emergency: true ) )
+		{
+			SetMessage( "弹射出口受阻 · 请移动泰坦后重试", 3 );
+			return false;
+		}
+		if ( !Actor.BeginTitanEjection() ) return false;
+		var look = pilot.EyeTransform.Rotation.Angles();
+		pilot.GameObject.SetParent( null, true );
+		pilot.WorldPosition = exit;
+		pilot.EyeAngles = look;
+		RestoreInventory();
+		_seatedPilot = null;
+		SeatSerial++;
+		IsDriving = false;
+		var speed = 1500f + Random.Shared.NextSingle() * 200f;
+		if ( Actor.Role == Titanfall2Npc.FrontierRole.NukeTitan ) speed += 400;
+		var gravityScale = pilot.Body.IsValid() && float.IsFinite( pilot.Body.GravityScale ) ? MathF.Max( 0, pilot.Body.GravityScale ) : 1;
+		// sh_titan.gnut: 270 degrees pitch, then -5 degrees, speed * sqrt(gravityscale).
+		var velocity = (Vector3.Up * MathF.Cos( 5 * MathF.PI / 180 ) - WorldRotation.Forward * MathF.Sin( 5 * MathF.PI / 180 ))
+			* speed * MathF.Sqrt( gravityScale );
+		pilot.GameObject.GetOrAddComponent<Titanfall2EjectionImpulse>().Launch( pilot, velocity );
+		SetMessage( "驾驶员弹射 · 泰坦自毁", 3 );
+		return true;
+	}
+
 	bool ContainsPilot( PlayerController pilot )
 	{
 		for ( var parent = pilot.GameObject.Parent; parent.IsValid(); parent = parent.Parent )
@@ -281,6 +338,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	}
 	void RestoreInventory()
 	{
+		Actor?.GetComponent<Titanfall2TitanKit>()?.ClearIonInput();
 		_dashTime = 0;
 		if ( _viewPilot.IsValid() ) _viewPilot.ThirdPerson = _previousThirdPerson;
 		_viewPilot = null;

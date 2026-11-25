@@ -79,42 +79,81 @@ internal sealed partial record Titanfall2WeaponData
 public sealed partial class Titanfall2Weapon
 {
 	[Property] public Titanfall2DamageProfile DamageProfile { get; set; }
+	int _hitscanRequestSequence;
+	int _lastHitscanRequestSequence = -1;
+	PlayerController _hitscanRequestOwner;
+	TimeUntil _nextHitscanRequest;
 
 	float HitDamage( Vector3 origin, Vector3 position, GameObject target ) => DamageProfile.Evaluate(
 		origin.Distance( position ), target?.GetComponentInParent<Titanfall2Npc>() is { IsTitan: true }, false, Ballistics.Damage, TitanDamage );
 
 	void FireHitscan()
 	{
-		if ( !DamageProfile.Enabled )
-		{
-			if ( IsHeld && (!HasRoundAmmo() || Firing.Cost > 1 && !TakePrimaryAmmo( Firing.Cost - 1 )) ) return;
-			base.PrimaryAttack(); RecordSpreadShot( _adsBlend ); return;
-		}
-		if ( IsHeld && !TakePrimaryAmmo( Firing.Cost ) ) return;
-		var config = Ballistics;
+		if ( IsProxy ) return;
 		var aim = AimRay;
-		var volley = new ShotEffect[Math.Clamp( config.Pellets, 1, 12 )];
-		for ( var i = 0; i < volley.Length; i++ )
-		{
-			var spread = CurrentSpread;
-			var ray = aim with { Forward = aim.Forward.WithAimCone( spread.x, spread.y ) };
-			var hit = BulletTrace( ray, config.Range, config.Radius ).Run();
-			ShootBullet( hit, HitDamage( hit.StartPosition, hit.HitPosition, hit.GameObject ), config.Force );
-			volley[i] = new ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface, NoEvents: i > 0 );
-		}
-		TimeSinceShoot = 0;
-		RecordSpreadShot( _adsBlend );
-		ShootEffects( volley );
+		if ( Networking.IsHost ) ResolveHitscan( aim, _adsBlend );
+		else if ( IsHeld && IsActive ) RequestHitscan( unchecked( ++_hitscanRequestSequence ), aim.Forward, _adsBlend );
 	}
 
-	// Each pellet can have a different distance and armor curve. The engine routes
-	// these individual claims; the host checks their damage against its own profile.
-	protected override bool OnValidateShotClaim( in ShotClaim claim )
+	// A whole trigger pull reaches the host, including shots that miss actors. Native
+	// client hit claims omit those rays, so they cannot implement a spatial vortex.
+	[Rpc.Host( NetFlags.OwnerOnly )]
+	void RequestHitscan( int sequence, Vector3 direction, float zoom )
 	{
-		if ( !DamageProfile.Enabled ) return base.OnValidateShotClaim( claim );
-		if ( Projectile.Enabled || claim.Pellets is not { Length: 1 } || !float.IsFinite( claim.Damage ) ) return false;
-		var pellet = claim.Pellets[0];
-		if ( !pellet.HitObject.IsValid() || !pellet.Origin.IsFinite || !pellet.Position.IsFinite ) return false;
-		return MathF.Abs( claim.Damage - HitDamage( pellet.Origin, pellet.Position, pellet.HitObject ) ) < 0.01f;
+		if ( !Networking.IsHost || UsesRetailSmartAmmo ) return;
+		var owner = Owner;
+		if ( !owner.IsValid() || Inventory?.ActiveItem != this ) return;
+		if ( _hitscanRequestOwner != owner ) { _hitscanRequestOwner = owner; _lastHitscanRequestSequence = -1; }
+		if ( sequence <= _lastHitscanRequestSequence ) return;
+		_lastHitscanRequestSequence = sequence;
+		// Small arrival jitter allowance, accumulated into the next deadline rather
+		// than granting extra sustained fire rate. Duplicates remain strictly rejected.
+		var slack = Math.Clamp( (SpinUp.Enabled ? SpinUp.Interval( _hostSpin.Fraction( SpinUp, Time.NowDouble ), PrimaryDelay ) : PrimaryDelay) * 0.25f, 0.003f, 0.02f );
+		if ( IsReloading || Projectile.Enabled || _nextHitscanRequest > slack
+			|| !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f || !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
+		if ( Vector3.Dot( owner.EyeTransform.Forward, direction.Normal ) < 0.35f ) return;
+		// The client supplies view direction only. Host eyes establish the shot origin;
+		// damage, ammo, spread and all shield contacts come from host-owned state.
+		ResolveHitscan( new Ray( owner.EyePosition, direction.Normal ), zoom );
 	}
+
+	void ResolveHitscan( Ray aim, float zoom, Sandbox.Npcs.BaseNpc smartTarget = null )
+	{
+		if ( !Networking.IsHost || !Active || Projectile.Enabled || IsReloading || !aim.Position.IsFinite || !aim.Forward.IsFinite
+			|| aim.Forward.LengthSquared < 0.25f ) return;
+		if ( IsHeld && (!IsActive || !HasRoundAmmo() || !TakePrimaryAmmo( Firing.Cost )) ) return;
+		_nextHitscanRequest = MathF.Max( 0, _nextHitscanRequest ) + MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
+		var config = Ballistics;
+		var volley = new ShotEffect[Math.Clamp( config.Pellets, 1, 12 )];
+		var spread = smartTarget.IsValid() ? Vector2.Zero
+			: SpreadProfile.Enabled ? RetailSpread( zoom ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, zoom );
+		for ( var i = 0; i < volley.Length; i++ )
+		{
+			var ray = aim with { Forward = aim.Forward.WithAimCone( spread.x, spread.y ) };
+			var hit = BulletTrace( ray, config.Range, config.Radius ).Run();
+			if ( !Titanfall2TitanDefense.TryInterceptHitscan( Scene, ref hit, Attacker, GameObject,
+				new Titanfall2DefenseShot( config.Damage, TitanDamage, config.Force, DamageProfile, Range: config.Range ) ) )
+			{
+				var tags = new TagSet(); tags.Add( "bullet" );
+				var damage = SmartBulletDamage( HitDamage( hit.StartPosition, hit.HitPosition, hit.GameObject ), hit.GameObject, smartTarget );
+				Titanfall2HostDamage.ShootBullet( hit, damage, config.Force, Attacker, GameObject, tags );
+			}
+			volley[i] = new ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface, NoEvents: i > 0 );
+		}
+		PlayHostHitscan( volley, zoom );
+	}
+
+	[Rpc.Broadcast( NetFlags.HostOnly )]
+	void PlayHostHitscan( ShotEffect[] volley, float zoom )
+	{
+		// Base ShootEffects excludes the remote owning client because it assumes local
+		// prediction. This path deliberately acknowledges once to every peer, owner included.
+		TimeSinceShoot = 0;
+		RecordSpreadShot( zoom );
+		foreach ( var shot in volley ) OnShootEffects( shot );
+	}
+
+	// All TF2 hitscan now comes through RequestHitscan/ResolveHitscan. Accepting legacy
+	// per-hit claims as well would provide a second damage route around shield arbitration.
+	protected override bool OnValidateShotClaim( in ShotClaim claim ) => false;
 }

@@ -29,18 +29,20 @@ public sealed partial class Titanfall2TitanKit : Component
 	Ray _volleyAim;
 	GameObject _volleyAttacker;
 	GameObject _guardVisual;
-	bool Ready => Networking.IsHost && !IsProxy && Actor is { IsTitan: true, Dead: false, CanFight: true }
+	bool Ready => Networking.IsHost && !IsProxy && Actor is { IsTitan: true, CanFight: true, TitanCanAct: true }
 		&& Kit != Chassis.None;
 
 	protected override void OnUpdate()
 	{
 		UpdateGuardVisual();
 		if ( !Networking.IsHost || IsProxy ) return;
-		if ( !Ready ) { _rockets = 0; GuardRemaining = 0; ClearTrackers(); return; }
+		if ( !Ready ) { _rockets = 0; GuardRemaining = 0; ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); return; }
 		TickTrackers();
 		OffenseRemaining = MathF.Max( 0, OffenseRemaining - Time.Delta );
 		DefenseRemaining = MathF.Max( 0, DefenseRemaining - Time.Delta );
-		GuardRemaining = MathF.Max( 0, GuardRemaining - Time.Delta );
+		if ( Kit != Chassis.Ion || !_ionVortexHeld || !_ionPilot.IsValid() ) GuardRemaining = MathF.Max( 0, GuardRemaining - Time.Delta );
+		TickIonEnergy();
+		TickDefenseVolume();
 		DashRemaining = MathF.Max( 0, DashRemaining - Time.Delta );
 		if ( _rockets > 0 && _volleyStep <= 0 )
 		{
@@ -92,7 +94,16 @@ public sealed partial class Titanfall2TitanKit : Component
 			_trackers.Remove( _volleyTarget );
 			ShowTrackedTarget( null );
 		}
-		OffenseRemaining = Math.Clamp( OffenseCooldown, 0.5f, 120 );
+		if ( Kit == Chassis.Ion )
+		{
+			if ( DefenseVolumeActive || Actor.GetComponent<Titanfall2TitanCore>() is { BlocksPrimary: true } )
+			{ LastOffenseFailure = "涡旋护盾或核心正在使用"; return false; }
+			if ( IonData() is not { } ion || !_ionEnergy.Spend( ion.LaserCost ) )
+			{ LastOffenseFailure = "共享能量不足"; return false; }
+			SharedEnergy = _ionEnergy.Count;
+			OffenseRemaining = ion.LaserRecovery;
+		}
+		else OffenseRemaining = Math.Clamp( OffenseCooldown, 0.5f, 120 );
 		PlayActivation( false );
 		if ( Kit is Chassis.Ion or Chassis.Legion ) Beam( aim, attacker, siphon: false, data );
 		else
@@ -109,7 +120,10 @@ public sealed partial class Titanfall2TitanKit : Component
 	/// <summary>Activate a chassis defense. Siphon restores shield only after hitting a hostile.</summary>
 	public bool TryDefense( Ray aim, GameObject attacker )
 	{
-		if ( !Ready || !ValidAim( aim ) || DefenseRemaining > 0 ) return false;
+		if ( !Ready || !ValidAim( aim ) ) return false;
+		// AI uses a bounded tactical hold. The cockpit supplies hold/release separately.
+		if ( Kit == Chassis.Ion ) return !DefenseVolumeActive && TryStartIonVortex( aim );
+		if ( DefenseRemaining > 0 ) return false;
 		DefenseRemaining = Math.Clamp( DefenseCooldown, 1, 120 );
 		PlayActivation( true );
 		if ( Kit == Chassis.Monarch ) Beam( aim, attacker, siphon: true, AbilityData( defense: true ) );
@@ -118,6 +132,7 @@ public sealed partial class Titanfall2TitanKit : Component
 			var smoke = new Titanfall2ProjectileSettings { Behavior = Titanfall2ProjectileBehavior.ElectricSmoke, SplashRadius = 280, Tint = new Color( 0.3f, 0.6f, 1f ) };
 			Titanfall2AreaHazard.Spawn( Scene, Actor.WorldPosition + Vector3.Up * 40, smoke, 10, 100, Actor.GameObject, GameObject, Actor.GameObject );
 		}
+		else if ( Kit is Chassis.Ion or Chassis.Legion ) BeginDefenseVolume();
 		else GuardRemaining = Kit == Chassis.Ronin ? 3 : 5;
 		return true;
 	}
@@ -135,6 +150,9 @@ public sealed partial class Titanfall2TitanKit : Component
 
 	internal float GuardDamage( in DamageInfo damage )
 	{
+		// These shields now intercept at a world-space volume before actor damage.
+		// Damage arriving here (blast, melee, side/back hits) is not retroactively blocked.
+		if ( Kit is Chassis.Ion or Chassis.Legion ) return damage.Damage;
 		if ( GuardRemaining <= 0 || Actor is not { Dead: false } ) return damage.Damage;
 		if ( damage.Tags.Has( "melee" ) ) return damage.Damage;
 		if ( !damage.Tags.Has( "bullet" ) && !damage.Tags.Has( "projectile" )
@@ -146,16 +164,19 @@ public sealed partial class Titanfall2TitanKit : Component
 	}
 
 	internal static float GuardMultiplier( Chassis kit, float forwardDot ) => kit == Chassis.Ronin ? 0.3f
-		: forwardDot < 0.25f ? 1 : kit is Chassis.Ion or Chassis.Scorch ? 0 : kit is Chassis.Legion or Chassis.Tone ? 0.2f : 1;
+		: forwardDot < 0.25f ? 1 : kit == Chassis.Scorch ? 0 : kit == Chassis.Tone ? 0.2f : 1;
 
 	void Beam( Ray aim, GameObject attacker, bool siphon, Titanfall2TitanAbilityData data )
 	{
 		var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( aim.Position, aim.Position + aim.Forward.Normal * (data?.Range ?? 6000) ).UseHitboxes().UseHitPosition()
 			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
+		var intercepted = Titanfall2TitanDefense.TryInterceptHitscan( Scene, ref hit, attacker, GameObject,
+			new Titanfall2DefenseShot( data?.Damage ?? (siphon ? 20 : 100), data?.TitanDamage ?? (siphon ? 100 : 2000), 0,
+				Range: data?.Range ?? 6000, Refire: Kit == Chassis.Legion ) );
 		var enemy = hit.GameObject?.GetComponentInParent<Titanfall2Npc>();
 		var hostile = enemy.IsValid() ? Actor.IsHostileToFaction( enemy.Faction )
 			: hit.GameObject?.GetComponentInParent<PlayerController>() is not null && Actor.AttackPlayers && !Actor.Friendly;
-		if ( hit.Hit && hostile )
+		if ( !intercepted && hit.Hit && hostile )
 		{
 			var damage = enemy is { IsTitan: true } ? data?.TitanDamage ?? (siphon ? 100 : 2000)
 				: data?.Damage ?? (siphon ? 20 : 100);
@@ -233,16 +254,22 @@ public sealed partial class Titanfall2TitanKit : Component
 			if ( _guardVisual.IsValid() ) _guardVisual.Destroy();
 			return;
 		}
-		if ( _guardVisual.IsValid() ) return;
+		if ( _guardVisual.IsValid() )
+		{
+			if ( Kit is Chassis.Ion or Chassis.Legion ) _guardVisual.WorldTransform = new Transform( DefenseCenter, DefenseFacing );
+			return;
+		}
 		_guardVisual = new GameObject( Actor.GameObject, false, DefenseName );
 		_guardVisual.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
 		_guardVisual.LocalPosition = new Vector3( Actor.BodyRadius + 8, 0, Actor.BodyHeight * 0.6f );
+		if ( Kit is Chassis.Ion or Chassis.Legion ) _guardVisual.WorldTransform = new Transform( DefenseCenter, DefenseFacing );
 		var color = Kit == Chassis.Scorch ? new Color( 1, 0.35f, 0.08f ) : new Color( 0.2f, 0.6f, 1 );
-		if ( Kit is Chassis.Ion or Chassis.Scorch )
+		if ( Kit is Chassis.Ion or Chassis.Scorch or Chassis.Legion )
 		{
 			var retail = _guardVisual.AddComponent<Titanfall2PlasmaFlight>();
 			retail.MountIdent = Actor.MountIdent;
-			retail.EffectName = Kit == Chassis.Ion ? "wpn_vortex_chargingCP_titan" : "P_wpn_HeatShield";
+			retail.EffectName = Kit == Chassis.Ion ? "wpn_vortex_chargingCP_titan"
+				: Kit == Chassis.Legion ? "P_titan_gun_shield_3P" : "P_wpn_HeatShield";
 			_guardVisual.Enabled = true;
 			return;
 		}
@@ -267,7 +294,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	protected override void OnDisabled()
 	{
 		if ( _guardVisual.IsValid() ) _guardVisual.Destroy();
-		if ( Networking.IsHost && !IsProxy ) { _rockets = 0; GuardRemaining = 0; ClearTrackers(); }
+		if ( Networking.IsHost && !IsProxy ) { _rockets = 0; GuardRemaining = 0; ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); }
 	}
 }
 

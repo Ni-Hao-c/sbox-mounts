@@ -108,21 +108,33 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_link.Text = Seat.IsEmbarking ? $"正在登乘 · {Seat.EmbarkRemaining:0.0}s" : "LINK ESTABLISHED · 手动驾驶";
 		Panel.SetClass( "boarding", Seat.IsEmbarking );
 		Panel.SetClass( "piloting", !Seat.IsEmbarking );
-		Panel.SetClass( "critical", actor.Health <= actor.MaxHealth * 0.25f );
-		_health.Text = $"{MathF.Ceiling( actor.Health ):N0} / {actor.MaxHealth:N0}";
+		Panel.SetClass( "critical", actor.IsDoomed || actor.Health <= actor.MaxHealth * 0.25f );
+		var healthMaximum = actor.IsDoomed ? actor.MaxDoomedHealth : actor.MaxHealth;
+		_health.Text = $"{(actor.IsDoomed ? "危急 · DOOMED  " : "")}{MathF.Ceiling( actor.Health ):N0} / {healthMaximum:N0}";
 		_shield.Text = $"护盾  {MathF.Ceiling( actor.Shield ):N0} / {actor.MaxShield:N0}";
-		Fill( _healthFill, actor.Health / MathF.Max( 1, actor.MaxHealth ) );
+		Fill( _healthFill, actor.Health / MathF.Max( 1, healthMaximum ) );
 		Fill( _shieldFill, actor.Shield / MathF.Max( 1, actor.MaxShield ) );
 		_weapon.Text = WeaponName( actor.GunModelPath );
 		_ammo.Text = actor.Reloading ? "装填中" : core is { UnlimitedAmmo: true } ? "∞" : $"{actor.Rounds:00}";
 		_ammo.SetClass( "reloading", actor.Reloading );
 		if ( kit.IsValid() )
 		{
+			if ( kit.Kit == Titanfall2TitanKit.Chassis.Ion )
+			{
+				SetAbility( 0, Seat.IonLaserAction, AbilityName( kit.OffenseName ), kit.OffenseRemaining, 1,
+					$"能量 {kit.SharedEnergy}/{kit.SharedEnergyMaximum}", kit.CanIonLaser );
+				SetAbility( 1, "duck", AbilityName( kit.DefenseName ), 0, 1,
+					kit.IonVortexActive ? $"按住吸收 · 松开反射 · {kit.CapturedAmmo} 发" : "按住使用 · 共享能量", kit.SharedEnergy >= 100 );
+				foreach ( var card in _abilities ) Fill( card.Fill, (float)kit.SharedEnergy / kit.SharedEnergyMaximum );
+			}
+			else
+			{
 			SetAbility( 0, "attack2", AbilityName( kit.OffenseName ), kit.OffenseRemaining,
 				kit.OffenseCooldown, kit.Kit == Titanfall2TitanKit.Chassis.Tone ? $"标记 {kit.TrackerMarks}/3" : null,
 				kit.Kit != Titanfall2TitanKit.Chassis.Tone || kit.HasTrackerLock );
 			SetAbility( 1, "duck", AbilityName( kit.DefenseName ), kit.DefenseRemaining, kit.DefenseCooldown,
 				kit.GuardRemaining > 0 ? $"生效 {kit.GuardRemaining:0.0}s" : null );
+			}
 			Fill( _dashFill, 1 - kit.DashRemaining / MathF.Max( 0.1f, kit.DashRechargeSeconds ) );
 		}
 		var supported = core is { Supported: true };
@@ -135,8 +147,9 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 			core is { CanActivate: true } or { IsActive: true }, supported );
 		Panel.SetClass( "core-ready", core is { CanActivate: true } );
 		Panel.SetClass( "core-active", core is { IsActive: true } );
-		_message.Text = Seat.StatusMessage ?? (actor.Health <= actor.MaxHealth * 0.25f ? "警告 · 机体受损严重" : "");
-		_controls.Text = $"[{Key( "attack1" )}] 开火   [{Key( "reload" )}] 装填   [{Key( "run" )}] 冲刺   [{Key( "use" )}] 离舱";
+		_message.Text = Seat.StatusMessage ?? (actor.IsDoomed ? $"警告 · 泰坦已进入危急状态   [{Key( Seat.EjectAction )}] 弹射" : actor.Health <= actor.MaxHealth * 0.25f ? "警告 · 机体受损严重" : "");
+		_controls.Text = $"[{Key( "attack1" )}] 开火   [{Key( "reload" )}] 装填   [{Key( "run" )}] 冲刺   [{Key( "use" )}] 离舱   [{Key( Seat.EjectAction )}] 弹射";
+		if ( kit?.Kit == Titanfall2TitanKit.Chassis.Ion ) _controls.Text += $"   [{Key( "attack2" )}] 按住分裂射击";
 		UpdateTarget( actor, kit );
 	}
 
@@ -147,7 +160,7 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		card.Key.Text = Key( action );
 		card.Name.Text = name;
 		card.State.Text = extra is null ? Remaining( remaining ) : remaining > 0 ? $"{extra} · {Remaining( remaining )}" : extra;
-		if ( !canUse && remaining <= 0 ) card.State.Text = $"{extra} · 待锁定";
+		if ( !canUse && remaining <= 0 ) card.State.Text = $"{extra} · 未就绪";
 		card.Panel.SetClass( "ready", remaining <= 0 && canUse );
 		Fill( card.Fill, 1 - remaining / MathF.Max( 0.1f, recharge ) );
 	}

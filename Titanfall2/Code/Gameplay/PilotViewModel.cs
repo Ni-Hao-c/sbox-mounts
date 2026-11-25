@@ -31,6 +31,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	bool _sprinting;
 	bool _oneHanded;
 	Titanfall2PilotAnimationPlayer _animation;
+	readonly Titanfall2PilotCameraAnchor _cameraAnchor = new();
 	float _zoom;
 	internal bool UsesContinuousAds => _animation?.IsReady == true;
 	internal float PresentationZoom => _animation?.Zoom ?? _zoom;
@@ -189,16 +190,13 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 
 		// Retail action clips move the POV root into view space. Resolve the current
 		// camera attachment, since the reference pose has a different origin and axis.
-		var attachment = Renderer.Model.Attachments.Get( "CAMERA_BASE" );
-		if ( attachment?.Bone is not { } bone || !Renderer.TryGetBoneTransform( bone, out var pose ) )
+		if ( !_cameraAnchor.TryRead( Renderer, out var localCamera ) )
 		{
 			WorldTransform = posedCamera;
 			return;
 		}
-		// World-space bones belong to the native renderer's last evaluated root.
-		// The GameObject may already have moved during this camera setup. Mixing
-		// the two roots feeds our last placement back into the next placement.
-		var localCamera = Renderer.SceneModel.Transform.ToLocal( pose.ToWorld( attachment.LocalTransform ) );
+		// Parent-space animation bones share one pose and do not depend on either
+		// the current native render root or its previous world-bone cache.
 		WorldTransform = posedCamera.ToWorld( localCamera.ToLocal( global::Transform.Zero ) );
 	}
 

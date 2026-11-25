@@ -14,9 +14,13 @@ partial class ModelLoader
 	internal const string RunRightRole = "tf2_run_right";
 	internal const string FireRole = "tf2_fire";
 	internal const string ReloadRole = "tf2_reload";
+	internal const string FlinchRole = "tf2_small_flinch";
 	internal const string MeleeRole = "tf2_melee";
 	internal const string GrenadeRole = "tf2_grenade";
 	internal const string DeathRole = "tf2_death";
+	internal const string MortarDeployRole = "tf2_mortar_deploy";
+	internal const string MortarAttackRole = "tf2_mortar_attack";
+	internal const string MortarRecoverRole = "tf2_mortar_recover";
 
 	// These are full-body retail sequences, not gestures, aim deltas or cinematic poses.
 	// The first entries are explicit chassis matches verified from the MDL include graph.
@@ -24,11 +28,16 @@ partial class ModelLoader
 	{
 		var label = name?.TrimStart( '@' ).ToLowerInvariant() ?? "";
 		var act = activity?.ToUpperInvariant();
+		// A separate additive role, never a substitute for a full-body action.
+		if ( act == "ACT_GESTURE_SMALL_FLINCH" ) return (FlinchRole, 80);
 		if ( label.StartsWith( "add_", StringComparison.Ordinal ) || label.StartsWith( "gest_", StringComparison.Ordinal )
 			|| label.StartsWith( "aim_", StringComparison.Ordinal ) || label.Contains( "synced", StringComparison.Ordinal ) ) return default;
 
 		return label switch
 		{
+			"at_mortar_stand2knee" => (MortarDeployRole, 150),
+			"at_mortar_knee" => (MortarAttackRole, 150),
+			"at_mortar_knee2stand" => (MortarRecoverRole, 150),
 			"bt_combat_idle" or "cqb_idle" or "idle_combat" or "pr_idle_alert" or "sspec_idle_combat" => (IdleRole, 120),
 			"bt_alert_idle" or "cqb_idle_mp" => (IdleRole, 110),
 			// The Locust combat idle can be a held pose. Use its own authored Ronin loop, never Viper flight or doomed poses.
@@ -104,7 +113,11 @@ partial class ModelLoader
 		// BT's genuine idle loops have 601/1001 frames; do not replace them with bind poses.
 		=> frames > 1 && frames <= (role == IdleRole ? 1200 : 240);
 
-	sealed record InfantryCandidate( AnimationSourceData Source, int[] Remap, int Index, int Flags, string Role, int Score );
+	internal static bool IsSmallFlinchPose( int sequenceFlags, int animationFlags, int cells, int autoLayers ) =>
+		(sequenceFlags & 4) != 0 && (animationFlags & 4) != 0 && ((sequenceFlags | animationFlags) & 1) == 0
+		&& cells == 1 && autoLayers == 0;
+
+	sealed record InfantryCandidate( AnimationSourceData Source, int[] Remap, int Index, int SequenceIndex, int Flags, string Role, int Score );
 
 	List<InfantryCandidate> GetInfantryCandidates( SkeletonData skeleton, List<AnimationSourceData> sources, Dictionary<string, int> targetBones, bool idleOnly = false )
 	{
@@ -116,7 +129,7 @@ partial class ModelLoader
 			if ( matched < Math.Min( skeleton.Names.Length, 6 ) ) continue;
 			if ( source.Model.Sequences.Length == 0 )
 			{
-				foreach ( var a in source.Model.Animations ) Add( a.Index, a.Name, null, a.Animation.Flags, 0 );
+				foreach ( var a in source.Model.Animations ) Add( a.Index, -1, a.Name, null, a.Animation.Flags, 0 );
 			}
 			else
 			{
@@ -128,13 +141,13 @@ partial class ModelLoader
 					foreach ( var index in seq.AnimationIndices )
 					{
 						if ( index >= 0 && index < source.Model.Animations.Length )
-							Add( index, seq.Label, seq.ActivityName, seq.Sequence.Flags, Math.Abs( cell - center ) );
+							Add( index, seq.Index, seq.Label, seq.ActivityName, seq.Sequence.Flags, Math.Abs( cell - center ) );
 						cell++;
 					}
 				}
 			}
 
-			void Add( int index, string label, string activity, int flags, int cell )
+			void Add( int index, int sequenceIndex, string label, string activity, int flags, int cell )
 			{
 				var (role, rank) = InfantryAnimationRank( label, activity );
 				var locomotion = InfantryLocomotionRank( label, activity );
@@ -146,10 +159,17 @@ partial class ModelLoader
 					if ( idleOnly && role != IdleRole ) return;
 					var desc = source.Model.Animations[index].Animation;
 					var combined = desc.Flags | flags;
-					if ( (combined & 4) != 0 || !IsInfantryFrameCount( role, desc.FrameCount ) ) return;
+					if ( !IsInfantryFrameCount( role, desc.FrameCount ) ) return;
+					if ( role == FlinchRole )
+					{
+						if ( sequenceIndex < 0 ) return;
+						var sequence = source.Model.Sequences[sequenceIndex];
+						if ( !IsSmallFlinchPose( flags, desc.Flags, sequence.AnimationIndices.Length, sequence.Sequence.AutoLayerCount ) ) return;
+					}
+					else if ( (combined & 4) != 0 ) return;
 					var loop = (combined & 1) != 0;
-					if ( (role == IdleRole || IsLocomotionRole( role )) ? !loop : loop && role != ReloadRole ) return;
-					candidates.Add( new( source, remap, index, flags, role, rank * 1000 + Math.Min( matched, 500 ) - Math.Min( cell, 100 ) ) );
+					if ( (role == IdleRole || IsLocomotionRole( role )) ? !loop : loop && role != ReloadRole && role != MortarAttackRole ) return;
+					candidates.Add( new( source, remap, index, sequenceIndex, flags, role, rank * 1000 + Math.Min( matched, 500 ) - Math.Min( cell, 100 ) ) );
 				}
 			}
 		}
@@ -164,6 +184,7 @@ partial class ModelLoader
 		var failures = 0;
 		var clips = new List<Titanfall2ActorAnimationData.Clip>();
 		_actorAnimationEntries.Clear();
+		_actorBoneMasks.Clear();
 		foreach ( var role in candidates.GroupBy( x => x.Role ) )
 		{
 			foreach ( var c in role.OrderByDescending( x => x.Score ).DistinctBy( x => (x.Source, x.Index) ).Take( 12 ) )
@@ -174,14 +195,18 @@ partial class ModelLoader
 						var desc = c.Source.Model.Animations[c.Index].Animation;
 						_actorAnimationEntries[c.Role] = new( c.Role, c.Source == sources[0] ? null : c.Source.Description,
 							c.Index, c.Flags, desc.Flags, desc.FrameCount, desc.FramesPerSecond );
-						clips.Add( new() { Role = c.Role, Source = c.Source.Description, Animation = c.Source.Model.Animations[c.Index].Name,
-							Path = $"{Path}/actor/{c.Role}.anim", Speed = IsLocomotionRole( c.Role ) ? InfantryRootSpeed( decoded ) : 0 } );
+						var clip = new Titanfall2ActorAnimationData.Clip { Role = c.Role, Source = c.Source.Description, Animation = c.Source.Model.Animations[c.Index].Name,
+							Path = $"{Path}/actor/{c.Role}.anim", Speed = IsLocomotionRole( c.Role ) ? InfantryRootSpeed( decoded ) : 0,
+							Additive = decoded.Delta, Looping = decoded.Looping,
+							Duration = Math.Max( 0, desc.FrameCount - 1 ) / MathF.Max( 0.001f, decoded.FramesPerSecond ) };
+						AddActorSequenceData( clip, c, skeleton, sources, decoded );
+						clips.Add( clip );
 					} );
 				if ( names.Contains( role.Key ) ) break;
 			}
 		}
 		if ( !names.Contains( IdleRole ) ) Titanfall2Log.Warning( $"TF2 actor model '{ImportPath}' has no verified full-body idle clip." );
-		builder.WithData( new Titanfall2ActorAnimationData { Skeleton = $"{Path}/skeleton.skel", Clips = clips.ToArray() } );
+		builder.WithData( new Titanfall2ActorAnimationData { Skeleton = $"{Path}/actor.skel", Clips = clips.ToArray() } );
 		return count;
 	}
 
@@ -217,6 +242,28 @@ public sealed class Titanfall2ActorAnimationData
 		public string Animation { get; set; }
 		public string Path { get; set; }
 		public float Speed { get; set; }
+		public float Duration { get; set; }
+		public bool Additive { get; set; }
+		public bool Looping { get; set; }
+		public string BoneMask { get; set; }
+		public Titanfall2SequenceRuntimeData Sequence { get; set; }
+		public AimLayer[] AimLayers { get; set; } = [];
+		public EventBonePose[] EventBonePoses { get; set; } = [];
+	}
+	public sealed class EventBonePose
+	{
+		public int EventIndex { get; set; }
+		public float Cycle { get; set; }
+		public string Bone { get; set; }
+		public Transform Transform { get; set; }
+	}
+	public sealed class AimLayer
+	{
+		public string Id { get; set; }
+		public string Source { get; set; }
+		public string BoneMask { get; set; }
+		public Titanfall2SequenceRuntimeData Sequence { get; set; }
+		public string[] Cells { get; set; } = [];
 	}
 	public Clip[] Clips { get; set; } = [];
 	public string Skeleton { get; set; }

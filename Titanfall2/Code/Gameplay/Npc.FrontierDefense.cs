@@ -41,7 +41,7 @@ public sealed class Titanfall2Harvester : Component, Component.IDamageable
 
 public sealed partial class Titanfall2Npc
 {
-	public enum FrontierRole { None, ArcTitan, NukeTitan, EliteMonarch }
+	public enum FrontierRole { None, ArcTitan, NukeTitan, EliteMonarch, MortarTitan }
 	public enum FrontierAbility { None, ArcCharge, NukeArmed, NukeDetonating, ShieldCore, ElectricSmoke }
 
 	[Property] public FrontierRole Role { get; set; }
@@ -101,7 +101,7 @@ public sealed partial class Titanfall2Npc
 			// NPC payload 4 in sh_titan: three pulses 0.5s apart, scaled from ten player pulses.
 			Pulse( center, 350, NukeBlastRadius, 75 * (10f / 3), 2500 * (10f / 3), "nuclearcore", includeHarvesters: true );
 			_frontierClock = 0.5f;
-			if ( ++_nukePulses == 3 ) KillActor();
+			if ( ++_nukePulses == 3 ) ForceKillTitan( LastVerifiedTitanAttacker, LastVerifiedTitanWeapon );
 		}
 		return true;
 	}
@@ -160,7 +160,9 @@ public sealed partial class Titanfall2Npc
 			var tags = new TagSet();
 			tags.Add( "emp" );
 			tags.Add( "arccannon" );
-			Titanfall2HostDamage.ShootBullet( hit, victim is { IsTitan: true } ? 700 : 80, 0, GameObject, GameObject, tags );
+			if ( !Titanfall2TitanDefense.TryInterceptHitscan( Scene, ref hit, GameObject, GameObject,
+				new Titanfall2DefenseShot( 80, 700, 0, default, true, AttackRange, Refire: false ) ) )
+				Titanfall2HostDamage.ShootBullet( hit, victim is { IsTitan: true } ? 700 : 80, 0, GameObject, GameObject, tags );
 		}
 		PlayShotSound( muzzle );
 		Ability = FrontierAbility.None;

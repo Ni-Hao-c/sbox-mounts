@@ -10,6 +10,29 @@ public sealed partial class Titanfall2Npc
 	Vector3 _animationVelocity;
 	Titanfall2ActorAnimationPlayer _layeredAnimation;
 	bool _attackPending;
+	[Sync( SyncFlags.FromHost )] public Vector2 ActorAimAngles { get; private set; }
+
+	internal void SetAnimationAimDirection( Vector3 direction )
+	{
+		if ( !Networking.IsHost || IsProxy || direction.LengthSquared < 0.0001f ) return;
+		var local = WorldRotation.Inverse * direction.Normal;
+		var yaw = MathF.Atan2( local.y, local.x ) * (180f / MathF.PI);
+		var pitch = -MathF.Atan2( local.z, MathF.Sqrt( local.x * local.x + local.y * local.y ) ) * (180f / MathF.PI);
+		if ( float.IsFinite( yaw ) && float.IsFinite( pitch ) ) ActorAimAngles = new( yaw, pitch );
+	}
+
+	void UpdateActorAim()
+	{
+		if ( Networking.IsHost && !IsProxy && Seat is not { IsOccupied: true } )
+		{
+			// The native-schedule path owns a last-known contact snapshot. Do not
+			// read a hidden enemy's current transform just to drive presentation.
+			if ( UsesEngineSchedules && HasCombatContact ) SetAnimationAimDirection( _lastAimPoint - Eye );
+			else if ( !UsesEngineSchedules && CanTarget( _target ) ) SetAnimationAimDirection( AimAt( _target ) - Eye );
+			else ActorAimAngles = Vector2.Zero;
+		}
+		_layeredAnimation?.SetAim( ActorAimAngles.x, ActorAimAngles.y );
+	}
 
 	void UpdateGunPose()
 	{
@@ -49,7 +72,9 @@ public sealed partial class Titanfall2Npc
 
 	void PlayLocomotion()
 	{
+		UpdateActorAim();
 		if ( _actorClips is null || !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
+		if ( TryPlayMortarAnimation() ) return;
 		var velocity = (WorldPosition - _lastAnimationPosition) / MathF.Max( Time.Delta, 0.001f );
 		_lastAnimationPosition = WorldPosition;
 		if ( NavigationMode == Navigation.Ground && Agent.IsValid() && Agent.Velocity.LengthSquared > 1 ) velocity = Agent.Velocity;

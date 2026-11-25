@@ -33,6 +33,7 @@ public record struct Titanfall2ProjectileSettings
 	public string ImpactTable { get; set; }
 	public string MountIdent { get; set; }
 	public bool ReducedEffects { get; set; }
+	public bool VortexAbsorbOnly { get; set; }
 	public Color Tint { get; set; }
 	public Titanfall2ProjectileBehavior Behavior { get; set; }
 	public readonly bool Enabled => Speed > 0;
@@ -62,6 +63,11 @@ public sealed partial class Titanfall2Projectile : Component
 	Vector3 _stuckLocalNormal;
 	Surface _stuckSurface;
 	readonly List<GameObject> _trails = [];
+
+	internal void SetHostVelocity( Vector3 velocity )
+	{
+		if ( Networking.IsHost && !IsProxy && !_finished && velocity.IsFinite ) Velocity = velocity;
+	}
 
 	internal static Titanfall2Projectile Launch( Scene scene, Ray aim, Titanfall2ProjectileSettings settings,
 		float damage, float heavyDamage, GameObject attacker, GameObject weapon, GameObject ignore,
@@ -177,6 +183,20 @@ public sealed partial class Titanfall2Projectile : Component
 		if ( _ignore.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( _ignore );
 		if ( _weapon.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( _weapon );
 		var hit = Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Grenade );
+		// Resolve the nearest shield before actor/world impact, fuse bounce or detonation.
+		// Consume this entity exactly once. No damage callback or explosion runs on capture.
+		if ( !hit.StartedSolid && Titanfall2TitanDefense.ValidSource( Scene, _attacker, _weapon )
+			&& Titanfall2TitanDefense.TryFind( Scene, start, hit.EndPosition, Math.Clamp( Settings.Radius, 0, 12 ), _attacker,
+				out var shield, out var shieldPoint, out _ ) )
+		{
+			_finished = true;
+			WorldPosition = shieldPoint;
+			var captured = new Titanfall2CapturedProjectile( Settings, _damage, _heavyDamage, _damageProfile, _npcFired, _expiry );
+			shield.AbsorbProjectile( captured, _launchOrigin.Distance( shieldPoint ), _attacker, _weapon, shieldPoint );
+			ReleaseTrail();
+			GameObject.Destroy();
+			return;
+		}
 		if ( hit.Hit || hit.StartedSolid )
 		{
 			if ( Settings.Behavior == Titanfall2ProjectileBehavior.FragGrenade )
@@ -354,6 +374,10 @@ public sealed partial class Titanfall2Projectile : Component
 	void Blast( Vector3 origin, IDamageable direct )
 	{
 		var radius = Settings.SplashRadius;
+		// Blast pressure is not a bullet/projectile capture. It damages the independent
+		// Legion shield once per explosion and still uses normal actor splash/LOS below.
+		Titanfall2TitanDefense.DamageGunShieldsInBlast( Scene, origin, radius,
+			Settings.SplashTitanDamage > 0 ? Settings.SplashTitanDamage : Settings.SplashDamage, _attacker, _weapon );
 		// A physics overlap bounds the work. Pick the closest positive collider sample per
 		// damage receiver and require a clear ray to that collider before applying falloff.
 		var targets = new Dictionary<Component, (GameObject Object, Vector3 Point, float Distance)>();

@@ -109,7 +109,8 @@ public partial class Titanfall2Mount
 		new( "ronin", "Ronin", "models/titans/light/titan_light_locust.mdl", "mp_titanweapon_leadwall", 7500, 235, "imc", 273, 49, 1500, true ),
 		new( "arc_titan", "Arc Titan", "models/titans/light/titan_light_locust.mdl", null, 7500, 218, "imc", 273, 49, 1500, true, Role: Titanfall2Npc.FrontierRole.ArcTitan ),
 		new( "nuke_titan", "Nuke Titan", "models/titans/heavy/titan_heavy_deadbolt.mdl", "mp_titanweapon_predator_cannon", 12500, 171, "imc", 296, 61, 2200, true, Role: Titanfall2Npc.FrontierRole.NukeTitan ),
-		new( "elite_monarch", "Elite Monarch", "models/titans/medium/titan_medium_vanguard.mdl", "mp_titanweapon_xo16_vanguard", 12000, 215, "imc", 284, 54, 7500, true, Role: Titanfall2Npc.FrontierRole.EliteMonarch )
+		new( "elite_monarch", "Elite Monarch", "models/titans/medium/titan_medium_vanguard.mdl", "mp_titanweapon_xo16_vanguard", 12000, 215, "imc", 284, 54, 7500, true, Role: Titanfall2Npc.FrontierRole.EliteMonarch ),
+		new( "mortar_titan", "Mortar Titan", "models/titans/medium/titan_medium_wraith.mdl", "mortar:rocketstream", 10000, 185, "imc", 284, 54, 1600, true, Role: Titanfall2Npc.FrontierRole.MortarTitan )
 	];
 
 	internal static void AddGameplayRegistrations( List<ContentRegistration> catalog, Titanfall2ContentSnapshot snapshot, Action<string> warn )
@@ -117,6 +118,7 @@ public partial class Titanfall2Mount
 		var models = catalog.Where( item => item.Type == ResourceType.Model ).Select( item => item.Path ).ToHashSet( StringComparer.OrdinalIgnoreCase );
 		var weapons = new Dictionary<string, Titanfall2WeaponData>( StringComparer.OrdinalIgnoreCase );
 		var scriptTexts = new Dictionary<string, string>( StringComparer.OrdinalIgnoreCase );
+		RegisterWeapon( "mortar:rocketstream", "mp_titanweapon_rocketeer_rocketstream", null, null, titan: false, projectile: true, integrated: true, fallbackSpeed: 2500 );
 		foreach ( var (id, title, sample) in PilotWeapons ) RegisterWeapon( id, "mp_weapon_" + id, title, sample, titan: false );
 		foreach ( var id in TitanWeapons ) RegisterWeapon( "mp_titanweapon_" + id, "mp_titanweapon_" + id, null, null, titan: true );
 		foreach ( var (id, speed, tint, behavior) in TitanProjectileWeapons )
@@ -293,14 +295,17 @@ public partial class Titanfall2Mount
 					gun.AdsFov = data.AdsFov;
 					gun.HoldType = data.HoldType;
 					gun.PreferredSlot = data.HoldType == "grenade" ? 2 : data.HoldType == "pistol" ? 1 : 0;
-					gun.SmartLockEnabled = data.WorldModel.EndsWith( "/w_p2011sp.mdl", StringComparison.OrdinalIgnoreCase );
+					gun.SmartLockEnabled = data.SmartAmmo.Enabled;
+					gun.SmartAmmo = data.SmartAmmo;
 					gun.PrimaryAutomatic = data.Automatic;
 					gun.PrimaryDelay = 1 / data.ShotsPerSecond;
+					gun.SpinUp = data.SpinUp;
 					gun.ClipMaxSize = data.Magazine;
 					gun.Firing = data.Firing;
 					gun.SpreadProfile = data.SpreadProfile;
 					gun.ReloadTime = data.ReloadSeconds;
 					gun.ViewKick = data.ViewKick;
+					gun.UiDisplays = data.UiDisplays;
 					gun.AttachmentBaseTitle = title;
 					gun.AttachmentOptions = data.AttachmentOptions;
 					gun.ReloadProfile = data.ReloadProfile;
@@ -346,6 +351,11 @@ public partial class Titanfall2Mount
 					npc.MaxHealth = definition.Health;
 					npc.MaxShield = definition.Shield;
 					npc.IsTitan = definition.Titan;
+					// Native AI settings distinguish lock class from armor. In particular
+					// Reapers are large smart-ammo targets even though IsTitan is false.
+					npc.SmartAmmoLockType = definition.Titan || definition.Id == "npc_reaper" ? Titanfall2SmartAmmoLockType.Large
+						: definition.Model.Contains( "/marvin/", StringComparison.OrdinalIgnoreCase ) ? Titanfall2SmartAmmoLockType.None
+						: definition.Id is "npc_attack_drone" or "npc_plasma_turret" ? Titanfall2SmartAmmoLockType.Any : Titanfall2SmartAmmoLockType.Small;
 					if ( definition.Titan && definition.Role == Titanfall2Npc.FrontierRole.None )
 					{
 						var kit = root.AddComponent<Titanfall2TitanKit>();
@@ -412,6 +422,13 @@ public partial class Titanfall2Mount
 						npc.AttackRange = 2400;
 					}
 					if ( definition.Role == Titanfall2Npc.FrontierRole.EliteMonarch ) { npc.ShotSpread *= 0.3f; npc.ShotSpreadScale = 0.3f; }
+					if ( definition.Role == Titanfall2Npc.FrontierRole.MortarTitan && Host.GetMortarWeapon() is { } mortar )
+					{
+						npc.MortarProjectile = mortar.Projectile with { ModelPath = Mounted( mortar.Projectile.ModelPath is { } projectileModel ? projectileModel + ".visual" : null ), MountIdent = Host.Ident };
+						npc.MortarDamage = mortar.Damage;
+						npc.MortarTitanDamage = mortar.TitanDamage;
+						npc.FireSound = "Weapon_Titan_Rocket_Launcher.RapidFire_3P";
+					}
 					if ( definition.Navigation == Titanfall2Npc.Navigation.Ground && definition.Speed > 0 )
 					{
 						npc.Agent = root.AddComponent<NavMeshAgent>();

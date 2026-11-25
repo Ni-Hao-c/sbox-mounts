@@ -29,8 +29,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		&& TimeSinceShoot > 0.25f && Owner.IsValid() && Owner.IsOnGround
 		&& Input.Down( "run" ) && Owner.Velocity.WithZ( 0 ).Length > 180f;
 
-	public override Vector2 CurrentSpread => SmartLockEnabled && SmartLockProgress >= 1f ? Vector2.Zero
-		: SpreadProfile.Enabled ? RetailSpread( _adsBlend ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, _adsBlend );
+	public override Vector2 CurrentSpread => SpreadProfile.Enabled ? RetailSpread( _adsBlend ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, _adsBlend );
 
 	protected override void ModifyCamera( CameraComponent camera, ref CameraView view )
 	{
@@ -51,6 +50,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	public override void PrimaryAttack()
 	{
+		if ( UsesRetailSmartAmmo ) { BeginSmartAttack(); return; }
+		PrepareOwnerSpinShot();
 		FireRound();
 		if ( BurstCount <= 1 || !IsHeld || !HasRoundAmmo() ) return;
 		_burstRemaining = Math.Min( BurstCount - 1, 7 );
@@ -78,9 +79,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		direction = direction.Normal;
 		if ( validateClientAim && Vector3.Dot( owner.EyeTransform.Forward, direction ) < 0.35f ) return;
 		if ( !TakePrimaryAmmo( Firing.Cost ) ) return;
-		_nextProjectileRequest = MathF.Max( PrimaryDelay, 0.015f );
-		var spread = SmartLockEnabled && SmartLockProgress >= 1f ? Vector2.Zero
-			: SpreadProfile.Enabled ? RetailSpread( zoom ) : CurrentSpread;
+		_nextProjectileRequest = MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
+		var spread = SpreadProfile.Enabled ? RetailSpread( zoom ) : CurrentSpread;
 		TimeSinceShoot = 0;
 		var pellets = Firing.Count( Ballistics.Pellets );
 		var origin = GetMuzzleTransform().Position;
@@ -114,6 +114,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void Think()
 	{
+		TickSpinUp();
 		UpdateSmartLock();
 		if ( _burstRemaining == 0 ) return;
 		if ( !IsHeld || !HasRoundAmmo() || IsReloading || Input.Pressed( "reload" ) )
@@ -132,10 +133,13 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		}
 	}
 
-	public override bool CanPrimaryAttack() => _burstRemaining == 0 && base.CanPrimaryAttack();
+	public override bool CanPrimaryAttack() => _burstRemaining == 0
+		&& (!UsesRetailSmartAmmo || SmartBurstRemaining == 0 && _smartShotTime <= 0) && base.CanPrimaryAttack();
 
 	protected override void OnHolstered()
 	{
+		ResetSmartAmmo();
+		StopSpinUp();
 		ResetViewKick();
 		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		_burstRemaining = 0;
@@ -162,23 +166,26 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		}
 		UpdatePickup( Inventory.IsValid() );
 		UpdateAttachments();
+		BeginWeaponPrewarm();
 	}
 
 	protected override void OnUpdate()
 	{
 		UpdateAttachments();
-		if ( !Application.IsHeadless && !Application.IsDedicatedServer && Sandbox.Mounting.Directory.Get( MountIdent ?? "titanfall2" ) is Titanfall2Mount mount )
-			mount.WarmWeaponParticles();
+		TickWeaponPrewarm();
 		var stored = Inventory.IsValid();
 		if ( stored != _inInventory ) UpdatePickup( stored );
 		base.OnUpdate();
+		TickSpinUp();
+		UpdateSmartLock();
 		TickRetailReloadPresentation();
 		if ( IsReloading || !IsActive ) GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
-		else if ( !IsProxy && Owner is { UseInputControls: true } && _burstRemaining == 0 && !Input.Down( "attack1" ) )
+		else if ( !IsProxy && Owner is { UseInputControls: true } && _burstRemaining == 0 && SmartBurstRemaining == 0 && !Input.Down( "attack1" ) )
 			GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		UpdatePilotViewState();
 		TickViewKick();
 		UpdateScopePresentation();
+		UpdateWeaponHud();
 	}
 
 	float _wallrunSide;
@@ -243,6 +250,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	{
 		base.OnAdded( inventory );
 		UpdatePickup( true );
+		BeginWeaponPrewarm();
 	}
 
 	protected override void OnRemoved( BaseInventoryComponent inventory )
@@ -319,6 +327,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void DestroyViewModel()
 	{
+		DestroyWeaponHud();
 		DestroyScopePresentation();
 		base.DestroyViewModel();
 		_viewArms = null;

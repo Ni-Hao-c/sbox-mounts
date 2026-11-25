@@ -25,6 +25,11 @@ partial class ModelLoader
 			type = ResourceType.AnimationSkeleton;
 			return new AnimationResource( this, null, skeleton: true );
 		}
+		if ( infantryAnimations && name.Equals( "actor.skel", StringComparison.OrdinalIgnoreCase ) )
+		{
+			type = ResourceType.AnimationSkeleton;
+			return new AnimationResource( this, null, skeleton: true, actor: true );
+		}
 		if ( name.Equals( "animations.json", StringComparison.OrdinalIgnoreCase ) )
 		{
 			type = ResourceType.Text;
@@ -162,6 +167,8 @@ partial class ModelLoader
 						parent >= 0 && parent < bone ? catalog.Skeleton.Names[parent] : null );
 				}
 				builder.AddBoneMask( "tf2_upper", Titanfall2ActorAnimationData.UpperBodyWeights( catalog.Skeleton.Names, catalog.Parents ), 0 );
+				if ( actor )
+					foreach ( var mask in owner._actorBoneMasks ) builder.AddBoneMask( mask.Key, mask.Value, 0 );
 				return builder.Create( Path );
 			}
 			if ( clipName is null ) return catalog.Metadata;
@@ -173,7 +180,7 @@ partial class ModelLoader
 			var decoded = Titanfall2Mdl53AnimationReader.Decode( data, model, entry.Index, entry.Name, entry.Flags );
 			var target = catalog.Skeleton;
 			var sourceToTarget = model.Bones.Select( bone => Array.FindIndex( target.Names, name => name.Equals( bone.Name, StringComparison.OrdinalIgnoreCase ) ) ).ToArray();
-			var nativeSkeleton = Sandbox.Animation.Skeleton.Load( $"{owner.Path}/skeleton.skel" );
+			var nativeSkeleton = Sandbox.Animation.Skeleton.Load( actor ? $"{owner.Path}/actor.skel" : $"{owner.Path}/skeleton.skel" );
 			if ( !nativeSkeleton.IsValid() ) return null;
 			var clip = Sandbox.Animation.Clip.Builder;
 			clip.Skeleton = nativeSkeleton;

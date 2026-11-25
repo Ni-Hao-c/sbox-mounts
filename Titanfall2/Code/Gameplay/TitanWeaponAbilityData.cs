@@ -19,6 +19,27 @@ internal sealed record Titanfall2TitanAbilityData( Titanfall2ProjectileSettings 
 
 internal sealed partial record Titanfall2WeaponData
 {
+	internal static Titanfall2IonData ReadIonData( Func<string, string> read )
+	{
+		Dictionary<string, string> Values( string name )
+		{
+			var root = ReadFile( $"scripts/weapons/{name}.txt", read, new( StringComparer.OrdinalIgnoreCase ) );
+			var values = new Dictionary<string, string>( root.Values, StringComparer.OrdinalIgnoreCase );
+			if ( root.Blocks.TryGetValue( "MP_BASE", out var mp ) )
+				foreach ( var (key, value) in mp.Values ) if ( value != "<KEEP_DEFAULT>" ) values[key] = value;
+			return values;
+		}
+		static float Number( Dictionary<string, string> values, string key ) =>
+			float.TryParse( values.GetValueOrDefault( key ), NumberStyles.Float, CultureInfo.InvariantCulture, out var value ) && float.IsFinite( value ) ? value : -1;
+		var laser = Values( "mp_titanweapon_laser_lite" );
+		var split = Values( "mp_titanweapon_particle_accelerator" );
+		var vortex = Values( "mp_titanweapon_vortex_shield_ion" );
+		var result = new Titanfall2IonData( (int)Number( laser, "shared_energy_cost" ), (int)Number( split, "shared_energy_cost" ),
+			(int)Number( vortex, "shared_energy_charge_cost" ), Number( laser, "charge_cooldown_time" ), Number( split, "zoom_time_in" ) );
+		return result.LaserCost is > 0 and <= 1000 && result.SplitCost is > 0 and <= 1000 && result.VortexChargeCost is > 0 and < 100
+			&& result.LaserRecovery > 0 && result.ZoomSeconds > 0 ? result : null;
+	}
+
 	internal static Titanfall2TitanAbilityData ReadTitanAbility( string path, Func<string, string> read,
 		float scriptSpeed = 0, Titanfall2ProjectileBehavior behavior = Titanfall2ProjectileBehavior.Standard )
 	{
@@ -41,6 +62,7 @@ internal sealed partial record Titanfall2WeaponData
 			TrailEffect = Get( "projectile_trail_effect_0" ),
 			TrailAttachment = Get( "projectile_trail_attachment" ),
 			ImpactTable = Get( "impact_effect_table" ),
+			VortexAbsorbOnly = Get( "vortex_refire_behavior" ).Equals( "absorb", StringComparison.OrdinalIgnoreCase ),
 			Lifetime = Math.Clamp( Number( "projectile_lifetime", 8 ), 0.1f, 12 ),
 			Radius = Math.Clamp( Number( "projectile_radius", 3 ), 0.5f, 10 ),
 			GravityScale = Math.Clamp( Number( "projectile_gravity_scale" ), 0, 4 ),
@@ -61,6 +83,19 @@ internal sealed partial record Titanfall2WeaponData
 
 public partial class Titanfall2Mount
 {
+	Titanfall2ContentSnapshot _ionSnapshot;
+	Titanfall2IonData _ionData;
+	internal Titanfall2IonData GetIonData()
+	{
+		if ( _contentSnapshot is null ) return null;
+		if ( ReferenceEquals( _ionSnapshot, _contentSnapshot ) ) return _ionData;
+		_ionSnapshot = _contentSnapshot;
+		try { _ionData = Titanfall2WeaponData.ReadIonData( Read ); }
+		catch ( InvalidDataException ) { _ionData = null; }
+		return _ionData;
+		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
+			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? Encoding.UTF8.GetString( bytes ) : null;
+	}
 	Titanfall2ContentSnapshot _titanAbilitySnapshot;
 	readonly Dictionary<string, Titanfall2TitanAbilityData> _titanAbilities = new( StringComparer.OrdinalIgnoreCase );
 
@@ -89,3 +124,5 @@ public partial class Titanfall2Mount
 			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? Encoding.UTF8.GetString( bytes ) : null;
 	}
 }
+
+internal sealed record Titanfall2IonData( int LaserCost, int SplitCost, int VortexChargeCost, float LaserRecovery, float ZoomSeconds );

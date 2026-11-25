@@ -77,6 +77,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			flight = new()
 			{
 				Speed = speed,
+				VortexAbsorbOnly = Get( "vortex_refire_behavior" ).Equals( "absorb", StringComparison.OrdinalIgnoreCase ),
 				GravityScale = pattern == Titanfall2BoltPattern.Mastiff ? 0.09f : Math.Clamp( Number( "projectile_gravity_scale", Number( "bolt_gravity_amount", ordnance ? 1.1f : 0 ) ), 0, 4 ),
 				Lifetime = Math.Clamp( Number( "projectile_lifetime", MathF.Max( ordnance ? 3.5f : 1.25f, range / speed ) ), 0.1f, 8 ),
 				Radius = Math.Clamp( Number( "projectile_radius", impactRadius > 0 ? 3 : 1.5f ), 0.5f, 10 ),
@@ -137,8 +138,11 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) / (projectile ? 1 : pellets), flight )
 			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = ReadAudio( Get, (int)burst ), Firing = firing, SpreadProfile = spread,
 				ReloadProfile = new() { Enabled = true, NormalSeconds = reload, EmptySeconds = emptyReload },
+				SpinUp = ReadSpinUp( Number ),
+				SmartAmmo = ReadSmartAmmo( Get, Number ),
 				ModCandidates = modCandidates,
 				ViewKick = ordnance ? default : ReadViewKickProfile( Get, Number, read ),
+				UiDisplays = ReadUiDisplays( root, Get ),
 				DamageProfile = ReadDamageProfile( Number, damage, Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) ) };
 	}
 
