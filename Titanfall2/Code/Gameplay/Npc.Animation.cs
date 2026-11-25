@@ -8,6 +8,8 @@ public sealed partial class Titanfall2Npc
 	Titanfall2ActorAnimationData _actorAnimationData;
 	Vector3 _lastAnimationPosition;
 	Vector3 _animationVelocity;
+	Titanfall2ActorAnimationPlayer _layeredAnimation;
+	bool _attackPending;
 
 	void UpdateGunPose()
 	{
@@ -22,12 +24,19 @@ public sealed partial class Titanfall2Npc
 
 	void InitializeAnimation( Model model )
 	{
+		_layeredAnimation?.Dispose();
+		_layeredAnimation = null;
 		_actorClips = new( model.AnimationNames, StringComparer.OrdinalIgnoreCase );
 		_actorAnimationData = model.GetData<Titanfall2ActorAnimationData>();
 		_lastAnimationPosition = WorldPosition;
 		Renderer.UseAnimGraph = false;
 		// Keep Agent/seat motion authoritative; the legacy clip supplies the pose only.
 		Renderer.Sequence.Blending = true;
+		if ( !Application.IsDedicatedServer && !string.IsNullOrEmpty( _actorAnimationData?.Skeleton ) )
+		{
+			try { _layeredAnimation = new( Renderer, _actorAnimationData ); }
+			catch ( Exception error ) { Titanfall2Log.Warning( $"TF2 layered animation unavailable for '{ModelPath}': {error.Message}" ); }
+		}
 		PlayLocomotion();
 	}
 
@@ -35,6 +44,7 @@ public sealed partial class Titanfall2Npc
 	{
 		_attackClip = melee ? ModelLoader.MeleeRole : ModelLoader.FireRole;
 		_sinceAttackCue = 0;
+		_attackPending = true;
 	}
 
 	void PlayLocomotion()
@@ -47,6 +57,7 @@ public sealed partial class Titanfall2Npc
 		_animationVelocity = Vector3.Lerp( _animationVelocity, velocity.WithZ( 0 ), Math.Clamp( Time.Delta * 16, 0, 1 ) );
 		var speed = _animationVelocity.Length;
 		var moving = speed > 8;
+		if ( _layeredAnimation is not null ) { PlayLayeredLocomotion( speed, moving ); return; }
 		if ( ThrowingGrenade && _actorClips.Contains( ModelLoader.GrenadeRole ) )
 		{
 			if ( PlaySequence( ModelLoader.GrenadeRole, looping: false ) )
@@ -102,8 +113,51 @@ public sealed partial class Titanfall2Npc
 
 	float ClipSpeed( string role, float fallback ) => _actorAnimationData?.Clips?.FirstOrDefault( x => x.Role == role ) is { Speed: > 1 } clip ? clip.Speed : fallback;
 
+	void PlayLayeredLocomotion( float speed, bool moving )
+	{
+		var animation = _layeredAnimation;
+		if ( ThrowingGrenade && animation.Has( ModelLoader.GrenadeRole ) )
+		{
+			animation.ClearOverlays();
+			animation.Play( ModelLoader.GrenadeRole, animation.Duration( ModelLoader.GrenadeRole ) / MathF.Max( 0.2f, GrenadeWindupSeconds ) );
+		}
+		else if ( _attackPending && _attackClip == ModelLoader.MeleeRole && animation.Has( _attackClip ) )
+		{
+			animation.ClearOverlays();
+			animation.Play( _attackClip, animation.Duration( _attackClip ) / MathF.Max( 0.2f, MeleeInterval * 0.85f ), restart: true );
+			_attackPending = false;
+		}
+		else if ( animation.Current != ModelLoader.MeleeRole || animation.Finished )
+		{
+			var role = ModelLoader.IdleRole;
+			if ( moving )
+			{
+				var local = WorldRotation.Inverse * _animationVelocity;
+				var direction = MathF.Abs( local.y ) > MathF.Abs( local.x ) ? local.y > 0 ? "left" : "right" : local.x < 0 ? "backward" : "forward";
+				var walk = "tf2_walk_" + direction;
+				var run = "tf2_run_" + direction;
+				role = speed > (ClipSpeed( walk, MoveSpeed * 0.65f ) + ClipSpeed( run, MoveSpeed )) * 0.5f ? run : walk;
+				if ( !animation.Has( role ) ) role = animation.Has( walk ) ? walk : animation.Has( run ) ? run : ModelLoader.MoveRole;
+			}
+			if ( !animation.HasUpperMask && Reloading && animation.Has( ModelLoader.ReloadRole ) )
+				animation.Play( ModelLoader.ReloadRole, animation.Duration( ModelLoader.ReloadRole ) / MathF.Max( 0.1f, ReloadSeconds ) );
+			else if ( !animation.HasUpperMask && _attackPending && animation.Has( _attackClip ) )
+				animation.Play( _attackClip, restart: true );
+			else if ( animation.HasUpperMask || animation.Current != ModelLoader.FireRole || animation.Finished )
+				animation.Play( role, moving ? Math.Clamp( speed / MathF.Max( 1, ClipSpeed( role, MoveSpeed ) ), 0.2f, 2.2f ) : 1, loop: true );
+			if ( _attackPending && _attackClip == ModelLoader.FireRole && !Reloading ) animation.Fire( restart: true );
+			animation.Reload( Reloading, ReloadSeconds );
+			_attackPending = false;
+		}
+		animation.Tick();
+	}
+
+	void ReleaseActorAnimation() { _layeredAnimation?.Dispose(); _layeredAnimation = null; }
+	protected override void OnDestroy() { ReleaseActorAnimation(); base.OnDestroy(); }
+
 	bool PlaySequence( string name, bool looping, bool restart = false )
 	{
+		if ( name == ModelLoader.DeathRole ) ReleaseActorAnimation();
 		if ( _actorClips?.Contains( name ) != true || !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return false;
 		var seq = Renderer.Sequence;
 		if ( !restart && seq.Name == name ) return false;

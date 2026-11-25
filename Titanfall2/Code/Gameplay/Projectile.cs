@@ -278,7 +278,7 @@ public sealed partial class Titanfall2Projectile : Component
 				Position = obj.WorldPosition
 			};
 			info.Tags.Add( "shock" );
-			damageable.OnDamage( info );
+			Titanfall2HostDamage.Deal( damageable, info );
 		}
 	}
 
@@ -328,7 +328,7 @@ public sealed partial class Titanfall2Projectile : Component
 			var tags = new TagSet();
 			tags.Add( "projectile" );
 			TagTitanWeaponDamage( tags );
-			if ( collision is { } hit ) BaseCombatWeapon.ShootBullet( hit, damage, 0, _attacker, _weapon, tags );
+			if ( collision is { } hit ) Titanfall2HostDamage.ShootBullet( hit, damage, 0, _attacker, _weapon, tags );
 		}
 		else direct = null;
 		var blastOrigin = point + (normal.LengthSquared > 0.5f ? normal : -Velocity.Normal);
@@ -388,7 +388,7 @@ public sealed partial class Titanfall2Projectile : Component
 			damage.Tags.Add( "explosion" );
 			damage.Tags.Add( "projectile" );
 			TagTitanWeaponDamage( damage.Tags );
-			damageable.OnDamage( damage );
+			Titanfall2HostDamage.Deal( damageable, damage );
 		}
 	}
 
@@ -560,7 +560,7 @@ public sealed class Titanfall2AreaHazard : Component
 				Position = receiver.WorldPosition
 			};
 			info.Tags.Add( tag );
-			damageable.OnDamage( info );
+			Titanfall2HostDamage.Deal( damageable, info );
 		}
 	}
 }

@@ -57,7 +57,7 @@ public sealed partial class Titanfall2TitanKit : Component
 				if ( delta.Length > 260 || Vector3.Dot( Actor.WorldRotation.Forward, delta.Normal ) < 0.4f || !Actor.HasLineOfSight( enemy.GameObject ) ) continue;
 				var damage = new DamageInfo( enemy.IsTitan ? 200 : 30, Actor.GameObject, GameObject ) { Origin = Eye, Position = enemy.WorldPosition };
 				damage.Tags.Add( "burn" );
-				((IDamageable)enemy).OnDamage( damage );
+				Titanfall2HostDamage.Deal( (IDamageable)enemy, damage );
 			}
 		}
 		if ( !UseAi || Actor.Seat is { IsOccupied: true } or { IsEmbarking: true } || _aiStep > 0 ) return;
@@ -161,7 +161,7 @@ public sealed partial class Titanfall2TitanKit : Component
 				: data?.Damage ?? (siphon ? 20 : 100);
 			var tags = new TagSet(); tags.Add( "bullet" );
 			var before = enemy.IsValid() ? enemy.Health + enemy.Shield : 0;
-			BaseCombatWeapon.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
+			Titanfall2HostDamage.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
 			if ( siphon && (!enemy.IsValid() || enemy.Health + enemy.Shield < before) )
 				Actor.RestoreTitanShield( enemy is { IsTitan: true } ? 750 : 250 );
 		}

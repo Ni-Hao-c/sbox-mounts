@@ -13,17 +13,18 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	[Property] public bool ShowHud { get; set; } = true;
 	[Property] public bool ShowCockpit { get; set; } = true;
 	[Sync( SyncFlags.FromHost )] public float EmbarkRemaining { get; private set; }
+	[Sync( SyncFlags.FromHost )] public int SeatSerial { get; private set; }
 	public bool IsDriving { get; private set; }
-	public bool IsEmbarking => _boardingPilot.IsValid();
+	public bool IsEmbarking => BoardingPilot.IsValid();
 	public string StatusMessage => _messageTime > 0 ? _message : null;
 	internal PlayerController LocalPilot => GetOccupant() is { IsProxy: false } pilot ? pilot
-		: _boardingPilot is { IsProxy: false } boarding ? boarding : null;
+		: BoardingPilot is { IsProxy: false } boarding ? boarding : null;
 	BaseInventoryComponent _pausedInventory;
 	BaseCombatWeapon _pausedWeapon;
 	bool _previousPumping;
 	bool _previousViewEnabled;
 	bool _capturedView;
-	PlayerController _boardingPilot;
+	[Sync( SyncFlags.FromHost )] PlayerController BoardingPilot { get; set; }
 	PlayerController _seatedPilot;
 	GameObject _hud;
 	GameObject _cockpitView;
@@ -37,9 +38,11 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	Vector3 _dashDirection;
 
 	public override bool CanEnter( PlayerController player ) => Active && Actor is { Active: true, IsTitan: true, Dead: false }
-		&& player.IsValid() && player.Active && !player.IsProxy && Networking.IsHost
-		&& SeatPosition.IsValid() && !_boardingPilot.IsValid() && _reentryDelay <= 0
-		&& player.GetComponentInParent<BaseChair>() is null && base.CanEnter( player ) && CanReachCockpit( player );
+		&& player.IsValid() && player.Active && player.Scene == Scene && !player.IsProxy && Networking.IsHost && !IsProxy && !Actor.IsProxy
+		&& SeatPosition.IsValid() && !BoardingPilot.IsValid() && _reentryDelay <= 0
+		&& player.GetComponentInParent<BaseChair>() is null && base.CanEnter( player )
+		&& !Scene.GetAllComponents<Titanfall2TitanSeat>().Any( seat => seat != this && seat.BoardingPilot == player )
+		&& CanReachCockpit( player );
 
 	Component.IPressable.Tooltip? Component.IPressable.GetTooltip( Component.IPressable.Event e ) => Actor is not { Dead: false } ? null
 		: new Component.IPressable.Tooltip( Actor.DisplayName ?? "泰坦", "airline_seat_recline_normal",
@@ -51,7 +54,8 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	public bool TryEmbark( PlayerController pilot )
 	{
 		if ( !CanEnter( pilot ) ) return false;
-		_boardingPilot = pilot;
+		BoardingPilot = pilot;
+		SeatSerial++;
 		EmbarkRemaining = Math.Clamp( EmbarkSeconds, 0.1f, 3 );
 		PauseInventory( pilot );
 		SetMessage( "正在登乘 · 建立神经连接", 3 );
@@ -70,10 +74,18 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 
 	void TickEmbark()
 	{
-		if ( !_boardingPilot.IsValid() ) { EmbarkRemaining = 0; return; }
-		if ( Actor is not { Dead: false } || !_boardingPilot.Active || _boardingPilot.IsProxy || IsOccupied || !CanReachCockpit( _boardingPilot ) )
+		if ( !Networking.IsHost || IsProxy ) return;
+		if ( !BoardingPilot.IsValid() )
 		{
-			_boardingPilot = null;
+			if ( EmbarkRemaining > 0 ) { SeatSerial++; RestoreInventory(); }
+			BoardingPilot = null;
+			EmbarkRemaining = 0;
+			return;
+		}
+		if ( Actor is not { Dead: false } || !BoardingPilot.Active || BoardingPilot.IsProxy || IsOccupied || !CanReachCockpit( BoardingPilot ) )
+		{
+			BoardingPilot = null;
+			SeatSerial++;
 			EmbarkRemaining = 0;
 			RestoreInventory();
 			SetMessage( "登乘已取消", 2 );
@@ -81,8 +93,9 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		}
 		EmbarkRemaining = MathF.Max( 0, EmbarkRemaining - Time.Delta );
 		if ( EmbarkRemaining > 0 ) return;
-		var pilot = _boardingPilot;
-		_boardingPilot = null;
+		var pilot = BoardingPilot;
+		BoardingPilot = null;
+		SeatSerial++;
 		_seatedPilot = pilot;
 		SeatPosition.GetOrAddComponent<Titanfall2TitanSeatEscape>().Seat = this;
 		// SitMoveMode owns physics transitions. Do not disable a body while Walk still ticks.
@@ -103,7 +116,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		if ( !Networking.IsHost || Actor is not { Dead: false } || !pilot.IsValid() || pilot.IsProxy )
 		{
 			IsDriving = false;
-			if ( !_boardingPilot.IsValid() ) RestoreInventory();
+			if ( !BoardingPilot.IsValid() ) RestoreInventory();
 			return;
 		}
 		_seatedPilot = pilot;
@@ -137,7 +150,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	protected override void OnFixedUpdate()
 	{
 		IsDriving = false;
-		if ( !Networking.IsHost || Actor is not { Dead: false } || _boardingPilot.IsValid()
+		if ( !Networking.IsHost || Actor is not { Dead: false } || BoardingPilot.IsValid()
 			|| GetOccupant() is not { IsProxy: false } pilot || pilot.Mode is not Sandbox.Movement.SitMoveMode ) return;
 		if ( _dashTime > 0 ) { if ( !TryDrive( _dashDirection * (800 * Time.Delta) ) ) _dashTime = 0; return; }
 		var angles = pilot.EyeAngles;
@@ -220,7 +233,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 
 	public bool TryDisembark( PlayerController pilot, bool emergency = false )
 	{
-		if ( !Networking.IsHost || !pilot.IsValid() || !ContainsPilot( pilot ) || (!emergency && _entryGrace > 0) ) return false;
+		if ( !Networking.IsHost || IsProxy || !pilot.IsValid() || !ContainsPilot( pilot ) || (!emergency && _entryGrace > 0) ) return false;
 		if ( !TryFindExit( pilot, out var exit, emergency ) )
 		{
 			if ( !emergency ) { SetMessage( "出口受阻 · 请移动泰坦后重试", 3 ); return false; }
@@ -233,6 +246,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		pilot.EyeAngles = look;
 		RestoreInventory();
 		_seatedPilot = null;
+		SeatSerial++;
 		_reentryDelay = 0.8f;
 		IsDriving = false;
 		return true;
@@ -310,8 +324,12 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		var pilot = _seatedPilot.IsValid() ? _seatedPilot : GetComponentInChildren<PlayerController>( true );
 		if ( Networking.IsHost && pilot.IsValid() ) TryDisembark( pilot, emergency: true );
 		_seatedPilot = null;
-		_boardingPilot = null;
-		if ( Networking.IsHost ) EmbarkRemaining = 0;
+		if ( Networking.IsHost && !IsProxy )
+		{
+			if ( BoardingPilot.IsValid() || EmbarkRemaining > 0 ) SeatSerial++;
+			BoardingPilot = null;
+			EmbarkRemaining = 0;
+		}
 		RestoreInventory();
 		if ( _hud.IsValid() ) _hud.Destroy();
 		if ( _cockpitView.IsValid() ) _cockpitView.Destroy();

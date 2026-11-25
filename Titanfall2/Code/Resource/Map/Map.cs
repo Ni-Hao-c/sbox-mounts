@@ -36,6 +36,13 @@ partial class MapLoader(
 	/// </summary>
 	void DiscardWorldBuild()
 	{
+		// SceneFile eviction/rebuild can happen while an editor/play clone still
+		// uses the exact texture wrappers. Transfer leases before dropping the cache.
+		if ( _cachedWorldBuild is { } build )
+			foreach ( var scene in LiveScenes )
+				if ( scene.GetComponentsInChildren<Titanfall2SceneResourceOwner>( true )
+					.FirstOrDefault( owner => owner.MountIdent == Host.Ident && owner.ResourcePath == Path && owner.ResourceBuildId == build.LeaseId ) is { } owner )
+					owner.Configure( Host.Ident, [build.Retain()] );
 		_cachedWorldBuild?.Dispose();
 		_cachedWorldBuild = null;
 		_worldPhysics.Clear();
@@ -46,6 +53,7 @@ partial class MapLoader(
 
 	protected override void BuildScene()
 	{
+		DiscardWorldBuild();
 		try
 		{
 			BuildSceneCore();
@@ -147,7 +155,7 @@ partial class MapLoader(
 		// Lightmap textures belong to the cached generated scene, not an individual
 		// editor/play clone. The retained build owns them until the map's resources are
 		// released (no live scene shows the map) or the mount is.
-		world.AddComponent<Titanfall2SceneResourceOwner>().Configure( Host.Ident );
+		world.AddComponent<Titanfall2SceneResourceOwner>().Configure( Host.Ident, resourcePath: Path, resourceBuildId: worldBuild.LeaseId );
 		foreach ( var model in worldBuild.TranslucentChunks
 			.Concat( worldBuild.DecalChunks ).Concat( worldBuild.GodrayChunks ).Concat( worldBuild.WaterChunks ).Select( static chunk => chunk.Model ) )
 		{

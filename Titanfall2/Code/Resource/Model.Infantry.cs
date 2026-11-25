@@ -163,18 +163,25 @@ partial class ModelLoader
 		var count = 0;
 		var failures = 0;
 		var clips = new List<Titanfall2ActorAnimationData.Clip>();
+		_actorAnimationEntries.Clear();
 		foreach ( var role in candidates.GroupBy( x => x.Role ) )
 		{
 			foreach ( var c in role.OrderByDescending( x => x.Score ).DistinctBy( x => (x.Source, x.Index) ).Take( 12 ) )
 			{
 				TryAddAnimation( builder, skeleton, c.Source, c.Remap, c.Index, c.Role, c.Flags, names, ref count, ref failures,
-					decoded => clips.Add( new() { Role = c.Role, Source = c.Source.Description, Animation = c.Source.Model.Animations[c.Index].Name,
-						Speed = IsLocomotionRole( c.Role ) ? InfantryRootSpeed( decoded ) : 0 } ) );
+					decoded =>
+					{
+						var desc = c.Source.Model.Animations[c.Index].Animation;
+						_actorAnimationEntries[c.Role] = new( c.Role, c.Source == sources[0] ? null : c.Source.Description,
+							c.Index, c.Flags, desc.Flags, desc.FrameCount, desc.FramesPerSecond );
+						clips.Add( new() { Role = c.Role, Source = c.Source.Description, Animation = c.Source.Model.Animations[c.Index].Name,
+							Path = $"{Path}/actor/{c.Role}.anim", Speed = IsLocomotionRole( c.Role ) ? InfantryRootSpeed( decoded ) : 0 } );
+					} );
 				if ( names.Contains( role.Key ) ) break;
 			}
 		}
 		if ( !names.Contains( IdleRole ) ) Titanfall2Log.Warning( $"TF2 actor model '{ImportPath}' has no verified full-body idle clip." );
-		builder.WithData( new Titanfall2ActorAnimationData { Clips = clips.ToArray() } );
+		builder.WithData( new Titanfall2ActorAnimationData { Skeleton = $"{Path}/skeleton.skel", Clips = clips.ToArray() } );
 		return count;
 	}
 
@@ -208,7 +215,23 @@ public sealed class Titanfall2ActorAnimationData
 		public string Role { get; set; }
 		public string Source { get; set; }
 		public string Animation { get; set; }
+		public string Path { get; set; }
 		public float Speed { get; set; }
 	}
 	public Clip[] Clips { get; set; } = [];
+	public string Skeleton { get; set; }
+
+	// Explicit TF2 rig families; do not overlay arbitrary creature limbs by guessing.
+	internal static Dictionary<string, float> UpperBodyWeights( string[] names, int[] parents )
+	{
+		var weights = new Dictionary<string, float>( StringComparer.OrdinalIgnoreCase );
+		for ( var i = 0; i < names.Length; i++ )
+		{
+			var name = names[i].ToLowerInvariant();
+			var upper = name.Contains( "spine" ) || name.Contains( "chest" ) || name.Contains( "propgun" ) || name.Contains( "prophand" );
+			var parent = parents[i];
+			weights[names[i]] = upper || parent >= 0 && parent < i && weights.GetValueOrDefault( names[parent] ) > 0 ? 1 : 0;
+		}
+		return weights;
+	}
 }

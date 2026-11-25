@@ -5,6 +5,7 @@ partial class ModelLoader
 {
 	readonly object _animationGate = new();
 	AnimationCatalog _animationCatalog;
+	readonly Dictionary<string, AnimationEntry> _actorAnimationEntries = new( StringComparer.OrdinalIgnoreCase );
 
 	sealed record AnimationEntry( string Name, string SourcePath, int Index, int Flags, int AnimationFlags, int FrameCount, float FrameRate );
 	sealed record AnimationCatalog( SkeletonData Skeleton, int[] Parents, AnimationEntry[] Clips, string Metadata );
@@ -27,6 +28,11 @@ partial class ModelLoader
 		{
 			type = ResourceType.Text;
 			return new AnimationResource( this, null );
+		}
+		if ( infantryAnimations && name.StartsWith( "actor/", StringComparison.OrdinalIgnoreCase ) && name.EndsWith( ".anim", StringComparison.OrdinalIgnoreCase ) )
+		{
+			type = ResourceType.AnimationClip;
+			return new AnimationResource( this, name[6..^5], actor: true );
 		}
 		if ( !name.StartsWith( "animations/", StringComparison.OrdinalIgnoreCase ) || !name.EndsWith( ".anim", StringComparison.OrdinalIgnoreCase ) ) return null;
 		var clip = name[11..^5];
@@ -139,7 +145,7 @@ partial class ModelLoader
 		}
 	}
 
-	sealed class AnimationResource( ModelLoader owner, string clipName, bool skeleton = false ) : ResourceLoader<Titanfall2Mount>
+	sealed class AnimationResource( ModelLoader owner, string clipName, bool skeleton = false, bool actor = false ) : ResourceLoader<Titanfall2Mount>
 	{
 		protected override object Load()
 		{
@@ -154,10 +160,12 @@ partial class ModelLoader
 					builder.AddBone( catalog.Skeleton.Names[bone], NormalizeAnimationScale( catalog.Skeleton.LocalTransforms[bone], catalog.Skeleton.Names[bone] ),
 						parent >= 0 && parent < bone ? catalog.Skeleton.Names[parent] : null );
 				}
+				builder.AddBoneMask( "tf2_upper", Titanfall2ActorAnimationData.UpperBodyWeights( catalog.Skeleton.Names, catalog.Parents ), 0 );
 				return builder.Create( Path );
 			}
 			if ( clipName is null ) return catalog.Metadata;
-			var entry = catalog.Clips.FirstOrDefault( entry => Uri.EscapeDataString( entry.Name ).Equals( clipName, StringComparison.OrdinalIgnoreCase ) );
+			var entry = actor ? owner._actorAnimationEntries.GetValueOrDefault( clipName )
+				: catalog.Clips.FirstOrDefault( entry => Uri.EscapeDataString( entry.Name ).Equals( clipName, StringComparison.OrdinalIgnoreCase ) );
 			if ( entry is null ) return null;
 			var data = owner.ReadAnimationSource( entry.SourcePath );
 			var model = Titanfall2Mdl53Reader.Parse( data.AsSpan(), includeGeometry: false );
@@ -179,6 +187,11 @@ partial class ModelLoader
 					if ( index < 0 ) continue;
 					pose[index] = new Transform( ToSandbox( frame[bone].Position ), ToSandbox( frame[bone].Rotation ),
 						ToSandbox( frame[bone].Scale ) - (decoded.Delta ? Vector3.One : Vector3.Zero) );
+					if ( actor && IsLocomotionRole( entry.Name ) && GetBoneParent( model, bone ) < 0 )
+					{
+						var start = ToSandbox( decoded.Frames[0][bone].Position );
+						pose[index] = pose[index].WithPosition( new Vector3( start.x, start.y, pose[index].Position.z ) );
+					}
 				}
 				for ( var bone = 0; bone < pose.Length; bone++ ) pose[bone] = NormalizeAnimationScale( pose[bone], target.Names[bone] );
 				clip.AddFrame( pose );
@@ -238,5 +251,6 @@ partial class ModelLoader
 	protected override void Shutdown()
 	{
 		lock ( _animationGate ) _animationCatalog = null;
+		_actorAnimationEntries.Clear();
 	}
 }

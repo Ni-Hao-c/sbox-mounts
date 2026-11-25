@@ -424,7 +424,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 				* (!DamageProfile.Enabled && !piloted && !heavyTarget ? 0.45f : 1) * damageMultiplier;
 			var tags = new TagSet();
 			tags.Add( "bullet" );
-			BaseCombatWeapon.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
+			Titanfall2HostDamage.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
 			PlayBulletTrace( origin, new BaseCombatWeapon.ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface ) );
 		}
 		PlayShotSound( origin, npc: !piloted );
@@ -496,7 +496,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			e.AcceptedDamage *= kit.GuardDamage( e.DamageInfo ) / e.DamageInfo.Damage;
 			if ( e.AcceptedDamage <= 0 ) { e.Cancelled = true; return; }
 		}
-		Titanfall2TitanCore.CreditDamage( this, e.DamageInfo, e.AcceptedDamage );
+		Titanfall2HostDamage.Observe( this, e.DamageInfo );
 		e.DamageInfo.Weapon?.GetComponentInParent<Titanfall2TitanKit>()?.RegisterWeaponHit( this, e.DamageInfo );
 		if ( Shield > 0 )
 		{

@@ -151,6 +151,8 @@ public partial class Titanfall2Mount : BaseGameMount
 	protected override void Shutdown()
 	{
 		ClearUiAtlasCache();
+		_mapPreviewImages.Clear();
+		_mapPreviewNames.Clear();
 		_combatTables.Clear();
 		_weaponAudio.Clear();
 		_ordnanceSoundSamples.Clear();

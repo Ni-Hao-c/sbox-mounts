@@ -37,6 +37,6 @@ public sealed partial class Titanfall2Npc
 		if ( hit.GameObject?.GetComponentInParent<PlayerController>() is not null && (!AttackPlayers || Friendly) ) return;
 		var tags = new TagSet();
 		tags.Add( "melee" );
-		BaseCombatWeapon.ShootBullet( hit, MeleeDamage, 100, _meleeAttacker, GameObject, tags );
+		Titanfall2HostDamage.ShootBullet( hit, MeleeDamage, 100, _meleeAttacker, GameObject, tags );
 	}
 }

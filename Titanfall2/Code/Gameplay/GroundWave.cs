@@ -67,7 +67,7 @@ public sealed class Titanfall2GroundWave : Component
 			_hit.Add( receiver );
 			var damage = new DamageInfo( npc is { IsTitan: true } ? 400 : 40, _attacker, Actor.GameObject ) { Origin = WorldPosition, Position = point };
 			damage.Tags.Add( "shock" ); damage.Tags.Add( "projectile" );
-			((IDamageable)receiver).OnDamage( damage );
+			Titanfall2HostDamage.Deal( (IDamageable)receiver, damage );
 		}
 	}
 }

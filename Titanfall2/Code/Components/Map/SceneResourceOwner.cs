@@ -9,12 +9,16 @@ public sealed class Titanfall2SceneResourceOwner : Component, Component.DontExec
 
 	[Property, Hide]
 	public string MountIdent { get; set; }
+	[Property, Hide] public string ResourcePath { get; set; }
+	[Property, Hide] public string ResourceBuildId { get; set; }
 
 	bool _leased;
 
-	internal void Configure( string mountIdent, IEnumerable<IDisposable> ownedResources = null )
+	internal void Configure( string mountIdent, IEnumerable<IDisposable> ownedResources = null, string resourcePath = null, string resourceBuildId = null )
 	{
 		MountIdent = mountIdent;
+		if ( resourcePath is not null ) ResourcePath = resourcePath;
+		if ( resourceBuildId is not null ) ResourceBuildId = resourceBuildId;
 		if ( ownedResources is not null )
 			_ownedResources.AddRange( ownedResources.Where( static resource => resource is not null ) );
 	}

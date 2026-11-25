@@ -160,7 +160,7 @@ public sealed partial class Titanfall2Npc
 			var tags = new TagSet();
 			tags.Add( "emp" );
 			tags.Add( "arccannon" );
-			BaseCombatWeapon.ShootBullet( hit, victim is { IsTitan: true } ? 700 : 80, 0, GameObject, GameObject, tags );
+			Titanfall2HostDamage.ShootBullet( hit, victim is { IsTitan: true } ? 700 : 80, 0, GameObject, GameObject, tags );
 		}
 		PlayShotSound( muzzle );
 		Ability = FrontierAbility.None;
@@ -262,7 +262,7 @@ public sealed partial class Titanfall2Npc
 				{ Origin = center, Position = hit.Point };
 			damage.Tags.Add( tag );
 			if ( tag == "nuclearcore" ) damage.Tags.Add( "explosion" );
-			damageable.OnDamage( damage );
+			Titanfall2HostDamage.Deal( damageable, damage );
 		}
 	}
 

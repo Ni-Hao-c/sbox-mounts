@@ -76,14 +76,14 @@ public sealed class Titanfall2TitanCore : Component
 			|| !float.IsFinite( threshold ) || threshold <= 0 ? 0 : MathF.Min( damage, availableHealth ) / MathF.Max( 100, threshold );
 
 	/// <summary>Only a host can grant charge. Core-generated damage cannot charge the next core.</summary>
-	internal static void CreditDamage( Titanfall2Npc victim, in DamageInfo damage, float acceptedDamage )
+	internal static void CreditDamage( Titanfall2Npc victim, in DamageInfo damage, float acceptedDamage, float availableHealth )
 	{
 		if ( !Networking.IsHost || victim is null || damage is null || damage.Tags.Has( "titan-core" ) ) return;
-		var source = damage.Weapon?.GetComponentInParent<Titanfall2Npc>() ?? damage.Attacker?.GetComponentInParent<Titanfall2Npc>();
+		var source = Titanfall2HostDamage.Consume( victim, damage );
 		if ( source is not { IsTitan: true, Dead: false } || source == victim || !source.IsHostileToFaction( victim.Faction ) ) return;
 		var core = source.GetComponent<Titanfall2TitanCore>();
 		if ( !core.IsValid() || !core.HostReady || core.IsActive || core.IsCharging ) return;
-		core.Charge = AddCharge( core.Charge, DamageCharge( acceptedDamage, victim.Health + victim.Shield, core.DamageForFullCore ) );
+		core.Charge = AddCharge( core.Charge, DamageCharge( acceptedDamage, availableHealth, core.DamageForFullCore ) );
 	}
 
 	/// <summary>Update the host's aim while the cockpit moves; malformed or remote origins are rejected.</summary>
@@ -256,7 +256,7 @@ public sealed class Titanfall2TitanCore : Component
 		if ( IsHostileObject( hit.GameObject ) )
 		{
 			var tags = new TagSet(); tags.Add( "melee" ); tags.Add( "titan-core" );
-			BaseCombatWeapon.ShootBullet( hit, 2200, 100, _swingAttacker, Actor.GameObject, tags );
+			Titanfall2HostDamage.ShootBullet( hit, 2200, 100, _swingAttacker, Actor.GameObject, tags );
 		}
 		PlayImpact( new BaseCombatWeapon.ShotEffect( hit.EndPosition, true, hit.Normal, hit.GameObject, hit.Surface ), "titan_sword" );
 	}
@@ -271,7 +271,7 @@ public sealed class Titanfall2TitanCore : Component
 		if ( IsHostileObject( hit.GameObject ) )
 		{
 			var tags = new TagSet(); tags.Add( "bullet" ); tags.Add( "titan-core" );
-			BaseCombatWeapon.ShootBullet( hit, 325, 0, _attacker, Actor.GameObject, tags );
+			Titanfall2HostDamage.ShootBullet( hit, 325, 0, _attacker, Actor.GameObject, tags );
 		}
 		PlayImpact( new BaseCombatWeapon.ShotEffect( hit.EndPosition, true, hit.Normal, hit.GameObject, hit.Surface ), "laser_core" );
 	}
@@ -538,7 +538,7 @@ public sealed class Titanfall2FlameCoreWave : Component
 			_receivers.Add( receiver );
 			var damage = new DamageInfo( npc is { IsTitan: true } ? 4500 : 300, _attacker, Actor.GameObject ) { Origin = WorldPosition, Position = point };
 			damage.Tags.Add( "burn" ); damage.Tags.Add( "explosion" ); damage.Tags.Add( "titan-core" );
-			((IDamageable)receiver).OnDamage( damage );
+			Titanfall2HostDamage.Deal( (IDamageable)receiver, damage );
 		}
 	}
 

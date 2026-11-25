@@ -373,7 +373,7 @@ The local `Validation/validate.ps1 -GameplayOnly -Graphics` fixture checks the c
 ## Limitations
 　　- World CM and RPAK materials retain default physical surfaces; fallback prop hulls/meshes are approximations. `NoClimb` to wall-running semantics is inferred.
 
-　　- Gameplay, scripts, trigger behavior and networking belong to game code. Legacy models embed the first animation per sequence; independent clips expose blend-grid cells without implementing sequence blending, layers or IK. The engine's standard animation resources require uniform scale: tiny retail roundoff is normalized, while genuinely nonuniform scaling fails explicitly.
+　　- Gameplay, scripts, trigger behavior and networking belong to game code. General legacy models embed the first animation per sequence; independent clips expose blend-grid cells. Gameplay actors additionally export selected MDL53 role clips into AG2, with a locomotion/body selector and masked fire/reload overlays adapted from the official Source animation player. Automatic sequence blend grids, authored aim matrices, flinch autolayers and IK are not yet evaluated for TF2. The engine's standard animation resources require uniform scale: tiny retail roundoff is normalized, while genuinely nonuniform scaling fails explicitly. See `docs/UPSTREAM_AUTHORITY_2026-11-25.zh-CN.md` for the integration and validation scope.
 
 　　- PCF operators/initializers and VMT proxies are partial. Runtime control-point movement requires game code; arbitrary texture transforms/entity-driven inputs are unsupported.
 

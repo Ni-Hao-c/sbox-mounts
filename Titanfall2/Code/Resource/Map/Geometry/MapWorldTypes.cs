@@ -144,6 +144,28 @@ sealed record WorldBuildResult(
 	string WorldMaterialSourceKey = null ) : IDisposable
 {
 	bool _disposed;
+	internal string LeaseId { get; } = Guid.NewGuid().ToString( "N" );
+	int _liveLeases;
+	bool _releaseRequested;
+
+	internal IDisposable Retain()
+	{
+		if ( _disposed ) throw new ObjectDisposedException( nameof( WorldBuildResult ) );
+		_liveLeases++;
+		return new Lease( this );
+	}
+
+	sealed class Lease( WorldBuildResult owner ) : IDisposable
+	{
+		WorldBuildResult _owner = owner;
+		public void Dispose()
+		{
+			if ( _owner is not { } build ) return;
+			_owner = null;
+			build._liveLeases--;
+			if ( build._releaseRequested ) build.Dispose();
+		}
+	}
 
 	/// <summary>
 	/// Releases the textures this build created (lightmap pages, probe atlases). Nothing else
@@ -154,6 +176,8 @@ sealed record WorldBuildResult(
 	public void Dispose()
 	{
 		if ( _disposed ) return;
+		_releaseRequested = true;
+		if ( _liveLeases > 0 ) return;
 		_disposed = true;
 		Titanfall2WorldMaterialBatch.Release( WorldMaterialSourceKey );
 		foreach ( var resource in OwnedResources ?? [] ) resource?.Dispose();

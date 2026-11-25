@@ -63,17 +63,20 @@ sealed class Titanfall2UiAtlasPixelCache
 sealed class Titanfall2UiAtlasTextureLoader( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache )
 	: ResourceLoader<Titanfall2Mount>
 {
+	internal static Texture CreateTexture( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache )
+	{
+		var pixels = cache.Get( source );
+		if ( !image.TryGetCrop( pixels.Width, pixels.Height, out var crop ) ) throw new InvalidDataException( "UI image UV bounds are invalid for the decoded atlas." );
+		var output = new Color32[checked(crop.Width * crop.Height)];
+		for ( var row = 0; row < crop.Height; row++ )
+			Array.Copy( pixels.Data, (crop.Y + row) * pixels.Width + crop.X, output, row * crop.Width, crop.Width );
+		return Texture.Create( crop.Width, crop.Height, ImageFormat.RGBA8888 ).WithStaticUsage().WithData<Color32>( output ).Finish();
+	}
 	protected override object Load()
 	{
 		try
 		{
-			var pixels = cache.Get( source );
-			if ( !image.TryGetCrop( pixels.Width, pixels.Height, out var crop ) ) throw new InvalidDataException( "UI image UV bounds are invalid for the decoded atlas." );
-			var output = new Color32[checked(crop.Width * crop.Height)];
-			for ( var row = 0; row < crop.Height; row++ )
-				Array.Copy( pixels.Data, (crop.Y + row) * pixels.Width + crop.X, output, row * crop.Width, crop.Width );
-			return Texture.Create( crop.Width, crop.Height, ImageFormat.RGBA8888 )
-				.WithStaticUsage().WithData<Color32>( output ).Finish();
+			return CreateTexture( source, image, cache );
 		}
 		catch ( Exception exception )
 		{
@@ -93,10 +96,15 @@ public partial class Titanfall2Mount
 	{
 		ClearUiAtlasCache();
 		var cache = _uiAtlasPixels = new Titanfall2UiAtlasPixelCache();
+		ReadMapPreviewMappings( snapshot );
 		foreach ( var source in DiscoverUiAtlases( snapshot ) )
 			foreach ( var image in source.Atlas.Images )
+			{
+				if ( image.Name.StartsWith( "loadscreens/", StringComparison.OrdinalIgnoreCase ) )
+					_mapPreviewImages.TryAdd( image.Name, (source, image) );
 				if ( registered.Add( image.Name + ".vtex" ) )
 					catalog.Add( new( ResourceType.Texture, image.Name, new Titanfall2UiAtlasTextureLoader( source, image, cache ) ) );
+			}
 	}
 
 	internal static IReadOnlyList<Titanfall2UiAtlasSource> DiscoverUiAtlases( Titanfall2ContentSnapshot snapshot )

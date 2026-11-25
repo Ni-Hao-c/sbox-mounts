@@ -88,7 +88,7 @@ public sealed class Titanfall2TitanCluster : Component
 			var damage = new DamageInfo( (heavy ? Settings.SplashTitanDamage : Settings.SplashDamage)
 				* (1 - sample.Distance / radius), _attacker, _weapon ) { Origin = origin, Position = sample.Point };
 			damage.Tags.Add( "explosion" ); damage.Tags.Add( "projectile" );
-			damageable.OnDamage( damage );
+			Titanfall2HostDamage.Deal( damageable, damage );
 		}
 	}
 
