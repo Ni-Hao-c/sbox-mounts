@@ -9,6 +9,10 @@ public sealed class Titanfall2PilotViewData
 	public sealed record ClipEvent( string Clip, float Cycle, EventKind Kind, string Options );
 
 	public ClipEvent[] Events { get; set; } = [];
+	public string Skeleton { get; set; }
+	public string ClipFolder { get; set; }
+	public string[] Clips { get; set; } = [];
+	public bool ContinuousAds { get; set; }
 }
 
 partial class ModelLoader
@@ -87,6 +91,7 @@ partial class ModelLoader
 		var ready = readyFrame.Select( Pose ).ToArray();
 
 		var count = 0;
+		var resourceClips = new List<string>();
 		Add( Titanfall2PilotViewModel.Idle, idle, ready, loop: true );
 		Add( Titanfall2PilotViewModel.Fire, fire, ready );
 		Add( Titanfall2PilotViewModel.Reload, reload, ready );
@@ -143,10 +148,11 @@ partial class ModelLoader
 			count++;
 		}
 
-		if ( events.Count > 0 )
+		builder.WithData( new Titanfall2PilotViewData
 		{
-			builder.WithData( new Titanfall2PilotViewData { Events = events.ToArray() } );
-		}
+			Events = events.ToArray(), Skeleton = $"{Path}/pilot/skeleton.skel", ClipFolder = $"{Path}/pilot",
+			Clips = resourceClips.ToArray(), ContinuousAds = idle.Delta && fire.Delta && sequences.AdsIn is not null
+		} );
 
 		return count;
 
@@ -160,6 +166,7 @@ partial class ModelLoader
 
 		void Add( string name, Titanfall2Mdl53AnimationReader.DecodedAnimation animation, Transform[] basePose, bool loop = false )
 		{
+			resourceClips.Add( name );
 			var clip = builder.AddAnimation( name, animation.FramesPerSecond ).WithLooping( loop );
 			foreach ( var frame in animation.Frames )
 				clip.AddFrame( ApplyBase( frame, animation.Delta, basePose ) );

@@ -14,6 +14,7 @@ partial class ModelLoader
 	{
 		type = default;
 		if ( _staticInstance || collisionOnly || heldWeapon || previewOnly ) return null;
+		if ( pilotViewAnimations && ResolvePilotViewAnimationChild( name, out type ) is { } pilotChild ) return pilotChild;
 		if ( name.Equals( "physics.prefab", StringComparison.OrdinalIgnoreCase ) )
 		{
 			type = ResourceType.PrefabFile;

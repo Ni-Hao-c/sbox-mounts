@@ -25,6 +25,17 @@ public record struct Titanfall2WeaponPresentation
 	public int ScopeBodyChoice { get; set; }
 	public float ScopeBlendStart { get; set; }
 	public float ScopeBlendEnd { get; set; }
+	/// <summary>Retail view-local axes: right, forward, up (not engine X, Y, Z).</summary>
+	public Vector3 ViewModelOffsetHip { get; set; }
+	public Vector3 ViewModelOffsetAds { get; set; }
+	internal readonly Vector3 ViewModelOffset( float zoom )
+	{
+		// C_BaseViewModel retail placement uses a cosine ramp for this translation,
+		// independently of the animation pose sampled by the zoom fraction.
+		var blend = 0.5f * (1f - MathF.Cos( Math.Clamp( zoom, 0f, 1f ) * MathF.PI ));
+		var authored = Vector3.Lerp( ViewModelOffsetHip, ViewModelOffsetAds, blend );
+		return new Vector3( authored.y, -authored.x, authored.z );
+	}
 	public readonly void ApplyBodyGroups( SkinnedModelRenderer renderer )
 	{
 		if ( !renderer.IsValid() || BodyGroups is null ) return;

@@ -7,14 +7,18 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 	internal const string Folder = "scripts/weapons/";
 	internal string ScriptName { get; init; }
 	internal Titanfall2WeaponPresentation Presentation { get; init; }
+	internal Titanfall2ReloadProfile ReloadProfile { get; init; }
 
-	internal static Titanfall2WeaponData Read( string path, Func<string, string> read, bool titan = false, bool projectile = false, bool integrated = false, float fallbackSpeed = 0, Color? tint = null, bool ordnance = false, bool antiTitan = false, Titanfall2ProjectileBehavior behavior = Titanfall2ProjectileBehavior.Standard )
+	internal static Titanfall2WeaponData Read( string path, Func<string, string> read, bool titan = false, bool projectile = false, bool integrated = false, float fallbackSpeed = 0, Color? tint = null, bool ordnance = false, bool antiTitan = false, Titanfall2ProjectileBehavior behavior = Titanfall2ProjectileBehavior.Standard, IReadOnlyList<string> selectedMods = null, Action<string> warn = null )
 	{
 		var root = ReadFile( path, read, new( StringComparer.OrdinalIgnoreCase ) );
 		var values = new Dictionary<string, string>( root.Values, StringComparer.OrdinalIgnoreCase );
 		if ( root.Blocks.TryGetValue( "MP_BASE", out var multiplayer ) )
 			foreach ( var (key, value) in multiplayer.Values )
 				if ( !value.Equals( "<KEEP_DEFAULT>", StringComparison.OrdinalIgnoreCase ) ) values[key] = value;
+		var mods = ReadMods( root );
+		var modCandidates = ReadModCandidates( mods, values, warn ?? (message => Titanfall2Log.Warning( message )) );
+		ApplySelectedMods( mods, values, selectedMods );
 
 		string Get( string key ) => values.GetValueOrDefault( key, "" );
 		float Number( string key, float fallback = 0 ) => float.TryParse( Get( key ), NumberStyles.Float, CultureInfo.InvariantCulture, out var value )
@@ -31,6 +35,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		if ( ordnance ) magazine = Math.Clamp( magazine <= 0 ? 4 : magazine, 1, 8 );
 		var rate = Number( "fire_rate", ordnance ? 1.5f : 0 );
 		var reload = Number( "reload_time", Number( "reloadempty_time", ordnance ? 0.9f : 0 ) );
+		var emptyReload = Number( "reloadempty_time", reload );
 		var damage = Number( "damage_near_value" );
 		if ( integrated ) damage = MathF.Max( 1, Number( "npc_damage_near_value", damage ) );
 		if ( ordnance && damage <= 0 ) damage = MathF.Max( 10, Number( "explosion_damage", 60 ) );
@@ -56,7 +61,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			|| (!projectile && !Get( "damage_type" ).Equals( "bullet", StringComparison.OrdinalIgnoreCase ))
 			|| (projectile ? speed is < 100 or > 20000 : speed > 0)
 			|| magazine is < 1 or > 250 || magazine != MathF.Truncate( magazine )
-			|| rate is < 0.1f or > 60f || reload is <= 0 or > 30f || damage is <= 0 or > 1000 )
+			|| rate is < 0.1f or > 60f || reload is <= 0 or > 30f || emptyReload is <= 0 or > 30f || damage is <= 0 or > 1000 )
 			return null;
 
 		var hold = ordnance ? "grenade"
@@ -102,6 +107,8 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		var fireSounds1p = FireSounds( "1p" );
 		var presentation = new Titanfall2WeaponPresentation
 		{
+			ViewModelOffsetHip = ReadViewModelOffset( Get( "viewmodel_offset_hip" ) ),
+			ViewModelOffsetAds = ReadViewModelOffset( Get( "viewmodel_offset_ads" ) ),
 			MuzzleView = Get( "fx_muzzle_flash_view" ), MuzzleWorld = Get( "fx_muzzle_flash_world" ), MuzzleAttachment = Get( "fx_muzzle_flash_attach" ),
 			MuzzleAttachmentScoped = Get( "fx_muzzle_flash_attach_scoped" ),
 			ScopeReticle = Get( "bodygroup_ads_scope_name" ) == "ads_scopes" && Number( "bodygroup_ads_scope_set" ) == 3
@@ -129,6 +136,9 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			spread.Stand.Hip, fireSounds3p, fireSounds1p, adsFov, hold, (int)pellets, (int)burst, Math.Clamp( Number( "burst_fire_delay", 0.25f ), 0, 5 ),
 			Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) / (projectile ? 1 : pellets), flight )
 			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = ReadAudio( Get, (int)burst ), Firing = firing, SpreadProfile = spread,
+				ReloadProfile = new() { Enabled = true, NormalSeconds = reload, EmptySeconds = emptyReload },
+				ModCandidates = modCandidates,
+				ViewKick = ordnance ? default : ReadViewKickProfile( Get, Number, read ),
 				DamageProfile = ReadDamageProfile( Number, damage, Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) ) };
 	}
 

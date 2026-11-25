@@ -30,6 +30,15 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	bool _aiming;
 	bool _sprinting;
 	bool _oneHanded;
+	Titanfall2PilotAnimationPlayer _animation;
+	float _zoom;
+	internal bool UsesContinuousAds => _animation?.IsReady == true;
+	internal float PresentationZoom => _animation?.Zoom ?? _zoom;
+	internal string PresentationAction => _action;
+	internal float PresentationCycle => _animation is not null
+		? _action == Fire ? _animation.FireCycle : _animation.ActionCycle
+		: Renderer.IsValid() ? Renderer.Sequence.TimeNormalized : 0;
+	internal int FireSerial => _animation?.FireSerial ?? 0;
 
 	// Critically damped look-inertia state in view-local yaw/pitch degrees.
 	Angles _lastCameraAngles;
@@ -64,6 +73,17 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		presentation.LoadEvents( driver.Model );
 		driver.RenderType = ModelRenderer.ShadowRenderType.Off;
 		driver.Sequence.Blending = true;
+		presentation._animation?.Dispose();
+		presentation._animation = null;
+		if ( driver.Model.GetData<Titanfall2PilotViewData>() is { ContinuousAds: true } animationData )
+		{
+			try { presentation._animation = new( driver, animationData ); }
+			catch ( Exception error )
+			{
+				driver.UseAnimGraph = false;
+				Titanfall2Log.Warning( $"TF2 continuous pilot ADS unavailable for '{owner.ViewModelPath}': {error.Message}" );
+			}
+		}
 		presentation.OnDeploy();
 		return true;
 	}
@@ -85,8 +105,12 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	}
 
 	internal void SetLocomotionState( bool aiming, bool sprinting, bool oneHanded )
+		=> SetLocomotionState( aiming, sprinting, oneHanded, aiming ? 1 : 0 );
+
+	internal void SetLocomotionState( bool aiming, bool sprinting, bool oneHanded, float zoom )
 	{
 		if ( !Renderer.IsValid() ) return;
+		SetZoom( zoom );
 		var locked = _action is Reload or EmptyReload or Draw;
 		if ( locked )
 		{
@@ -99,6 +123,23 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		aiming &= HasAds;
 		sprinting &= !aiming && _clips.Contains( Sprint );
 		oneHanded &= !aiming && !sprinting && _clips.Contains( OneHandedIdle );
+		if ( _animation is not null )
+		{
+			// ADS is a sampled base pose, not an action which can replace a shot.
+			// Retaining the fire timeline also makes a mid-shot ADS reversal continuous.
+			_aiming = aiming;
+			if ( sprinting != _sprinting )
+			{
+				_sprinting = sprinting;
+				if ( sprinting ) Play( Sprint );
+				else if ( _clips.Contains( SprintRaise ) ) Play( SprintRaise );
+				else Play( Idle );
+			}
+			if ( oneHanded != _oneHanded && _action is Idle or AdsIdle or OneHandedIdle )
+				Play( oneHanded ? OneHandedIdle : Idle );
+			_oneHanded = oneHanded;
+			return;
+		}
 
 		if ( aiming != _aiming )
 		{
@@ -137,7 +178,14 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 
 	internal void Place( Transform camera, float adsBlend, float wallrunSide = 0f, float mantleProgress = 0f )
 	{
-		var posedCamera = ApplyInertia( camera, adsBlend, wallrunSide, mantleProgress );
+		SetZoom( adsBlend );
+		var posedCamera = ApplyInertia( camera, _zoom, wallrunSide, mantleProgress );
+		if ( _owner.IsValid() )
+		{
+			// Apply authored optic translation in view space before resolving the
+			// animated CAMERA_BASE anchor; it must not become part of that inverse.
+			posedCamera.Position += camera.Rotation * _owner.Presentation.ViewModelOffset( _zoom );
+		}
 
 		// Retail action clips move the POV root into view space. Resolve the current
 		// camera attachment, since the reference pose has a different origin and axis.
@@ -194,6 +242,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	protected override void OnUpdate()
 	{
 		if ( !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
+		_animation?.ApplyParameters();
 		DispatchEvents();
 
 		var restingClip = _aiming && _clips.Contains( AdsIdle ) ? AdsIdle
@@ -210,6 +259,8 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnDeploy();
 		_aiming = false;
 		_sprinting = false;
+		_oneHanded = false;
+		SetZoom( 0 );
 		SetClipVisible( true );
 		Play( Draw );
 	}
@@ -219,7 +270,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnAttack( hitPoint, origin );
 		if ( _owner.IsValid() && _owner.IsReloading ) return;
 		_sprinting = false;
-		var fireClip = _aiming && _clips.Contains( AdsFire ) ? AdsFire : Fire;
+		var fireClip = _animation is not null ? Fire : _aiming && _clips.Contains( AdsFire ) ? AdsFire : Fire;
 		Play( fireClip );
 		if ( !HasEvent( fireClip, Titanfall2PilotViewData.EventKind.MuzzleFlash ) )
 			SpawnMuzzleFlash();
@@ -230,9 +281,10 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnReloadStart();
 		_aiming = false;
 		_sprinting = false;
-		var isEmpty = _owner.IsValid() && _owner.Clip1 == 0;
-		var reloadTime = _owner.IsValid() ? _owner.ReloadTime : (float?)null;
-		Play( isEmpty ? EmptyReload : Reload, reloadTime );
+		var isEmpty = _owner.IsValid() && _owner.ReloadStartedEmpty;
+		var reloadTime = _owner.IsValid() ? _owner.ReloadDuration : (float?)null;
+		var elapsed = _owner.IsValid() ? _owner.ReloadElapsed : 0;
+		Play( isEmpty ? EmptyReload : Reload, reloadTime, elapsed );
 	}
 
 	public override void OnReloadCancel()
@@ -242,24 +294,36 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		Play( Idle );
 	}
 
-	void Play( string name, float? seconds = null )
+	void Play( string name, float? seconds = null, float elapsed = 0 )
 	{
 		if ( !Renderer.IsValid() ) return;
+		DispatchEvents();
+		if ( _animation is not null )
+		{
+			_animation.Play( name, seconds, elapsed );
+			_action = name;
+			var duration = seconds is > 0.05f && float.IsFinite( seconds.Value ) ? seconds.Value : _animation.Duration( name );
+			_actionEnds = MathF.Max( 0, duration - MathF.Max( 0, elapsed ) );
+			_lastCycle = elapsed > 0 ? PresentationCycle : -0.001f;
+			DispatchEvents();
+			return;
+		}
 		var seq = Renderer.Sequence;
 		seq.Name = name;
 		seq.Looping = name is Idle or AdsIdle or Sprint or OneHandedIdle;
-		seq.TimeNormalized = 0;
 		seq.PlaybackRate = seconds is > 0.05f ? seq.Duration / seconds.Value : 1f;
+		var realDuration = seq.Duration / MathF.Max( 0.01f, seq.PlaybackRate );
+		seq.TimeNormalized = elapsed > 0 && realDuration > 0 ? Math.Clamp( elapsed / realDuration, 0, 1 ) : 0;
 		_action = name;
-		_lastCycle = -0.001f;
-		_actionEnds = seq.Duration / MathF.Max( 0.01f, seq.PlaybackRate );
+		_lastCycle = elapsed > 0 ? seq.TimeNormalized : -0.001f;
+		_actionEnds = MathF.Max( 0, realDuration - MathF.Max( 0, elapsed ) );
 		DispatchEvents();
 	}
 
 	void DispatchEvents()
 	{
 		if ( string.IsNullOrEmpty( _action ) || !_eventsByClip.TryGetValue( _action, out var events ) ) return;
-		var cycle = Math.Clamp( Renderer.Sequence.TimeNormalized, 0f, 1f );
+		var cycle = Math.Clamp( PresentationCycle, 0f, 1f );
 		foreach ( var evt in events )
 		{
 			if ( evt.Cycle <= _lastCycle || evt.Cycle > cycle ) continue;
@@ -306,5 +370,17 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	{
 		if ( string.IsNullOrEmpty( _clipBodyGroup ) || !Renderer.IsValid() ) return;
 		Renderer.SetBodyGroup( _clipBodyGroup, visible ? 0 : 1 );
+	}
+
+	void SetZoom( float zoom )
+	{
+		_zoom = float.IsFinite( zoom ) ? Math.Clamp( zoom, 0, 1 ) : 0;
+		_animation?.SetZoom( _zoom );
+	}
+	protected override void OnDestroy()
+	{
+		_animation?.Dispose();
+		_animation = null;
+		base.OnDestroy();
 	}
 }

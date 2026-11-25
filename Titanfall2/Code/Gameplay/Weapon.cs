@@ -40,6 +40,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			var targetFov = Math.Clamp( AdsFov, 15f, view.FieldOfView );
 			view.FieldOfView = float.Lerp( view.FieldOfView, targetFov, _adsBlend );
 		}
+		ApplyViewKickCamera( ref view );
 	}
 
 	protected override bool WantsPrimaryAttack() => _burstRemaining == 0 && base.WantsPrimaryAttack();
@@ -135,6 +136,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void OnHolstered()
 	{
+		ResetViewKick();
 		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		_burstRemaining = 0;
 		_adsBlend = 0;
@@ -159,19 +161,23 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			DroppedModel.LocalRotation = PlayerWeaponCorrection( WorldModelPath );
 		}
 		UpdatePickup( Inventory.IsValid() );
+		UpdateAttachments();
 	}
 
 	protected override void OnUpdate()
 	{
+		UpdateAttachments();
 		if ( !Application.IsHeadless && !Application.IsDedicatedServer && Sandbox.Mounting.Directory.Get( MountIdent ?? "titanfall2" ) is Titanfall2Mount mount )
 			mount.WarmWeaponParticles();
 		var stored = Inventory.IsValid();
 		if ( stored != _inInventory ) UpdatePickup( stored );
 		base.OnUpdate();
+		TickRetailReloadPresentation();
 		if ( IsReloading || !IsActive ) GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		else if ( !IsProxy && Owner is { UseInputControls: true } && _burstRemaining == 0 && !Input.Down( "attack1" ) )
 			GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		UpdatePilotViewState();
+		TickViewKick();
 		UpdateScopePresentation();
 	}
 
@@ -199,7 +205,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		_adsBlend = SpreadProfile.Enabled ? SpreadProfile.AdvanceZoom( _adsBlend, aiming, Time.Delta )
 			: Math.Clamp( _adsBlend + (aiming ? 1f : -1f) * rate * Time.Delta, 0f, 1f );
 		if ( ViewModel.GetComponent<Titanfall2PilotViewModel>() is { } pilotView )
-			pilotView.SetLocomotionState( aiming, sprinting, oneHanded );
+			pilotView.SetLocomotionState( aiming, sprinting, oneHanded, _adsBlend );
 	}
 
 	void ReadPilotParkourState( out float wallrunSide, out float mantleProgress )
@@ -323,18 +329,20 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	protected override void PlaceViewModel( CameraComponent camera, in CameraView view )
 	{
 		if ( !ViewModel.IsValid() ) return;
+		var weaponView = view;
+		weaponView.Rotation *= ViewKickWeaponRotation;
 		if ( ViewModel.GetComponent<Titanfall2PilotViewModel>() is { } pilotView )
 		{
-			pilotView.Place( new Transform( view.Position, view.Rotation ), _adsBlend, _wallrunSide, _mantleProgress );
+			pilotView.Place( new Transform( weaponView.Position, weaponView.Rotation ), _adsBlend, _wallrunSide, _mantleProgress );
 			return;
 		}
 		if ( _originalView && ViewModel.GetComponent<BaseWeaponModel>()?.Renderer?.Model?.Attachments.GetTransform( "CAMERA_BASE" ) is { } cameraBase )
 		{
-			ViewModel.WorldTransform = new Transform( view.Position, view.Rotation ).ToWorld( cameraBase.ToLocal( global::Transform.Zero ) );
+			ViewModel.WorldTransform = new Transform( weaponView.Position, weaponView.Rotation ).ToWorld( cameraBase.ToLocal( global::Transform.Zero ) );
 			return;
 		}
 
-		var grip = new Transform( view.Position + view.Rotation * new Vector3( 13, -6, -7 ), view.Rotation );
+		var grip = new Transform( weaponView.Position + weaponView.Rotation * new Vector3( 13, -6, -7 ), weaponView.Rotation );
 		ViewModel.WorldTransform = grip.ToWorld( new Transform( Vector3.Zero, PlayerWeaponCorrection( WorldModelPath ) ) );
 		var body = HolderRenderer;
 		if ( !_viewArms.IsValid() || !body.IsValid() || _viewArms.SceneModel is not { } arms
@@ -351,8 +359,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		var holderGrip = hand.WorldTransform.WithScale( 1 );
 		// Keep each wrist on the weapon, but start the shoulders outside the
 		// first-person frustum. The third-person shoulder pose is framed from behind.
-		var left = GetViewArmPose( body, holderGrip, grip, view, "L", 1 );
-		var right = GetViewArmPose( body, holderGrip, grip, view, "R", -1 );
+		var left = GetViewArmPose( body, holderGrip, grip, weaponView, "L", 1 );
+		var right = GetViewArmPose( body, holderGrip, grip, weaponView, "R", -1 );
 		var armSpace = _viewArms.WorldTransform;
 		foreach ( var (source, target) in _armBones )
 		{
@@ -419,6 +427,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		if ( !Projectile.Enabled && (shot.Hit || shot.HitPosition != default) && WeaponModel?.MuzzleGameObject is { } port )
 			Titanfall2RetailWeaponEffects.Spawn( port, MountIdent, isLocalFirstPerson && !string.IsNullOrWhiteSpace( Presentation.TracerView ) ? Presentation.TracerView : Presentation.TracerWorld, false, 0.5f, shot.HitPosition );
 		if ( shot.NoEvents ) return;
+		FireViewKick();
 		GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, Audio, isLocalFirstPerson,
 			GetMuzzleTransform().Position, PrimaryDelay, ammoPercent: ClipMaxSize > 0 ? Clip1 * 100f / ClipMaxSize : 100 );
 

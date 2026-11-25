@@ -116,6 +116,7 @@ public partial class Titanfall2Mount
 	{
 		var models = catalog.Where( item => item.Type == ResourceType.Model ).Select( item => item.Path ).ToHashSet( StringComparer.OrdinalIgnoreCase );
 		var weapons = new Dictionary<string, Titanfall2WeaponData>( StringComparer.OrdinalIgnoreCase );
+		var scriptTexts = new Dictionary<string, string>( StringComparer.OrdinalIgnoreCase );
 		foreach ( var (id, title, sample) in PilotWeapons ) RegisterWeapon( id, "mp_weapon_" + id, title, sample, titan: false );
 		foreach ( var id in TitanWeapons ) RegisterWeapon( "mp_titanweapon_" + id, "mp_titanweapon_" + id, null, null, titan: true );
 		foreach ( var (id, speed, tint, behavior) in TitanProjectileWeapons )
@@ -168,6 +169,21 @@ public partial class Titanfall2Mount
 					return;
 				}
 				if ( integrated ) return;
+				if ( !ordnance )
+				{
+					var options = new List<Titanfall2WeaponModOption>();
+					foreach ( var mod in weapon.ModCandidates )
+					{
+						try
+						{
+							var variant = Titanfall2WeaponData.Read( script, ReadScript, titan, projectile, integrated, fallbackSpeed, tint,
+								ordnance, antiTitan, behavior, selectedMods: [mod] );
+							if ( variant is not null ) options.Add( Titanfall2WeaponData.ModOption( mod, variant ) );
+						}
+						catch ( InvalidDataException error ) { warn( $"TF2 attachment {name}/{mod} skipped: {error.Message}" ); }
+					}
+					weapon = weapon with { AttachmentOptions = options.ToArray() };
+				}
 				if ( models.Add( weapon.WorldModel + ".held" ) && snapshot.GetSource( weapon.WorldModel ) is { } heldSource )
 					catalog.Add( new( ResourceType.Model, weapon.WorldModel + ".held", new ModelLoader( heldSource, separateResources: true, heldWeapon: true ) ) );
 				if ( models.Add( weapon.WorldModel + ".preview" ) && snapshot.GetSource( weapon.WorldModel ) is { } previewSource )
@@ -190,10 +206,11 @@ public partial class Titanfall2Mount
 
 		string ReadScript( string path )
 		{
+			if ( scriptTexts.TryGetValue( path, out var cached ) ) return cached;
 			var source = snapshot.GetSource( path );
-			if ( source is null ) return null;
+			if ( source is null ) return scriptTexts[path] = null;
 			if ( !source.TryReadAllBytes( out var bytes, out var error ) ) throw new InvalidDataException( $"{path}: {error}" );
-			return Encoding.UTF8.GetString( bytes );
+			return scriptTexts[path] = Encoding.UTF8.GetString( bytes );
 		}
 	}
 
@@ -283,6 +300,10 @@ public partial class Titanfall2Mount
 					gun.Firing = data.Firing;
 					gun.SpreadProfile = data.SpreadProfile;
 					gun.ReloadTime = data.ReloadSeconds;
+					gun.ViewKick = data.ViewKick;
+					gun.AttachmentBaseTitle = title;
+					gun.AttachmentOptions = data.AttachmentOptions;
+					gun.ReloadProfile = data.ReloadProfile;
 					gun.Projectile = data.Projectile with { ModelPath = Mounted( data.Projectile.ModelPath ), MountIdent = Host.Ident };
 					gun.TitanDamage = data.TitanDamage;
 					gun.DamageProfile = data.DamageProfile;

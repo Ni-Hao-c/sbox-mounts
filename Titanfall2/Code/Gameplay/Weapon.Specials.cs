@@ -12,7 +12,7 @@ public sealed partial class Titanfall2Weapon
 	{
 		get
 		{
-			var aim = base.AimRay;
+			var aim = ViewKickAimRay;
 			return SmartLockEnabled && SmartLockProgress >= 1f && CanSmartLock( _smartTarget, aim )
 				? new Ray( aim.Position, (LockAimPoint( _smartTarget ) - aim.Position).Normal ) : aim;
 		}
@@ -26,7 +26,7 @@ public sealed partial class Titanfall2Weapon
 			SmartLockProgress = 0;
 			return;
 		}
-		var aim = base.AimRay;
+		var aim = ViewKickAimRay;
 		var best = Scene.GetAllComponents<BaseNpc>().Where( n => n.Health > 0 && n.GetDisposition( Owner.GameObject ) == Disposition.Hostile )
 			.Select( n => n.GameObject ).Where( go => CanSmartLock( go, aim ) )
 			.OrderByDescending( go => Vector3.Dot( aim.Forward, (LockAimPoint( go ) - aim.Position).Normal ) ).FirstOrDefault();
