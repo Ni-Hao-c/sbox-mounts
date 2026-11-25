@@ -63,10 +63,24 @@ public partial class Titanfall2Mount
 		definition = null;
 		if ( string.IsNullOrWhiteSpace( name ) ) return false;
 		if ( _milesArchive?.Events is { } events && events.TryGet( name, out definition, out _ ) ) return true;
+		// exp_defender uses the legacy dotted spellings; the installed Miles
+		// bank contains these exact underscore events. Keep this verified alias
+		// set bounded instead of applying punctuation/fuzzy matching to all sounds.
+		if ( DefenderImpactEventAliases.TryGetValue( name, out var alias )
+			&& _milesArchive?.Events is { } aliasEvents && aliasEvents.TryGet( alias, out definition, out _ ) ) return true;
 		if ( _missingWeaponEvents.Add( name ) && Titanfall2Log.VerboseLogging )
 			Titanfall2Log.Warning( $"TF2 exact sound event '{name}' is unavailable; no fuzzy substitution was made." );
 		return false;
 	}
+
+	static readonly Dictionary<string, string> DefenderImpactEventAliases = new( StringComparer.OrdinalIgnoreCase )
+	{
+		["Default.Energy.BulletImpact_3P_vs_3P"] = "default_energy_bulletimpact_3p_vs_3p",
+		["Titan.Energy.BulletImpact_3P_vs_3P"] = "titan_energy_bulletimpact_3p_vs_3p",
+		["Android.Energy.BulletImpact_3P_vs_3P"] = "android_energy_bulletimpact_3p_vs_3p",
+		["TitanBubbleShield.Energy.BulletImpact_3P_vs_3P"] = "titanbubbleshield_energy_bulletimpact_3p_vs_3p",
+		["TitanShield.Energy.BulletImpact_3P_vs_3P"] = "titanshield_energy_bulletimpact_3p_vs_3p"
+	};
 
 	internal bool TryGetExactSound( string name, bool loop, out SoundFile sound )
 	{

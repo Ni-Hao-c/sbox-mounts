@@ -25,6 +25,21 @@ public sealed partial class Titanfall2Weapon
 			Sound( set.Fire1 ); Sound( set.Fire2 ); Sound( set.Start ); Sound( set.Loop, Audio.Looping ); Sound( set.End );
 		}
 		AudioSet( Audio.Player1P ); AudioSet( Audio.Player3P );
+		if ( UsesOrdnance )
+		{
+			Sound( OrdnanceProfile.PrepSound1P ); Sound( OrdnanceProfile.PrepSound3P );
+			Sound( OrdnanceProfile.ThrowSound1P ); Sound( OrdnanceProfile.ThrowSound3P );
+		}
+		if ( ChargeProfile.Valid )
+		{
+			foreach ( var name in ChargePresentation.Sounds ) Sound( name );
+			foreach ( var name in ChargePresentation.Particles ) Particle( name );
+		}
+		if ( HeatProfile.Valid )
+		{
+			foreach ( var name in HeatPresentationSounds ) Sound( name );
+			foreach ( var name in HeatPresentationParticles ) Particle( name );
+		}
 		Sound( FireSound1P ); Sound( FireSound ); Sound( Presentation.ShellSound );
 		foreach ( var name in new[] { Presentation.MuzzleView, Presentation.MuzzleWorld, Presentation.ShellView,
 			Presentation.ShellWorld, Presentation.Shell2View, Presentation.Shell2World, Presentation.TracerView,

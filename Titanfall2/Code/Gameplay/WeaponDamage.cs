@@ -100,7 +100,7 @@ public sealed partial class Titanfall2Weapon
 	[Rpc.Host( NetFlags.OwnerOnly )]
 	void RequestHitscan( int sequence, Vector3 direction, float zoom )
 	{
-		if ( !Networking.IsHost || UsesRetailSmartAmmo ) return;
+		if ( !Networking.IsHost || UsesRetailSmartAmmo || UsesRetailCharge ) return;
 		var owner = Owner;
 		if ( !owner.IsValid() || Inventory?.ActiveItem != this ) return;
 		if ( _hitscanRequestOwner != owner ) { _hitscanRequestOwner = owner; _lastHitscanRequestSequence = -1; }
@@ -119,9 +119,12 @@ public sealed partial class Titanfall2Weapon
 
 	void ResolveHitscan( Ray aim, float zoom, Sandbox.Npcs.BaseNpc smartTarget = null )
 	{
+		if ( UsesRetailCharge && !IsDispatchingChargeShot ) return;
 		if ( !Networking.IsHost || !Active || Projectile.Enabled || IsReloading || !aim.Position.IsFinite || !aim.Forward.IsFinite
 			|| aim.Forward.LengthSquared < 0.25f ) return;
-		if ( IsHeld && (!IsActive || !HasRoundAmmo() || !TakePrimaryAmmo( Firing.Cost )) ) return;
+		if ( IsHeld && (!IsActive || !HasRoundAmmo() || !CanAcceptHeatShot()
+			|| !(UsesRetailCharge ? TryTakeChargeAmmo( Firing.Cost ) : TakePrimaryAmmo( Firing.Cost ))) ) return;
+		AcceptHeatShot();
 		_nextHitscanRequest = MathF.Max( 0, _nextHitscanRequest ) + MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
 		var config = Ballistics;
 		var volley = new ShotEffect[Math.Clamp( config.Pellets, 1, 12 )];

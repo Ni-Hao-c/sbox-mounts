@@ -272,12 +272,23 @@ public partial class Titanfall2Mount
 		items = [];
 		error = null;
 		var resources = new Dictionary<string, (string Texture, float Rate, int Sequence)>( StringComparer.OrdinalIgnoreCase );
+		var dataTextures = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 		foreach ( var definition in graph )
 		{
 			if ( (definition.Renderer & (Titanfall2ParticleRenderer.Sprite | Titanfall2ParticleRenderer.Trail)) == 0
 				|| string.IsNullOrWhiteSpace( definition.MaterialName ) ) continue;
 			if ( !TryGetOrCreateLegacyMaterialDescriptor( definition.MaterialName, out var descriptor, out error )
 				|| !TryGetLegacyMaterialDefinition( definition.MaterialName, out var material, out error ) ) return false;
+			if ( descriptor.IsRefract )
+			{
+				var normal = material.GetTexture( "$normalmap", "$bumpmap" );
+				if ( string.IsNullOrWhiteSpace( normal ) ) { error = $"Refract particle '{definition.Name}' has no normal texture."; return false; }
+				dataTextures.Add( Titanfall2LegacyPath.NormalizeTextureName( normal ) );
+				var opacity = material.GetTexture( "$opacitymap", "$opacitytexture", "$alphamask" );
+				if ( !string.IsNullOrWhiteSpace( opacity ) ) dataTextures.Add( Titanfall2LegacyPath.NormalizeTextureName( opacity ) );
+				if ( dataTextures.Count > 256 ) { error = "Particle graph exceeds 256 data textures."; return false; }
+				continue;
+			}
 			var texture = descriptor.TextureBindings.FirstOrDefault( binding => binding.Semantic == Titanfall2TextureSemantic.Albedo ).TexturePath;
 			if ( string.IsNullOrWhiteSpace( texture ) ) { error = $"Particle '{definition.Name}' has no sprite texture."; return false; }
 			var rate = definition.AnimationRate;
@@ -296,7 +307,8 @@ public partial class Titanfall2Mount
 			}
 		}
 		items = resources.Values.Select( resource => new Titanfall2WeaponPrewarmItem( Titanfall2WeaponPrewarmKind.ParticleSprite,
-			resource.Texture, Sequence: resource.Sequence, FrameRate: resource.Rate ) ).ToArray();
+			resource.Texture, Sequence: resource.Sequence, FrameRate: resource.Rate ) )
+			.Concat( dataTextures.Select( texture => new Titanfall2WeaponPrewarmItem( Titanfall2WeaponPrewarmKind.ParticleTexture, texture ) ) ).ToArray();
 		return true;
 	}
 }

@@ -53,10 +53,14 @@ partial class ModelLoader
 				Titanfall2PilotViewModel.Sprint => sequences.Sprint,
 				Titanfall2PilotViewModel.SprintRaise => sequences.SprintRaise,
 				Titanfall2PilotViewModel.OneHandedIdle => sequences.OneHandedIdle,
-				_ => null
+				Titanfall2PilotViewModel.Charge => sequences.Charge,
+				Titanfall2PilotViewModel.Cooldown or Titanfall2PilotViewModel.CooldownAds => sequences.Cooldown,
+				_ => Enumerable.Range( 1, sequences.EmptyReloadLate.Length ).FirstOrDefault( i => Titanfall2PilotViewModel.EmptyReloadLate( i ) == role ) is > 0 and var lateIndex
+					? sequences.EmptyReloadLate[lateIndex - 1] : null
 			};
 			if ( sequence is null ) return null;
-			var decoded = Decode( sequence );
+			var decoded = role == Titanfall2PilotViewModel.CooldownAds && sequence.AnimationIndices.Length == 2
+				? Titanfall2Mdl53AnimationReader.Decode( bytes, model, sequence.AnimationIndices[1], sequence.Label, sequence.Sequence.Flags ) : Decode( sequence );
 			var additive = role is Titanfall2PilotAnimationPlayer.IdleDelta or Titanfall2PilotAnimationPlayer.FireDelta;
 			if ( additive && !decoded.Delta ) return null;
 			var skeleton = Sandbox.Animation.Skeleton.Load( $"{owner.Path}/pilot/skeleton.skel" );
@@ -72,6 +76,15 @@ partial class ModelLoader
 					: !draw.Delta && draw.Frames.Length > 0 ? draw.Frames[^1]
 					: throw new InvalidDataException( $"Pilot ready stance unavailable: {owner.Path}" );
 				ready = frame.Select( Pose ).ToArray();
+				if ( role == Titanfall2PilotViewModel.CooldownAds && sequences.AdsIn is { } ads )
+				{
+					var adsPose = Decode( ads ); var last = adsPose.Frames[^1];
+					for ( var i = 0; i < ready.Length; ++i )
+					{
+						var p = Pose( last[i] );
+						ready[i] = adsPose.Delta ? new( ready[i].Position + p.Position, ready[i].Rotation * p.Rotation, ready[i].Scale * p.Scale ) : p;
+					}
+				}
 			}
 			var clip = Sandbox.Animation.Clip.Builder;
 			clip.Skeleton = skeleton;

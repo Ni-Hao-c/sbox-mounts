@@ -10,7 +10,7 @@ public sealed class Titanfall2SoundEventEmitter : Component
 		internal Titanfall2Mount Mount;
 		internal SoundHandle Handle;
 		internal TimeSince Age = 0;
-		internal float Delay, VolumeRandom, PitchRandom;
+		internal float Delay, VolumeRandom, PitchRandom, InitialSeek;
 		internal bool FirstPerson, Sustain, Started;
 		internal int Remaining;
 	}
@@ -30,7 +30,7 @@ public sealed class Titanfall2SoundEventEmitter : Component
 	MilesSoundContext Context( bool firstPerson ) => new( firstPerson || !Scene.Camera.IsValid()
 		? 0 : Scene.Camera.WorldPosition.Distance( SourcePosition ), _ammoPercent );
 
-	internal bool Play( string mountIdent, string name, bool firstPerson, Vector3 position, bool sustain = false, float ammoPercent = 100 )
+	internal bool Play( string mountIdent, string name, bool firstPerson, Vector3 position, bool sustain = false, float ammoPercent = 100, float seekSeconds = 0 )
 	{
 		if ( Application.IsHeadless || Application.IsDedicatedServer || string.IsNullOrWhiteSpace( name )
 			|| Sandbox.Mounting.Directory.Get( mountIdent ?? "titanfall2" ) is not Titanfall2Mount mount ) return false;
@@ -55,7 +55,7 @@ public sealed class Titanfall2SoundEventEmitter : Component
 			var voice = new Voice { Layer = layer, Source = source, EventName = definition.Name, Mount = mount, FirstPerson = firstPerson, Sustain = sustain,
 				Delay = Math.Clamp( (layer.Delay.Evaluate( context ) + RandomSigned( layer.DelayRandom )) / 1000f, 0, 10 ),
 				VolumeRandom = RandomSigned( layer.VolumeRandom ), PitchRandom = RandomSigned( layer.PitchRandom ),
-				Remaining = Math.Clamp( layer.Repeats, 1, 8 ) };
+				Remaining = Math.Clamp( layer.Repeats, 1, 8 ), InitialSeek = float.IsFinite( seekSeconds ) ? MathF.Max( 0, seekSeconds ) : 0 };
 			if ( !UpdateVoice( voice ) ) continue;
 			_voices.Add( voice );
 			accepted = true;
@@ -79,6 +79,7 @@ public sealed class Titanfall2SoundEventEmitter : Component
 			voice.Handle = Sound.PlayFile( file, volume, pitch, 0, 0 );
 			voice.Started = true;
 			if ( !voice.Handle.IsValid() ) return false;
+			if ( voice.InitialSeek > 0 ) { voice.Handle.Time = voice.InitialSeek; voice.InitialSeek = 0; }
 			voice.Handle.ListenLocal = voice.FirstPerson;
 			voice.Handle.SpacialBlend = voice.FirstPerson ? 0 : 1;
 			if ( layer.Distance is not null )

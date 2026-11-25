@@ -713,6 +713,14 @@ static class Titanfall2ParticleFactory
 			&& mount.TryGetOrCreateLegacyMaterialDescriptor( definition.MaterialName, out var materialDescriptor, out _ )
 			&& mount.TryGetLegacyMaterialDefinition( definition.MaterialName, out var materialDefinition, out _ ) )
 		{
+			if ( materialDescriptor.IsRefract )
+			{
+				var refract = gameObject.AddComponent<Titanfall2ParticleRefractionRenderer>();
+				if ( refract.Configure( mount, definition, materialDefinition ) ) created = true;
+				else refract.Destroy();
+			}
+			else
+			{
 			var textureName = materialDescriptor.TextureBindings
 				.FirstOrDefault( binding => binding.Semantic == Titanfall2TextureSemantic.Albedo ).TexturePath;
 			var frameRate = definition.AnimationRate;
@@ -804,6 +812,7 @@ static class Titanfall2ParticleFactory
 				if ( colorRamp is not null || trail ) gameObject.AddComponent<Titanfall2ParticleRampRenderer>()
 					.Configure( renderer, colorRamp, materialDefinition.GetBool( "$texcolorfromalpha" ), trail );
 				created = true;
+			}
 			}
 		}
 

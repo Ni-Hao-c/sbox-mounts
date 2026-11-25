@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Threading;
 
-internal enum Titanfall2WeaponPrewarmKind { Event, Sound, Particle, Model, Impact, Decal, ParticleSprite, WeaponUi, FontGlyph }
+internal enum Titanfall2WeaponPrewarmKind { Event, Sound, Particle, Model, Impact, Decal, ParticleSprite, WeaponUi, FontGlyph, ParticleTexture }
 internal readonly record struct Titanfall2WeaponPrewarmItem( Titanfall2WeaponPrewarmKind Kind, string Name, bool Loop = false, string Variant = null,
 	int Sequence = 0, float FrameRate = 0, int FontId = 0, float FontSize = 0 );
 
@@ -122,7 +122,7 @@ public partial class Titanfall2Mount
 			finally { RecordWeaponPrewarmStep( request, begin, item.Kind ); }
 			if ( !request.Busy && request.Pending.Count > 0 ) _weaponPrewarmQueue.Enqueue( request );
 			if ( item.Kind is Titanfall2WeaponPrewarmKind.Model or Titanfall2WeaponPrewarmKind.Decal or Titanfall2WeaponPrewarmKind.ParticleSprite
-				or Titanfall2WeaponPrewarmKind.WeaponUi or Titanfall2WeaponPrewarmKind.FontGlyph ) return;
+				or Titanfall2WeaponPrewarmKind.WeaponUi or Titanfall2WeaponPrewarmKind.FontGlyph or Titanfall2WeaponPrewarmKind.ParticleTexture ) return;
 		}
 	}
 
@@ -166,6 +166,10 @@ public partial class Titanfall2Mount
 				break;
 			case Titanfall2WeaponPrewarmKind.ParticleSprite:
 				if ( !TryGetLegacyParticleSprite( item.Name, item.FrameRate, out _, out var error, item.Sequence ) ) request.Fail( error );
+				break;
+			case Titanfall2WeaponPrewarmKind.ParticleTexture:
+				var texture = Texture.Load( $"mount://{Ident}/{Titanfall2LegacyPath.NormalizeTextureName( item.Name )}.vtex", false );
+				if ( texture is not { IsValid: true, IsError: false } ) request.Fail( $"Particle data texture unavailable: {item.Name}" );
 				break;
 		}
 	}

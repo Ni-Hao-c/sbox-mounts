@@ -4,7 +4,7 @@ using Titanfall2.Formats;
 [Sandbox.ModelEditor.GameData( "titanfall2_pilot_view" )]
 public sealed class Titanfall2PilotViewData
 {
-	public enum EventKind { Sound, MuzzleFlash, ShellEject, HideClip, ShowClip }
+	public enum EventKind { Sound, MuzzleFlash, ShellEject, HideClip, ShowClip, CreateParticle, StopParticle, AddParticleControlPoint }
 
 	public sealed record ClipEvent( string Clip, float Cycle, EventKind Kind, string Options );
 
@@ -38,7 +38,10 @@ partial class ModelLoader
 		Titanfall2Mdl53Reader.SequenceInfo AdsOut,
 		Titanfall2Mdl53Reader.SequenceInfo Sprint,
 		Titanfall2Mdl53Reader.SequenceInfo SprintRaise,
-		Titanfall2Mdl53Reader.SequenceInfo OneHandedIdle );
+		Titanfall2Mdl53Reader.SequenceInfo OneHandedIdle,
+		Titanfall2Mdl53Reader.SequenceInfo Charge,
+		Titanfall2Mdl53Reader.SequenceInfo Cooldown,
+		Titanfall2Mdl53Reader.SequenceInfo[] EmptyReloadLate );
 
 	internal static PilotViewSequenceSet ResolvePilotViewSequences( Titanfall2Mdl53Reader.ParsedModel model, string modelPath )
 	{
@@ -66,7 +69,10 @@ partial class ModelLoader
 		var sprintRaise = FindSequence( model, SprintRaiseSequenceNames, "ACT_VM_RAISE_FROM_SPRINT" );
 		var oneHandedIdle = FindSequence( model, OneHandedIdleSequenceNames, "ACT_VM_ONEHANDED_IDLE" );
 
-		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle );
+		var charge = FindSequence( model, ["charge_seq"], "ACT_VM_CHARGE" );
+		var cooldown = FindSequence( model, ["cooldown_seq"], "ACT_VM_COOLDOWN" );
+		var late = Enumerable.Range( 1, 5 ).Select( index => FindSequence( model, [$"reload_empty_late{index}_seq"], $"ACT_VM_RELOADEMPTY_LATE{index}" ) ).ToArray();
+		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle, charge, cooldown, late );
 	}
 
 	int AddPilotViewAnimations( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel model, byte[] data )
@@ -103,6 +109,27 @@ partial class ModelLoader
 		CollectEvents( Titanfall2PilotViewModel.Fire, sequences.Fire );
 		CollectEvents( Titanfall2PilotViewModel.Reload, sequences.Reload );
 		CollectEvents( Titanfall2PilotViewModel.EmptyReload, sequences.EmptyReload );
+		if ( sequences.Charge is { } charge )
+		{
+			Add( Titanfall2PilotViewModel.Charge, Decode( charge ), ready, loop: (charge.Sequence.Flags & 1) != 0 );
+			CollectEvents( Titanfall2PilotViewModel.Charge, charge ); count++;
+		}
+		if ( sequences.Cooldown is { } cooldown )
+		{
+			Add( Titanfall2PilotViewModel.Cooldown, Decode( cooldown ), ready ); CollectEvents( Titanfall2PilotViewModel.Cooldown, cooldown ); count++;
+			if ( cooldown.AnimationIndices.Length == 2 && sequences.AdsIn is { } ads )
+			{
+				var pose = Decode( ads ); var adsReady = ApplyBase( pose.Frames[^1], pose.Delta, ready );
+				var decoded = Titanfall2Mdl53AnimationReader.Decode( data, model, cooldown.AnimationIndices[1], cooldown.Label, cooldown.Sequence.Flags );
+				Add( Titanfall2PilotViewModel.CooldownAds, decoded, adsReady ); count++;
+			}
+		}
+		for ( var i = 0; i < sequences.EmptyReloadLate.Length; ++i )
+			if ( sequences.EmptyReloadLate[i] is { } late )
+			{
+				var role = Titanfall2PilotViewModel.EmptyReloadLate( i + 1 );
+				Add( role, Decode( late ), ready ); CollectEvents( role, late ); count++;
+			}
 
 		if ( sequences.AdsIn is not null )
 		{
@@ -203,6 +230,15 @@ partial class ModelLoader
 	{
 		mapped = null;
 		if ( string.IsNullOrWhiteSpace( evt.Name ) ) return false;
+		var particleEvent = evt.Name switch
+		{
+			"AE_CL_CREATE_PARTICLE_EFFECT" => Titanfall2PilotViewData.EventKind.CreateParticle,
+			"AE_CL_STOP_PARTICLE_EFFECT" => Titanfall2PilotViewData.EventKind.StopParticle,
+			"AE_CL_ADD_PARTICLE_EFFECT_CP" => Titanfall2PilotViewData.EventKind.AddParticleControlPoint,
+			_ => (Titanfall2PilotViewData.EventKind?)null
+		};
+		if ( particleEvent is { } kind && !string.IsNullOrWhiteSpace( evt.Options ) )
+		{ mapped = new( clipName, Math.Clamp( evt.Cycle, 0, 1 ), kind, evt.Options ); return true; }
 
 		if ( evt.Name.Equals( "AE_CL_PLAYSOUND", StringComparison.OrdinalIgnoreCase )
 			&& !string.IsNullOrWhiteSpace( evt.Options ) )

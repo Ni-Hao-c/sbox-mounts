@@ -30,9 +30,9 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		if ( (titan || projectile || antiTitan) && mode.Length == 0 ) mode = "auto";
 		if ( ordnance && mode.StartsWith( "offhand", StringComparison.Ordinal ) ) mode = "semi-auto";
 		var magazine = Number( "ammo_clip_size" );
+		var charge = ReadChargeProfile( Get, Number );
 		if ( integrated && magazine <= 0 ) magazine = 12;
-		if ( antiTitan && magazine <= 0 ) magazine = 20;
-		if ( ordnance ) magazine = Math.Clamp( magazine <= 0 ? 4 : magazine, 1, 8 );
+		if ( antiTitan && magazine <= 0 && !charge.Valid ) magazine = 20;
 		var rate = Number( "fire_rate", ordnance ? 1.5f : 0 );
 		var reload = Number( "reload_time", Number( "reloadempty_time", ordnance ? 0.9f : 0 ) );
 		var emptyReload = Number( "reloadempty_time", reload );
@@ -60,8 +60,8 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			|| burst is < 1 or > 8 || burst != MathF.Truncate( burst ) || (pellets > 1 && burst > 1)
 			|| (!projectile && !Get( "damage_type" ).Equals( "bullet", StringComparison.OrdinalIgnoreCase ))
 			|| (projectile ? speed is < 100 or > 20000 : speed > 0)
-			|| magazine is < 1 or > 250 || magazine != MathF.Truncate( magazine )
-			|| rate is < 0.1f or > 60f || reload is <= 0 or > 30f || emptyReload is <= 0 or > 30f || damage is <= 0 or > 1000 )
+			|| magazine < (charge.Valid ? 0 : 1) || magazine > 250 || magazine != MathF.Truncate( magazine )
+			|| rate is < 0.1f or > 60f || (!charge.Valid && (reload is <= 0 or > 30f || emptyReload is <= 0 or > 30f)) || damage is <= 0 or > 1000 )
 			return null;
 
 		var hold = ordnance ? "grenade"
@@ -137,7 +137,11 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			spread.Stand.Hip, fireSounds3p, fireSounds1p, adsFov, hold, (int)pellets, (int)burst, Math.Clamp( Number( "burst_fire_delay", 0.25f ), 0, 5 ),
 			Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) / (projectile ? 1 : pellets), flight )
 			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = ReadAudio( Get, (int)burst ), Firing = firing, SpreadProfile = spread,
-				ReloadProfile = new() { Enabled = true, NormalSeconds = reload, EmptySeconds = emptyReload },
+				ReloadProfile = new() { Enabled = !charge.Valid && !ordnance, NormalSeconds = reload, EmptySeconds = emptyReload,
+					EmptyLateSeconds = Enumerable.Range( 1, 5 ).Select( i => Number( $"reloadempty_time_late{i}", 0 ) ).ToArray() },
+				ChargeProfile = charge, HeatProfile = ReadHeatProfile( Get, Number ),
+				OrdnanceProfile = ReadOrdnanceProfile( Get, Number, ordnance ),
+				ChargePresentation = ReadChargePresentation( Get, Number ),
 				SpinUp = ReadSpinUp( Number ),
 				SmartAmmo = ReadSmartAmmo( Get, Number ),
 				ModCandidates = modCandidates,

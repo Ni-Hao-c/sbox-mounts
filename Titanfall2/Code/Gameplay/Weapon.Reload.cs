@@ -3,14 +3,19 @@ public sealed partial class Titanfall2Weapon
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2ReloadProfile ReloadProfile { get; set; }
 	[Sync( SyncFlags.FromHost )] Titanfall2ReloadSnapshot RetailReload { get; set; }
 	int _presentedReloadSerial;
+	[Sync( SyncFlags.FromHost )] public int SavedHeatReloadMilestone { get; private set; }
+	double _heatFullReloadStartedAt;
+	int _heatReloadFilledSerial;
 
 	/// <summary>Captured before the host starts reloading; magazine replication cannot change the selected animation.</summary>
 	public bool ReloadStartedEmpty => RetailReload.StartedEmpty;
 	public float ReloadDuration => RetailReload.Serial != 0 ? RetailReload.Duration : ReloadTime;
 	public float ReloadElapsed => RetailReload.ElapsedAt( Time.NowDouble );
 	public int ReloadSerial => RetailReload.Serial;
+	public int ReloadMilestone => RetailReload.Milestone;
 
-	public override bool CanReload() => Active && IsHeld && IsActive && base.CanReload();
+	public override bool CanReload() => !UsesOrdnance && !UsesRetailCharge && (!HeatProfile.Valid || Clip1 == 0)
+		&& Active && IsHeld && IsActive && base.CanReload();
 
 	public override void Reload()
 	{
@@ -18,19 +23,61 @@ public sealed partial class Titanfall2Weapon
 		// Do not select from a client's potentially stale magazine or start a local timer.
 		if ( !Networking.IsHost ) { base.Reload(); return; }
 		if ( !CanReload() ) return;
+		StopHeatRun();
+		CancelCharge();
 		ResetSmartAmmo();
 		StopSpinUp();
 		var startedEmpty = Clip1 <= 0;
 		var duration = ReloadProfile.DurationFor( startedEmpty, ReloadTime );
+		var milestone = HeatProfile.Valid ? SavedHeatReloadMilestone : 0;
+		var stage = HeatProfile.Valid ? HeatReloadStage( milestone ) : default;
+		if ( HeatProfile.Valid && startedEmpty )
+		{
+			if ( milestone == 0 ) _heatFullReloadStartedAt = Time.NowDouble;
+			var late = milestone > 0 && ReloadProfile.EmptyLateSeconds is { } durations && milestone <= durations.Length ? durations[milestone - 1] : duration;
+			duration = Titanfall2HeatReloadData.EffectiveDuration( duration, late, _heatFullReloadStartedAt, Time.NowDouble, milestone );
+			if ( duration <= 0 ) return;
+			CanCancelReload = false;
+		}
 		RetailReload = new()
 		{
 			Serial = RetailReload.Serial == int.MaxValue ? 1 : RetailReload.Serial + 1,
-			Active = true, StartedEmpty = startedEmpty, Duration = duration, StartedAt = Time.NowDouble
+			Active = true, StartedEmpty = startedEmpty, Duration = duration, StartedAt = Time.NowDouble, Milestone = milestone
 		};
 		// The official reload loop reads ReloadTime after IsReloading is set. It
 		// retains authority over reserve consumption, magazine fill and cancellation.
-		ReloadTime = duration;
+		// L-STAR grants ammo at its model FILL event, then remains reloading
+		// until READY. The base timer ends at READY; the animation keeps its full duration.
+		ReloadTime = duration * (stage.ReadyCycle > 0 ? stage.ReadyCycle : 1);
 		base.Reload();
+		if ( HeatProfile.Valid && IsReloading )
+		{
+			if ( milestone == 0 ) PlayHeatBurnout();
+			TickHeatReload();
+		}
+	}
+
+	Titanfall2HeatReloadStage HeatReloadStage( int milestone ) => ReloadProfile.EmptyStages?.FirstOrDefault( x => x.Milestone == milestone ) ?? default;
+
+	void TickHeatReload()
+	{
+		if ( !Networking.IsHost || !HeatProfile.Valid || !IsReloading || !RetailReload.Active
+			|| _heatReloadFilledSerial == RetailReload.Serial ) return;
+		var stage = HeatReloadStage( RetailReload.Milestone );
+		var elapsed = ReloadElapsed;
+		foreach ( var item in stage.Events ?? [] )
+			if ( elapsed >= item.Cycle * RetailReload.Duration ) SavedHeatReloadMilestone = item.Milestone;
+		if ( stage.FillCycle <= 0 || elapsed < stage.FillCycle * RetailReload.Duration ) return;
+		// Retail L-STAR has ammo_no_remove_from_stockpile=1. Heat recovery and
+		// the lens replacement never draw ammunition from an inventory reserve.
+		Clip1 = ClipMaxSize; SavedHeatReloadMilestone = 0; _heatReloadFilledSerial = RetailReload.Serial;
+	}
+
+	public override void CancelReload()
+	{
+		if ( Networking.IsHost ) TickHeatReload();
+		base.CancelReload();
+		if ( Networking.IsHost && RetailReload.Active ) RetailReload = RetailReload with { Active = false };
 	}
 
 	protected override void OnReloadStarted()
@@ -52,18 +99,31 @@ public sealed partial class Titanfall2Weapon
 	/// <summary>Call after base.OnUpdate: presentation waits for both the host state and the weapon model.</summary>
 	internal void TickRetailReloadPresentation()
 	{
+		TickHeatReload();
 		if ( Networking.IsHost && IsReloading && (!IsHeld || !IsActive) ) CancelReload();
 		if ( ReloadProfile.Enabled ) TryPresentRetailReload();
 	}
 
 	protected override void OnReloadFinished()
 	{
+		// A frame may cross both FILL and READY before our model-event tick.
+		// Base has already filled the clip in that case; do not retain a stale
+		// milestone that would block regeneration or resume the next overheat.
+		if ( Networking.IsHost && HeatProfile.Valid && Clip1 >= ClipMaxSize )
+		{
+			SavedHeatReloadMilestone = 0; _heatReloadFilledSerial = RetailReload.Serial;
+		}
 		if ( Networking.IsHost && RetailReload.Active ) RetailReload = RetailReload with { Active = false };
 		base.OnReloadFinished();
 	}
 
 	protected override void OnDisabled()
 	{
+		CancelOrdnance();
+		StopHeatRun();
+		CancelCharge();
+		StopChargePresentation();
+		StopHeatPresentation();
 		ResetSmartAmmo();
 		StopSpinUp();
 		// Holstering already calls the engine's CancelReload. Disabling the component

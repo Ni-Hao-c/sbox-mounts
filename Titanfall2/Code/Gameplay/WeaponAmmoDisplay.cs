@@ -17,7 +17,7 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 	internal string[] UiPreparationErrors => _uiRequest?.Errors.ToArray() ?? [];
 	internal Titanfall2WeaponAmmoObservation[] ObserveScreens() => _surfaces.Where( surface => surface.Object.IsValid() )
 		.Select( surface => new Titanfall2WeaponAmmoObservation( surface.Slot, surface.MeshName, surface.Bone.Name,
-			surface.Counter.ActualText, Weapon?.Clip1 ?? 0, Weapon?.ClipMaxSize ?? 0, surface.Object.Enabled && _visible,
+			surface.Counter.ActualText, Weapon?.DisplayAmmo ?? 0, Weapon?.DisplayAmmoCapacity ?? 0, surface.Object.Enabled && _visible,
 			surface.Object.WorldPosition, surface.Object.WorldRotation, surface.Object.WorldScale, surface.CornerError,
 			surface.Counter.CanvasSize, surface.Panel.PanelSize, surface.Counter.CanvasOffset, surface.Counter.TextAnchor,
 			surface.Counter.NativeFontId, surface.Counter.CounterFontSize, surface.Counter.ActualTextFrame, surface.Counter.ActualInkBounds ) ).ToArray();

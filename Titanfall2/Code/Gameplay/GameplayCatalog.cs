@@ -159,6 +159,10 @@ public partial class Titanfall2Mount
 					return;
 				}
 				if ( !models.Contains( weapon.ViewModel ) ) weapon = weapon with { ViewModel = null };
+				if ( weapon.OrdnanceProfile.Enabled && weapon.ViewModel is not null )
+					weapon = weapon with { OrdnanceProfile = Titanfall2OrdnanceData.WithModelTiming( snapshot, weapon.ViewModel, weapon.OrdnanceProfile ) };
+				if ( weapon.HeatProfile.Valid && weapon.ViewModel is not null )
+					weapon = weapon with { ReloadProfile = weapon.ReloadProfile with { EmptyStages = Titanfall2HeatReloadData.ReadStages( snapshot, weapon.ViewModel ) } };
 				if ( sample is not null ) weapon = weapon with { FireSounds = [.. weapon.FireSounds, sample] };
 				if ( weapon.Projectile is { Enabled: true, ModelPath: not null } flight )
 					weapon = weapon with { Projectile = flight with { ModelPath = models.Contains( flight.ModelPath ) ? flight.ModelPath + ".visual" : null } };
@@ -180,7 +184,8 @@ public partial class Titanfall2Mount
 						{
 							var variant = Titanfall2WeaponData.Read( script, ReadScript, titan, projectile, integrated, fallbackSpeed, tint,
 								ordnance, antiTitan, behavior, selectedMods: [mod] );
-							if ( variant is not null ) options.Add( Titanfall2WeaponData.ModOption( mod, variant ) );
+							if ( variant is not null ) options.Add( Titanfall2WeaponData.ModOption( mod, variant with
+								{ ReloadProfile = variant.ReloadProfile with { EmptyStages = weapon.ReloadProfile.EmptyStages } } ) );
 						}
 						catch ( InvalidDataException error ) { warn( $"TF2 attachment {name}/{mod} skipped: {error.Message}" ); }
 					}
@@ -300,6 +305,13 @@ public partial class Titanfall2Mount
 					gun.PrimaryAutomatic = data.Automatic;
 					gun.PrimaryDelay = 1 / data.ShotsPerSecond;
 					gun.SpinUp = data.SpinUp;
+					gun.ChargeProfile = data.ChargeProfile;
+					gun.ChargePresentation = data.ChargePresentation;
+					gun.HeatProfile = data.HeatProfile;
+					gun.OrdnanceProfile = data.OrdnanceProfile;
+					gun.CanCancelReload = !data.HeatProfile.Valid;
+					gun.UsesClips = !data.ChargeProfile.Valid;
+					gun.AutoReload = !data.ChargeProfile.Valid && !data.OrdnanceProfile.Enabled;
 					gun.ClipMaxSize = data.Magazine;
 					gun.Firing = data.Firing;
 					gun.SpreadProfile = data.SpreadProfile;

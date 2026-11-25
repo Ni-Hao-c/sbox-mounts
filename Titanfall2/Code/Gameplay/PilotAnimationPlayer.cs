@@ -64,13 +64,19 @@ internal sealed class Titanfall2PilotAnimationPlayer : IDisposable
 		var shots = Selector( shotId, shotKeys, index => index == 0 ? builder.ZeroPose()
 			: builder.TimeControlledClip( _fire, shotTime[index - 1], new() { SampleRootMotion = false } ), 0.025f );
 		layers.AddLayer( shots, new() { BlendMode = GraphBuilder.LayerBlendMode.Additive, Weight = shotWeight, IgnoreEvents = true } );
-		var action = Selector( actionId, actionKeys, index => index == 0 ? layers
-			: builder.TimeControlledClip( _actions[actionChoices[index - 1].Role], actionTime[actionChoices[index - 1].Slot],
-				new() { SampleRootMotion = false } ), 0.05f );
+		var action = Selector( actionId, actionKeys, index => index == 0 ? layers : ActionPose( actionChoices[index - 1] ), 0.05f );
 		_graph = builder.Create( action.Build(), "Titanfall 2 continuous pilot ADS" );
 		renderer.Animation.Graph = _graph;
 		renderer.UseAnimGraph = true;
 		ApplyParameters();
+		GraphBuilder.Node ActionPose( (string Role, int Slot) choice )
+		{
+			var poseNode = builder.TimeControlledClip( _actions[choice.Role], actionTime[choice.Slot], new() { SampleRootMotion = false } );
+			if ( choice.Role != Titanfall2PilotViewModel.Cooldown || !_actions.TryGetValue( Titanfall2PilotViewModel.CooldownAds, out var ads ) ) return poseNode;
+			var blend = builder.BlendSpace( zoom, looping: false );
+			blend.Add( 0, poseNode ); blend.Add( 1, builder.TimeControlledClip( ads, actionTime[choice.Slot], new() { SampleRootMotion = false } ) );
+			return blend;
+		}
 
 		Clip Load( string role ) => Clip.Load( $"{data.ClipFolder}/{role}.anim" )
 			?? throw new InvalidDataException( $"Pilot clip '{role}' unavailable." );
@@ -89,7 +95,9 @@ internal sealed class Titanfall2PilotAnimationPlayer : IDisposable
 	}
 
 	static bool IsAction( string role ) => role is Titanfall2PilotViewModel.Draw or Titanfall2PilotViewModel.Reload
-		or Titanfall2PilotViewModel.EmptyReload or Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.SprintRaise or Titanfall2PilotViewModel.OneHandedIdle;
+		or Titanfall2PilotViewModel.EmptyReload or Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.SprintRaise or Titanfall2PilotViewModel.OneHandedIdle
+		or Titanfall2PilotViewModel.Charge or Titanfall2PilotViewModel.Cooldown or Titanfall2PilotViewModel.CooldownAds
+		|| role.StartsWith( Titanfall2PilotViewModel.EmptyReload + "_late", StringComparison.Ordinal );
 	internal static float Cycle( double now, double started, float duration, bool loop )
 	{
 		if ( !double.IsFinite( now ) || !double.IsFinite( started ) || !float.IsFinite( duration ) || duration <= 0 ) return 0;
@@ -113,7 +121,7 @@ internal sealed class Titanfall2PilotAnimationPlayer : IDisposable
 			_actionKey = $"{role}:{_actionSlot}";
 			_actionDurations[_actionSlot] = seconds is > 0.05f && float.IsFinite( seconds.Value ) ? seconds.Value : clip.Duration;
 			_actionStarts[_actionSlot] = Time.NowDouble - Math.Clamp( elapsed, 0, MathF.Max( 0, _actionDurations[_actionSlot] ) );
-			_actionLoops[_actionSlot] = role is Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.OneHandedIdle;
+			_actionLoops[_actionSlot] = role is Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.OneHandedIdle or Titanfall2PilotViewModel.Charge;
 			_firing = false;
 		}
 		else

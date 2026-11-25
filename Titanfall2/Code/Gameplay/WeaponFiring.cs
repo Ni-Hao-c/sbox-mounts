@@ -49,7 +49,11 @@ internal sealed partial record Titanfall2WeaponData
 public sealed partial class Titanfall2Weapon
 {
 	[Property] public Titanfall2WeaponFiring Firing { get; set; }
+	internal int DisplayAmmo => UsesOrdnance ? OrdnanceCharges : UsesRetailCharge ? AvailableChargeAmmo : Math.Max( 0, Clip1 );
+	internal int DisplayAmmoCapacity => UsesOrdnance ? OrdnanceMaximumCharges : UsesRetailCharge ? ChargeProfile.MaximumReserve : ClipMaxSize;
 	bool HasRoundAmmo() => HasAmmoFor( Firing.Cost );
-	bool HasAmmoFor( int amount ) => !IsHeld || !UsesAmmo || (UsesPrimaryClip ? Clip1 : PrimaryAmmoType is not null ? Ammo1 : int.MaxValue) >= amount;
-	public override bool HasPrimaryAmmo() => HasAmmoFor( _burstRemaining > 0 ? Firing.Cost : Firing.Minimum );
+	bool HasAmmoFor( int amount ) => !IsHeld || !UsesAmmo || (UsesRetailCharge ? AvailableChargeAmmo
+		: UsesPrimaryClip ? Clip1 : PrimaryAmmoType is not null ? Ammo1 : int.MaxValue) >= amount;
+	public override bool HasPrimaryAmmo() => HasAmmoFor( _burstRemaining > 0
+		|| HeatProfile.Valid && (Networking.IsHost ? _hostHeat.FiringRun : _ownerHeatRun) ? Firing.Cost : Firing.Minimum );
 }

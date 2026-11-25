@@ -1,12 +1,14 @@
 /// <summary>
 /// Retail whole-magazine reload durations after WeaponData inheritance and MP_BASE.
-/// Late-stage resume timings are intentionally not interpreted as animation events.
+/// Late-stage durations and authored model events are independent inputs.
 /// </summary>
 public record struct Titanfall2ReloadProfile
 {
 	public bool Enabled { get; set; }
 	public float NormalSeconds { get; set; }
 	public float EmptySeconds { get; set; }
+	public float[] EmptyLateSeconds { get; set; }
+	public Titanfall2HeatReloadStage[] EmptyStages { get; set; }
 
 	internal readonly float DurationFor( bool startedEmpty, float fallback )
 	{
@@ -27,6 +29,7 @@ public record struct Titanfall2ReloadSnapshot
 	public bool StartedEmpty { get; set; }
 	public float Duration { get; set; }
 	public double StartedAt { get; set; }
+	public int Milestone { get; set; }
 
 	internal readonly float ElapsedAt( double now ) => !double.IsFinite( now ) || !double.IsFinite( StartedAt ) || !Titanfall2ReloadProfile.ValidDuration( Duration )
 		? 0 : (float)Math.Clamp( now - StartedAt, 0, Duration );

@@ -124,6 +124,8 @@ static class Titanfall2RetailWeaponEffects
 			renderer.RenderOptions.Game = !firstPerson;
 			renderer.RenderOptions.Overlay = firstPerson;
 		}
+		foreach ( var renderer in go.GetComponentsInChildren<Titanfall2ParticleRefractionRenderer>( true ) )
+		{ renderer.RenderOptions.Game = !firstPerson; renderer.RenderOptions.Overlay = firstPerson; }
 		var cleanup = go.AddComponent<TemporaryEffect>();
 		cleanup.DestroyAfterSeconds = lifetime;
 		cleanup.WaitForChildEffects = false;

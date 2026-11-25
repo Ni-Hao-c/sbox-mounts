@@ -46,8 +46,8 @@ public sealed class Titanfall2WeaponAmmoPanel : PanelComponent
 	void RefreshCounter()
 	{
 		if ( !Panel.IsValid() || !_count.IsValid() || !Weapon.IsValid() ) return;
-		var ammo = Math.Max( 0, Weapon.Clip1 );
-		var capacity = Math.Max( 1, Weapon.ClipMaxSize );
+		var ammo = Weapon.DisplayAmmo;
+		var capacity = Math.Max( 1, Weapon.DisplayAmmoCapacity );
 		if ( ammo == _lastAmmo && capacity == _lastCapacity && _lastFontSize == CounterFontSize ) return;
 		_lastAmmo = ammo;
 		_lastCapacity = capacity;
@@ -92,7 +92,7 @@ internal sealed class Titanfall2WeaponAmmoTextPanel : Panel
 		var topLeft = Owner.TextAnchor - new Vector2( width, size ) * Owner.TextPivot;
 		TextFrame = new Rect( topLeft, new Vector2( width, size ) );
 		var baseline = topLeft + new Vector2( 0, font.Ascent * size );
-		var ratio = Math.Max( 0, Owner.Weapon.Clip1 ) / (float)Math.Max( 1, Owner.Weapon.ClipMaxSize );
+		var ratio = Owner.Weapon.DisplayAmmo / (float)Math.Max( 1, Owner.Weapon.DisplayAmmoCapacity );
 		var color = ratio >= 0.6f ? new Color( 135 / 255f, 235 / 255f, 1 )
 			: ratio > 0.33f ? new Color( 1, 128 / 255f, 64 / 255f ) : new Color( 1, 72 / 255f, 64 / 255f );
 		previous = '\0';

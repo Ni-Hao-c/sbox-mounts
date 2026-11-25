@@ -43,6 +43,9 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	}
 
 	protected override bool WantsPrimaryAttack() => _burstRemaining == 0 && base.WantsPrimaryAttack();
+	// Right mouse is ADS for mounted guns. The base secondary-fire path would
+	// cancel reloads because an unused secondary ammo pool is considered infinite.
+	protected override bool WantsSecondaryAttack() => Projectile.Behavior == Titanfall2ProjectileBehavior.RemoteCharge && base.WantsSecondaryAttack();
 
 	protected override SceneTrace BulletTrace( Ray ray, float distance, float radius )
 		=> Titanfall2CollisionQueries.SelectTrace( base.BulletTrace( ray, distance, radius )
@@ -50,7 +53,10 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	public override void PrimaryAttack()
 	{
+		if ( UsesOrdnance ) { BeginOrdnanceAttack(); return; }
+		if ( UsesRetailCharge ) { BeginChargeAttack(); return; }
 		if ( UsesRetailSmartAmmo ) { BeginSmartAttack(); return; }
+		PrepareOwnerHeatShot();
 		PrepareOwnerSpinShot();
 		FireRound();
 		if ( BurstCount <= 1 || !IsHeld || !HasRoundAmmo() ) return;
@@ -72,13 +78,15 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	void LaunchProjectile( Vector3 direction, float zoom, bool validateClientAim )
 	{
+		if ( UsesOrdnance ) return;
 		var owner = Owner;
 		if ( !Networking.IsHost || !Projectile.Enabled || !owner.IsValid() || Inventory?.ActiveItem != this
 			|| IsReloading || _nextProjectileRequest > 0 || !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f
 			|| !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
 		direction = direction.Normal;
 		if ( validateClientAim && Vector3.Dot( owner.EyeTransform.Forward, direction ) < 0.35f ) return;
-		if ( !TakePrimaryAmmo( Firing.Cost ) ) return;
+		if ( !CanAcceptHeatShot() || !TakePrimaryAmmo( Firing.Cost ) ) return;
+		AcceptHeatShot();
 		_nextProjectileRequest = MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
 		var spread = SpreadProfile.Enabled ? RetailSpread( zoom ) : CurrentSpread;
 		TimeSinceShoot = 0;
@@ -114,6 +122,9 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void Think()
 	{
+		TickOrdnance();
+		TickHeat();
+		TickCharge();
 		TickSpinUp();
 		UpdateSmartLock();
 		if ( _burstRemaining == 0 ) return;
@@ -134,10 +145,17 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	}
 
 	public override bool CanPrimaryAttack() => _burstRemaining == 0
+		&& (!UsesOrdnance || CanBeginOrdnance)
+		&& !HeatVenting && (!UsesRetailCharge || CanBeginCharge)
 		&& (!UsesRetailSmartAmmo || SmartBurstRemaining == 0 && _smartShotTime <= 0) && base.CanPrimaryAttack();
 
 	protected override void OnHolstered()
 	{
+		CancelOrdnance();
+		StopHeatRun();
+		CancelCharge();
+		StopChargePresentation();
+		StopHeatPresentation();
 		ResetSmartAmmo();
 		StopSpinUp();
 		ResetViewKick();
@@ -167,6 +185,9 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		UpdatePickup( Inventory.IsValid() );
 		UpdateAttachments();
 		BeginWeaponPrewarm();
+		InitializeCharge();
+		RegisterHeatInventory();
+		RegisterOrdnanceInventory();
 	}
 
 	protected override void OnUpdate()
@@ -176,6 +197,10 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		var stored = Inventory.IsValid();
 		if ( stored != _inInventory ) UpdatePickup( stored );
 		base.OnUpdate();
+		TickOrdnance();
+		TickHeat();
+		TickCharge();
+		UpdateChargePresentation();
 		TickSpinUp();
 		UpdateSmartLock();
 		TickRetailReloadPresentation();
@@ -248,13 +273,21 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void OnAdded( BaseInventoryComponent inventory )
 	{
+		InitializeCharge();
 		base.OnAdded( inventory );
+		RegisterHeatInventory();
+		RegisterOrdnanceInventory();
 		UpdatePickup( true );
 		BeginWeaponPrewarm();
 	}
 
 	protected override void OnRemoved( BaseInventoryComponent inventory )
 	{
+		RemoveOrdnanceInventory();
+		StopHeatRun();
+		CancelCharge();
+		_heatInventory?.Remove( this ); _heatInventory = null;
+		_hostHeat.Recovering = false;
 		base.OnRemoved( inventory );
 		UpdatePickup( false );
 	}

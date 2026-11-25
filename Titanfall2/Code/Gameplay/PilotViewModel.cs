@@ -15,6 +15,11 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	internal const string Sprint = "pilot_fp_sprint";
 	internal const string SprintRaise = "pilot_fp_sprint_raise";
 	internal const string OneHandedIdle = "pilot_fp_onehanded_idle";
+	internal const string Charge = "pilot_fp_charge";
+	internal const string Cooldown = "pilot_fp_cooldown";
+	internal const string CooldownAds = "pilot_fp_cooldown_ads";
+	internal static string EmptyReloadLate( int milestone ) => EmptyReload + "_late" + milestone;
+	readonly List<GameObject> _stateParticles = [];
 
 	const float InertiaStiffness = 140f;
 	const float InertiaDamping = 18f;
@@ -112,7 +117,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	{
 		if ( !Renderer.IsValid() ) return;
 		SetZoom( zoom );
-		var locked = _action is Reload or EmptyReload or Draw;
+		var locked = _action is Reload or EmptyReload or Draw or Charge or Cooldown || _action?.StartsWith( EmptyReload + "_late", StringComparison.Ordinal ) == true;
 		if ( locked )
 		{
 			_aiming = false;
@@ -240,6 +245,11 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	protected override void OnUpdate()
 	{
 		if ( !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
+		if ( _owner.IsValid() && _owner.ChargeProfile.Valid )
+		{
+			if ( _owner.ChargePhase == Titanfall2ChargePhase.Charging && _action != Charge && _clips.Contains( Charge ) ) Play( Charge );
+			else if ( _owner.ChargePhase != Titanfall2ChargePhase.Charging && _action == Charge ) Play( Idle );
+		}
 		_animation?.ApplyParameters();
 		DispatchEvents();
 
@@ -248,7 +258,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			: _oneHanded && _clips.Contains( OneHandedIdle ) ? OneHandedIdle
 			: Idle;
 
-		if ( _action != restingClip && _actionEnds <= 0 )
+		if ( _action != Charge && _action != restingClip && _actionEnds <= 0 )
 			Play( restingClip );
 	}
 
@@ -282,14 +292,22 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		var isEmpty = _owner.IsValid() && _owner.ReloadStartedEmpty;
 		var reloadTime = _owner.IsValid() ? _owner.ReloadDuration : (float?)null;
 		var elapsed = _owner.IsValid() ? _owner.ReloadElapsed : 0;
-		Play( isEmpty ? EmptyReload : Reload, reloadTime, elapsed );
+		var role = isEmpty ? EmptyReload : Reload;
+		if ( isEmpty && _owner.IsValid() && _owner.ReloadMilestone > 0 && _clips.Contains( EmptyReloadLate( _owner.ReloadMilestone ) ) ) role = EmptyReloadLate( _owner.ReloadMilestone );
+		Play( role, reloadTime, elapsed );
 	}
 
 	public override void OnReloadCancel()
 	{
 		base.OnReloadCancel();
 		SetClipVisible( true );
+		StopStateParticles();
 		Play( Idle );
+	}
+	internal void PlayHeatVent()
+	{
+		if ( !_clips.Contains( Cooldown ) || !_owner.IsValid() ) return;
+		Play( Cooldown, MathF.Max( 0.01f, (float)(_owner.HeatVentUntil - Time.NowDouble) ) );
 	}
 
 	void Play( string name, float? seconds = null, float elapsed = 0 )
@@ -308,7 +326,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		}
 		var seq = Renderer.Sequence;
 		seq.Name = name;
-		seq.Looping = name is Idle or AdsIdle or Sprint or OneHandedIdle;
+		seq.Looping = name is Idle or AdsIdle or Sprint or OneHandedIdle or Charge;
 		seq.PlaybackRate = seconds is > 0.05f ? seq.Duration / seconds.Value : 1f;
 		var realDuration = seq.Duration / MathF.Max( 0.01f, seq.PlaybackRate );
 		seq.TimeNormalized = elapsed > 0 && realDuration > 0 ? Math.Clamp( elapsed / realDuration, 0, 1 ) : 0;
@@ -322,6 +340,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	{
 		if ( string.IsNullOrEmpty( _action ) || !_eventsByClip.TryGetValue( _action, out var events ) ) return;
 		var cycle = Math.Clamp( PresentationCycle, 0f, 1f );
+		if ( _action == Charge && cycle < _lastCycle ) _lastCycle = -0.001f;
 		foreach ( var evt in events )
 		{
 			if ( evt.Cycle <= _lastCycle || evt.Cycle > cycle ) continue;
@@ -334,6 +353,10 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	{
 		switch ( evt.Kind )
 		{
+			case Titanfall2PilotViewData.EventKind.CreateParticle:
+			case Titanfall2PilotViewData.EventKind.StopParticle:
+			case Titanfall2PilotViewData.EventKind.AddParticleControlPoint:
+				ParticleEvent( evt ); break;
 			case Titanfall2PilotViewData.EventKind.Sound:
 				if ( _owner.IsValid() )
 					Titanfall2GameplayVisuals.PlayViewSound( Scene, _owner.MountIdent, evt.Options, WorldPosition );
@@ -375,8 +398,40 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		_zoom = float.IsFinite( zoom ) ? Math.Clamp( zoom, 0, 1 ) : 0;
 		_animation?.SetZoom( _zoom );
 	}
+	void ParticleEvent( Titanfall2PilotViewData.ClipEvent evt )
+	{
+		if ( !_owner.IsValid() ) return;
+		_stateParticles.RemoveAll( x => !x.IsValid() );
+		var parts = evt.Options.Split( ' ', StringSplitOptions.RemoveEmptyEntries );
+		if ( parts.Length == 0 ) return;
+		if ( evt.Kind == Titanfall2PilotViewData.EventKind.StopParticle )
+		{
+			foreach ( var particle in _stateParticles.Where( x => x.Name == parts[0] ) ) particle.Destroy();
+			_stateParticles.RemoveAll( x => !x.IsValid() ); return;
+		}
+		if ( evt.Kind == Titanfall2PilotViewData.EventKind.CreateParticle && parts.Length == 3 && parts[1] == "follow_attachment" )
+		{
+			var particle = Titanfall2WeaponStateEffects.Spawn( this, _owner.MountIdent, parts[0], parts[2], true, 15 );
+			if ( particle.IsValid() ) _stateParticles.Add( particle );
+			return;
+		}
+		if ( evt.Kind == Titanfall2PilotViewData.EventKind.AddParticleControlPoint && parts.Length == 4 && parts[2] == "follow_attachment"
+			&& int.TryParse( parts[1], out var index ) && index is >= 0 and < 64 )
+		{
+			var anchor = Renderer.GetAttachmentObject( parts[3] );
+			if ( !anchor.IsValid() ) return;
+			foreach ( var particle in _stateParticles.Where( x => x.Name == parts[0] ) )
+				particle.GetOrAddComponent<Titanfall2WeaponParticleFollow>().Set( index, anchor );
+		}
+	}
+	internal void StopStateParticles()
+	{
+		foreach ( var particle in _stateParticles ) if ( particle.IsValid() ) particle.Destroy();
+		_stateParticles.Clear();
+	}
 	protected override void OnDestroy()
 	{
+		StopStateParticles();
 		_animation?.Dispose();
 		_animation = null;
 		base.OnDestroy();
