@@ -58,7 +58,7 @@ public sealed class Titanfall2WorldReady : Component
 		{
 			if ( body.ShapeCount <= 0 ) continue;
 			if ( body.Component == WorldCollision ) worldBody = body;
-			if ( body.Component is ModelCollider collider && collider.GameObject.Parent == Props.GameObject ) props++;
+			if ( body.Component is (ModelCollider or PhysicsCollider) && body.Component.GameObject.Parent == Props.GameObject ) props++;
 		}
 		if ( worldBody.IsValid() && props == Props.ResidentCollisionCount )
 		{

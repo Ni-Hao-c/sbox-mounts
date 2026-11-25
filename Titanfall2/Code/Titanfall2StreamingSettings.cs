@@ -9,6 +9,9 @@ static class Titanfall2StreamingSettings
 	public static readonly bool ShowWeakpointMarkers = GetBool( "SBOX_TITANFALL2_SHOW_WEAKPOINT_MARKERS", false );
 	// Share compatible world materials by lightmap page; 0 selects the compatibility backend.
 	public static readonly bool WorldMaterialTable = GetBool( "SBOX_TITANFALL2_WORLD_MATERIAL_TABLE", true );
+	// Aggregate compatible static props (titanfall2_default/cutout) into native AggregateRenderers
+	// backed by shared prop material and light-probe GPU buffers; 0 restores per-cluster instance batches.
+	public static readonly bool PropAggregate = GetBool( "SBOX_TITANFALL2_PROP_AGGREGATE", true );
 	// 0 uses the CPU renderer for compatibility.
 	public static bool GpuStaticScene => false;
 	public static readonly bool GpuMixedProps = GetBool( "SBOX_TITANFALL2_GPU_MIXED_PROPS", true );
@@ -48,19 +51,10 @@ static class Titanfall2StreamingSettings
 	// Multiplies the fade distances authored on each static prop.
 	public static readonly float PropAuthoredFadeScale = GetFloat( "SBOX_TITANFALL2_PROP_AUTHORED_FADE_SCALE", 1f, 0.25f, 16f );
 	// Render-submission granularity: how many prop cells per axis share one instanced batch.
-	// A larger block merges more instances of one model into a single submitted object, which is
-	// what the render main thread pays for. The cluster is also the unit at which a batch
-	// aggregates its members' PVS cells and shadow flag, so raising it coarsens those two rules:
-	// a batch is drawn when any member prop is PVS-visible and casts shadows when any member is
-	// large enough. 4 is the measured baseline and keeps the current behaviour; 1 gives one
-	// batch per cell for A/B, 8 and 16 merge further.
+	// 4 is the proven default; 8 and 16 remain selectable via SBOX_TITANFALL2_BATCH_CLUSTER for A/B.
 	public static readonly int PropBatchClusterCells = GetClusterCells( "SBOX_TITANFALL2_BATCH_CLUSTER", AggressiveFps ? 8 : 4 );
-	// Camera distance past which a prop batch stops casting directional shadows. A batch shares
-	// one shadow flag, so one large member otherwise drags every instance in the cluster into the
-	// shadow pass; on a retail map that is thousands of props the cascades do not cover anyway.
-	// Off by default: toggling the flag while walking makes whole batches enter and leave the
-	// shadow pass in bursts (hundreds of native flag changes per visibility sweep), which reads
-	// as hitching. The 120 fps preset turns it on; 0 keeps every batch casting like before.
+	// Camera distance past which a prop batch stops casting directional shadows.
+	// 0 keeps every shadow batch casting by default; selectable via SBOX_TITANFALL2_PROP_SHADOW_DISTANCE for A/B.
 	public static readonly float PropShadowDistance = GetFloat( "SBOX_TITANFALL2_PROP_SHADOW_DISTANCE", AggressiveFps ? 1024f : 0f, 0f, 65536f );
 	// Multiplies the static prop LOD switch distances. Below 1 falls to a cheaper LOD sooner,
 	// which cuts triangles in the forward and depth passes at the cost of distant silhouettes.

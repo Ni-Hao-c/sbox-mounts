@@ -60,7 +60,7 @@ struct T2GpuMaterial
 	int g_tSpecular2;
 	int g_tLayerBlend;
 	int g_tEmissiveMultiply;
-	int _padding0;
+	int g_nT2TextureMask;
 	int _padding1;
 	int _padding2;
 };
@@ -69,6 +69,7 @@ struct T2GpuMaterial
 #endif
 StructuredBuffer<T2GpuMaterial> g_T2GpuMaterials < Attribute( T2_MATERIAL_BUFFER_ATTRIBUTE ); >;
 static uint g_nT2GpuMaterialId;
+#define g_nT2TextureMask (g_T2GpuMaterials[g_nT2GpuMaterialId].g_nT2TextureMask)
 #define g_flT2GlossScale (g_T2GpuMaterials[g_nT2GpuMaterialId].g_flT2GlossScale.x)
 #define g_vT2SpecularTint (g_T2GpuMaterials[g_nT2GpuMaterialId].g_vT2SpecularTint)
 #define g_flT2EmissiveStrength (g_T2GpuMaterials[g_nT2GpuMaterialId].g_flT2EmissiveStrength.x)

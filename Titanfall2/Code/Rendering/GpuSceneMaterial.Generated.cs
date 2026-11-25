@@ -62,66 +62,90 @@ struct Titanfall2GpuMaterialData
 	public int g_tSpecular2;
 	public int g_tLayerBlend;
 	public int g_tEmissiveMultiply;
+	// Bitmask of non-default textures: 1=Gloss, 2=Specular, 4=AO, 8=Emissive, 16=Opacity.
+	public int g_nT2TextureMask;
 
-	public static Titanfall2GpuMaterialData Capture( Material material ) => new()
+	public static Titanfall2GpuMaterialData Capture( Material material )
 	{
-		g_flT2GlossScale = material.GetVector4( "g_flT2GlossScale" ),
-		g_vT2SpecularTint = material.GetVector4( "g_vT2SpecularTint" ),
-		g_flT2EmissiveStrength = material.GetVector4( "g_flT2EmissiveStrength" ),
-		g_flT2DetailBlend = material.GetVector4( "g_flT2DetailBlend" ),
-		g_vT2UvDistortion = material.GetVector4( "g_vT2UvDistortion" ),
-		g_flT2HasEnvironment = material.GetVector4( "g_flT2HasEnvironment" ),
-		g_flT2EnvironmentIntensity = material.GetVector4( "g_flT2EnvironmentIntensity" ),
-		g_flT2FresnelStrength = material.GetVector4( "g_flT2FresnelStrength" ),
-		g_vT2Uv1RotScale = material.GetVector4( "g_vT2Uv1RotScale" ),
-		g_vT2Uv1Translate = material.GetVector4( "g_vT2Uv1Translate" ),
-		g_vT2AlbedoTint = material.GetVector4( "g_vT2AlbedoTint" ),
-		g_vT2EmissiveTint = material.GetVector4( "g_vT2EmissiveTint" ),
-		g_flT2MaterialOpacity = material.GetVector4( "g_flT2MaterialOpacity" ),
-		g_flT2AlphaTestReference = material.GetVector4( "g_flT2AlphaTestReference" ),
-		g_flUseVertexColor = material.GetVector4( "g_flUseVertexColor" ),
-		g_flT2DistortionUvChannel = material.GetVector4( "g_flT2DistortionUvChannel" ),
-		g_flUseVertexAlpha = material.GetVector4( "g_flUseVertexAlpha" ),
-		g_flT2Layered = material.GetVector4( "g_flT2Layered" ),
-		g_flT2LayeredOpacity = material.GetVector4( "g_flT2LayeredOpacity" ),
-		g_flT2LayerBlendRamp = material.GetVector4( "g_flT2LayerBlendRamp" ),
-		g_flT2Unlit = material.GetVector4( "g_flT2Unlit" ),
-		g_flT2SpecularWorkflow = material.GetVector4( "g_flT2SpecularWorkflow" ),
-		g_flT2HasCavity = material.GetVector4( "g_flT2HasCavity" ),
-		g_flT2CavityUvChannel = material.GetVector4( "g_flT2CavityUvChannel" ),
-		g_vT2DetailNormal = material.GetVector4( "g_vT2DetailNormal" ),
-		g_flHasNormalMap = material.GetVector4( "g_flHasNormalMap" ),
-		g_flHasNormalMap2 = material.GetVector4( "g_flHasNormalMap2" ),
-		g_flT2NormalSlope = material.GetVector4( "g_flT2NormalSlope" ),
-		g_flT2NormalSlope2 = material.GetVector4( "g_flT2NormalSlope2" ),
-		g_flT2NormalTwoChannel = material.GetVector4( "g_flT2NormalTwoChannel" ),
-		g_flT2NormalTwoChannel2 = material.GetVector4( "g_flT2NormalTwoChannel2" ),
-		g_vT2SurfaceUvChannels = material.GetVector4( "g_vT2SurfaceUvChannels" ),
-		g_vT2SurfaceUvChannels2 = material.GetVector4( "g_vT2SurfaceUvChannels2" ),
-		g_vT2AuxUvChannels = material.GetVector4( "g_vT2AuxUvChannels" ),
-		g_flT2LayerBlendUvChannel = material.GetVector4( "g_flT2LayerBlendUvChannel" ),
-		g_vT2Uv2RotScale = material.GetVector4( "g_vT2Uv2RotScale" ),
-		g_vT2Uv2Translate = material.GetVector4( "g_vT2Uv2Translate" ),
-		g_vT2Uv3RotScale = material.GetVector4( "g_vT2Uv3RotScale" ),
-		g_vT2Uv3Translate = material.GetVector4( "g_vT2Uv3Translate" ),
-		g_flT2HasEmissiveMultiply = material.GetVector4( "g_flT2HasEmissiveMultiply" ),
-		g_flT2EmissiveMultiplyUvChannel = material.GetVector4( "g_flT2EmissiveMultiplyUvChannel" ),
-		g_tAlbedo = (material.GetTexture( "g_tAlbedo" ) ?? Texture.White).Index,
-		g_tNormal = (material.GetTexture( "g_tNormal" ) ?? Texture.White).Index,
-		g_tGloss = (material.GetTexture( "g_tGloss" ) ?? Texture.Black).Index,
-		g_tSpecular = (material.GetTexture( "g_tSpecular" ) ?? Texture.Black).Index,
-		g_tAO = (material.GetTexture( "g_tAO" ) ?? Texture.White).Index,
-		g_tOpacity = (material.GetTexture( "g_tOpacity" ) ?? Texture.White).Index,
-		g_tEmissive = (material.GetTexture( "g_tEmissive" ) ?? Texture.Black).Index,
-		g_tDetail = (material.GetTexture( "g_tDetail" ) ?? Texture.White).Index,
-		g_tDistortion = (material.GetTexture( "g_tDistortion" ) ?? Texture.White).Index,
-		g_tDetailNormal = (material.GetTexture( "g_tDetailNormal" ) ?? Texture.White).Index,
-		g_tCavity = (material.GetTexture( "g_tCavity" ) ?? Texture.White).Index,
-		g_tAlbedo2 = (material.GetTexture( "g_tAlbedo2" ) ?? Texture.White).Index,
-		g_tNormal2 = (material.GetTexture( "g_tNormal2" ) ?? Texture.White).Index,
-		g_tGloss2 = (material.GetTexture( "g_tGloss2" ) ?? Texture.Black).Index,
-		g_tSpecular2 = (material.GetTexture( "g_tSpecular2" ) ?? Texture.Black).Index,
-		g_tLayerBlend = (material.GetTexture( "g_tLayerBlend" ) ?? Texture.Black).Index,
-		g_tEmissiveMultiply = (material.GetTexture( "g_tEmissiveMultiply" ) ?? Texture.White).Index,
-	};
+		var glossTex = material.GetTexture( "g_tGloss" );
+		var specTex = material.GetTexture( "g_tSpecular" );
+		var aoTex = material.GetTexture( "g_tAO" );
+		var emissiveTex = material.GetTexture( "g_tEmissive" );
+		var opacityTex = material.GetTexture( "g_tOpacity" );
+		var blackIdx = Texture.Black.Index;
+		var whiteIdx = Texture.White.Index;
+		var glossIdx = (glossTex ?? Texture.Black).Index;
+		var specIdx = (specTex ?? Texture.Black).Index;
+		var aoIdx = (aoTex ?? Texture.White).Index;
+		var emissiveIdx = (emissiveTex ?? Texture.Black).Index;
+		var opacityIdx = (opacityTex ?? Texture.White).Index;
+		var mask = 0;
+		if ( glossIdx != blackIdx ) mask |= 1;
+		if ( specIdx != blackIdx ) mask |= 2;
+		if ( aoIdx != whiteIdx ) mask |= 4;
+		if ( emissiveIdx != blackIdx ) mask |= 8;
+		if ( opacityIdx != whiteIdx ) mask |= 16;
+		return new()
+		{
+			g_flT2GlossScale = material.GetVector4( "g_flT2GlossScale" ),
+			g_vT2SpecularTint = material.GetVector4( "g_vT2SpecularTint" ),
+			g_flT2EmissiveStrength = material.GetVector4( "g_flT2EmissiveStrength" ),
+			g_flT2DetailBlend = material.GetVector4( "g_flT2DetailBlend" ),
+			g_vT2UvDistortion = material.GetVector4( "g_vT2UvDistortion" ),
+			g_flT2HasEnvironment = material.GetVector4( "g_flT2HasEnvironment" ),
+			g_flT2EnvironmentIntensity = material.GetVector4( "g_flT2EnvironmentIntensity" ),
+			g_flT2FresnelStrength = material.GetVector4( "g_flT2FresnelStrength" ),
+			g_vT2Uv1RotScale = material.GetVector4( "g_vT2Uv1RotScale" ),
+			g_vT2Uv1Translate = material.GetVector4( "g_vT2Uv1Translate" ),
+			g_vT2AlbedoTint = material.GetVector4( "g_vT2AlbedoTint" ),
+			g_vT2EmissiveTint = material.GetVector4( "g_vT2EmissiveTint" ),
+			g_flT2MaterialOpacity = material.GetVector4( "g_flT2MaterialOpacity" ),
+			g_flT2AlphaTestReference = material.GetVector4( "g_flT2AlphaTestReference" ),
+			g_flUseVertexColor = material.GetVector4( "g_flUseVertexColor" ),
+			g_flT2DistortionUvChannel = material.GetVector4( "g_flT2DistortionUvChannel" ),
+			g_flUseVertexAlpha = material.GetVector4( "g_flUseVertexAlpha" ),
+			g_flT2Layered = material.GetVector4( "g_flT2Layered" ),
+			g_flT2LayeredOpacity = material.GetVector4( "g_flT2LayeredOpacity" ),
+			g_flT2LayerBlendRamp = material.GetVector4( "g_flT2LayerBlendRamp" ),
+			g_flT2Unlit = material.GetVector4( "g_flT2Unlit" ),
+			g_flT2SpecularWorkflow = material.GetVector4( "g_flT2SpecularWorkflow" ),
+			g_flT2HasCavity = material.GetVector4( "g_flT2HasCavity" ),
+			g_flT2CavityUvChannel = material.GetVector4( "g_flT2CavityUvChannel" ),
+			g_vT2DetailNormal = material.GetVector4( "g_vT2DetailNormal" ),
+			g_flHasNormalMap = material.GetVector4( "g_flHasNormalMap" ),
+			g_flHasNormalMap2 = material.GetVector4( "g_flHasNormalMap2" ),
+			g_flT2NormalSlope = material.GetVector4( "g_flT2NormalSlope" ),
+			g_flT2NormalSlope2 = material.GetVector4( "g_flT2NormalSlope2" ),
+			g_flT2NormalTwoChannel = material.GetVector4( "g_flT2NormalTwoChannel" ),
+			g_flT2NormalTwoChannel2 = material.GetVector4( "g_flT2NormalTwoChannel2" ),
+			g_vT2SurfaceUvChannels = material.GetVector4( "g_vT2SurfaceUvChannels" ),
+			g_vT2SurfaceUvChannels2 = material.GetVector4( "g_vT2SurfaceUvChannels2" ),
+			g_vT2AuxUvChannels = material.GetVector4( "g_vT2AuxUvChannels" ),
+			g_flT2LayerBlendUvChannel = material.GetVector4( "g_flT2LayerBlendUvChannel" ),
+			g_vT2Uv2RotScale = material.GetVector4( "g_vT2Uv2RotScale" ),
+			g_vT2Uv2Translate = material.GetVector4( "g_vT2Uv2Translate" ),
+			g_vT2Uv3RotScale = material.GetVector4( "g_vT2Uv3RotScale" ),
+			g_vT2Uv3Translate = material.GetVector4( "g_vT2Uv3Translate" ),
+			g_flT2HasEmissiveMultiply = material.GetVector4( "g_flT2HasEmissiveMultiply" ),
+			g_flT2EmissiveMultiplyUvChannel = material.GetVector4( "g_flT2EmissiveMultiplyUvChannel" ),
+			g_tAlbedo = (material.GetTexture( "g_tAlbedo" ) ?? Texture.White).Index,
+			g_tNormal = (material.GetTexture( "g_tNormal" ) ?? Texture.White).Index,
+			g_tGloss = glossIdx,
+			g_tSpecular = specIdx,
+			g_tAO = aoIdx,
+			g_tOpacity = opacityIdx,
+			g_tEmissive = emissiveIdx,
+			g_tDetail = (material.GetTexture( "g_tDetail" ) ?? Texture.White).Index,
+			g_tDistortion = (material.GetTexture( "g_tDistortion" ) ?? Texture.White).Index,
+			g_tDetailNormal = (material.GetTexture( "g_tDetailNormal" ) ?? Texture.White).Index,
+			g_tCavity = (material.GetTexture( "g_tCavity" ) ?? Texture.White).Index,
+			g_tAlbedo2 = (material.GetTexture( "g_tAlbedo2" ) ?? Texture.White).Index,
+			g_tNormal2 = (material.GetTexture( "g_tNormal2" ) ?? Texture.White).Index,
+			g_tGloss2 = (material.GetTexture( "g_tGloss2" ) ?? Texture.Black).Index,
+			g_tSpecular2 = (material.GetTexture( "g_tSpecular2" ) ?? Texture.Black).Index,
+			g_tLayerBlend = (material.GetTexture( "g_tLayerBlend" ) ?? Texture.Black).Index,
+			g_tEmissiveMultiply = (material.GetTexture( "g_tEmissiveMultiply" ) ?? Texture.White).Index,
+			g_nT2TextureMask = mask,
+		};
+	}
 }

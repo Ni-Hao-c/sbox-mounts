@@ -24,12 +24,9 @@ public sealed partial class Titanfall2Tonemapping : BasePostProcess<Titanfall2To
 	readonly List<CameraComponent> _staleCameras = [];
 	internal static Titanfall2Tonemapping CreateMapDisplay( GameObject owner, float exposureCompensation )
 	{
-		// Give the host an ordinary native baseline, as Source 1 imports do.
-		// Sandbox's default camera tonemapping yields to a global native tone;
-		// a different effect type alone does not participate in that selection.
-		var native = owner.AddComponent<Tonemapping>();
-		native.Mode = Tonemapping.TonemappingMode.Linear;
-		native.AutoExposureEnabled = false;
+		// Titanfall2Tonemapping supplies the full retail exposure, multi-stage bloom and display
+		// curve directly, and suppresses redundant host Bloom/DefaultTonemapping per camera without
+		// adding an extra linear no-op Tonemapping pass.
 		var display = owner.AddComponent<Titanfall2Tonemapping>();
 		display.ExposureCompensation = exposureCompensation;
 		return display;
@@ -40,28 +37,29 @@ public sealed partial class Titanfall2Tonemapping : BasePostProcess<Titanfall2To
 		internal readonly CommandList Commands = new( "Titanfall2Display" );
 		internal readonly Texture Exposure = Texture.Create( 1, 1, ImageFormat.RGBA32323232F ).WithUAVBinding()
 			.WithData( Titanfall2Binary.WriteArray( new float[] { 1, 0, 1, -1 } ) ).Finish();
-		// The camera's auto exposure belongs to the host scene, not to this effect.
+		// The camera's auto exposure and host post-process components belong to the host scene,
+		// not to this effect; remember them so disabling or destroying restores the host cleanly.
 		internal bool AutoExposureCaptured;
 		internal bool AutoExposureWasEnabled;
+		internal readonly List<Component> SuppressedHostEffects = new();
 		public void Dispose() => Exposure.Dispose();
 	}
 
 	public override void Render()
 	{
-		// Exposure is applied exactly once by our display pass. A native meter
-		// on top would multiply it again and use a different adaptation function.
-		// Remember what the camera had so removing this effect restores the host.
+		// Exposure and bloom are applied once by our display pass. Suppress redundant host
+		// auto-exposure, Bloom and DefaultTonemapping/Tonemapping components on the same camera
+		// so they do not burn ~1.2 ms GPU running twice, and restore them when removed.
 		if ( !_cameras.TryGetValue( Camera, out var state ) )
 		{
 			state = new CameraState();
 			_cameras.Add( Camera, state );
 		}
-		// Disabling restores the host and releases our claim, but keeps the GPU history.
-		// On a later enable, capture again: the host may have changed its setting meanwhile.
 		if ( !state.AutoExposureCaptured )
 		{
 			state.AutoExposureWasEnabled = Camera.AutoExposure.Enabled;
 			state.AutoExposureCaptured = true;
+			SuppressRedundantHostEffects( Camera, state );
 		}
 		Camera.AutoExposure.Enabled = false;
 		_staleCameras.Clear();
@@ -105,21 +103,72 @@ public sealed partial class Titanfall2Tonemapping : BasePostProcess<Titanfall2To
 		// Meter the original scene, before bloom. Feeding the glow back into the
 		// meter would incorrectly darken the image when bloom is enabled.
 		BuildBloom( commands, color.ColorTexture );
+		BindInlineColorCorrection( commands );
+		UpdateFastDepthNormals( Camera );
 		using ( commands.ProfileScope( DisplayProfile ) ) commands.Blit( Shader );
 		InsertCommandList( commands, Stage.Tonemapping, 0, "Titanfall2Display" );
+	}
+
+	void BindInlineColorCorrection( CommandList commands )
+	{
+		foreach ( var correction in Scene.GetAllComponents<Titanfall2ColorCorrection>() )
+		{
+			if ( !correction.TryPrepareInline( Camera, commands, out var lut, out var lutWeight ) ) continue;
+			commands.ResourceBarrierTransition( lut, ResourceState.PixelShaderResource );
+			commands.Attributes.SetCombo( "D_T2_COLOR_LUT", 1 );
+			commands.Attributes.Set( "T2ColorLut", lut );
+			commands.Attributes.Set( "T2ColorLutWeight", lutWeight );
+			return;
+		}
+		commands.Attributes.SetCombo( "D_T2_COLOR_LUT", 0 );
+		commands.Attributes.Set( "T2ColorLutWeight", 0f );
+	}
+
+	void UpdateFastDepthNormals( CameraComponent camera )
+	{
+		if ( !Scene.IsValid() || !camera.IsValid() || !camera.GameObject.IsValid() ) return;
+		var needsNormals = false;
+		foreach ( var component in camera.GameObject.Components.GetAll() )
+		{
+			if ( !component.IsValid() || !component.Enabled ) continue;
+			if ( component is AmbientOcclusion )
+			{
+				needsNormals = true;
+				break;
+			}
+		}
+		Scene.RenderAttributes.Set( "T2FastDepthNormals", needsNormals ? 0 : 1 );
 	}
 
 	static float Finite( float value, float fallback, float minimum, float maximum ) =>
 		float.IsFinite( value ) ? Math.Clamp( value, minimum, maximum ) : fallback;
 
-	/// <summary>Hands every camera we touched back to its previous auto-exposure state.</summary>
+	static void SuppressRedundantHostEffects( CameraComponent camera, CameraState state )
+	{
+		if ( !camera.IsValid() || !camera.GameObject.IsValid() ) return;
+		foreach ( var component in camera.GameObject.Components.GetAll() )
+		{
+			if ( !component.IsValid() || !component.Enabled ) continue;
+			var isRedundant = component is Bloom or Tonemapping or Vignette
+				|| string.Equals( component.GetType().Name, "DefaultTonemapping", StringComparison.Ordinal );
+			if ( !isRedundant ) continue;
+			component.Enabled = false;
+			state.SuppressedHostEffects.Add( component );
+		}
+	}
+
+	/// <summary>Hands every camera we touched back to its previous auto-exposure and post-process state.</summary>
 	void RestoreAutoExposure()
 	{
+		if ( Scene.IsValid() ) Scene.RenderAttributes.Set( "T2FastDepthNormals", 0 );
 		foreach ( var (camera, state) in _cameras )
 		{
 			if ( !state.AutoExposureCaptured ) continue;
 			state.AutoExposureCaptured = false;
 			if ( camera.IsValid() ) camera.AutoExposure.Enabled = state.AutoExposureWasEnabled;
+			foreach ( var suppressed in state.SuppressedHostEffects )
+				if ( suppressed.IsValid() ) suppressed.Enabled = true;
+			state.SuppressedHostEffects.Clear();
 		}
 	}
 

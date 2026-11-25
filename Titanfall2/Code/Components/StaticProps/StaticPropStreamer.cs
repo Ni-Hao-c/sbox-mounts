@@ -24,12 +24,15 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 	static readonly int BatchClusterCells = Titanfall2StreamingSettings.PropBatchClusterCells;
 	// Props at least this large are never distance culled, so landmarks keep their silhouette.
 	const float LandmarkRadius = 256f;
+	// Collidable props and architectural props at least this large stay visible via LODs
+	// instead of hard-popping at short authored fade distances during PvP movement.
+	const float CoverExemptionRadius = 64f;
 	// Extra retention band past a prop's render distance once it is visible.
 	const float RenderDistanceHysteresis = 512f;
 	// Maximum portal hops walked from the camera's PVS cell.
 	// Runtime visibility pass: cells visited and time spent per frame.
-	const int RuntimeCellsPerFrame = 16;
-	const float RuntimeCellBudgetMilliseconds = 1.5f;
+	const int RuntimeCellsPerFrame = 64;
+	const float RuntimeCellBudgetMilliseconds = 2.5f;
 	// Spawn pass after loading: props created and time spent per frame.
 	const int PropsPerFrame = 16;
 	const float FrameBudgetMilliseconds = 3f;
@@ -81,8 +84,8 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 	public bool ResourcesPrepared => PreparationComplete && !_initializationFailed && _failedProps == 0;
 	/// <summary>True only after the resident collision preload finishes without missing props/bodies.</summary>
 	public bool ResidentCollisionsReady => Collisions.ResidentReady;
-	/// <summary>Number of resident prop colliders expected in the native physics world.</summary>
-	public int ResidentCollisionCount => Collisions.Created;
+	/// <summary>Number of resident prop physics bodies expected in the native physics world.</summary>
+	public int ResidentCollisionCount => Collisions.ResidentBodyCount;
 
 	[Property, Hide]
 	public Vector3 FallbackAnchor { get; set; }
@@ -95,6 +98,7 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 	[Property, Hide] public string EncodedLocalLights { get; set; }
 	readonly Titanfall2StaticPropRenderResources _renderResources = new();
 	Titanfall2LocalLightBuffer _localLights => _renderResources.Lights;
+	Titanfall2StaticPropAggregate _propAggregate;
 
 	/// <summary>
 	/// The CellBSP tree and its portals, encoded so they survive the component being
@@ -134,7 +138,10 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 	int _skinnedProps;
 	int _plainProps;
 	int _instancedProps;
+	int _aggregatedProps;
+	int _mixedAggregatedProps;
 	int _batchCount;
+	bool _skipCollisionRegistration;
 	int _renderingProps;
 	int _shadowCastingProps;
 	int _pvsCameraCell = -1;
@@ -218,6 +225,8 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 				Collisions.SetEnabled( instance, enabled );
 			}
 		}
+		Collisions.SetGroupedEnabled( enabled );
+		_propAggregate?.SetEnabled( enabled );
 		foreach ( var cluster in _clusters.Values )
 		{
 			foreach ( var batch in cluster.Batches.Values )
@@ -244,6 +253,8 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 		// then deletes native batches/objects before releasing their light buffers.
 		foreach ( var cluster in _clusters.Values )
 			DestroyClusterInstances( cluster );
+		_propAggregate?.Dispose();
+		_propAggregate = null;
 		_renderResources.Dispose();
 		_clusters.Clear();
 		_cells.Clear();
@@ -388,7 +399,7 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 		// batch, which has one flag for every member cell, has to fall back to the cluster
 		// aggregate. Reading the state here rather than the raw mask means a prop spawned out
 		// of the render list is created hidden instead of rendering until the next visibility pass.
-		var instanceVisible = IsRenderVisible( prop.PvsCells ) && IsWithinRenderDistance( prop.Position, radius, false, prop.FadeDistance );
+		var instanceVisible = IsRenderVisible( prop.PvsCells ) && IsWithinRenderDistance( prop.Position, radius, false, prop.FadeDistance, prop.Collidable );
 		var batchVisible = IsRenderVisible( prop.PvsCells );
 		var worldTransform = new Transform( prop.Position, prop.Rotation.ToRotation(), scale );
 		SceneObject renderObject = null;
@@ -465,7 +476,8 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 		if ( instanceVisible ) _renderingProps++;
 		if ( castShadows ) _shadowCastingProps++;
 		var instance = new PropInstance( prop, renderObject, radius, instanceVisible, castShadows, isBatched );
-		Collisions.Register( instance, model, _populateTimer, _populateBudgetMilliseconds );
+		if ( !_skipCollisionRegistration )
+			Collisions.Register( instance, model, _populateTimer, _populateBudgetMilliseconds );
 		cell.Instances.Add( instance );
 		return true;
 	}

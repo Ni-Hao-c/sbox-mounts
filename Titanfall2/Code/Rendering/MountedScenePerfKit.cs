@@ -278,7 +278,20 @@ public class MountedInstanceBatch : SceneCustomObject, IMountedInstanceBatch
 	readonly Model _model;
 	readonly Func<float, int> _selectLod;
 	sealed record DrawSet( Transform[] Transforms, int[] SourceIndices );
+	sealed class CachedLodGroups( DrawSet drawSet, Vector3 camera, Transform[] grouped, int[] sourceIndices, int[] offsets, int[] counts, int singleLod )
+	{
+		public readonly DrawSet DrawSet = drawSet;
+		public readonly Vector3 Camera = camera;
+		public readonly Transform[] Grouped = grouped;
+		public readonly int[] SourceIndices = sourceIndices;
+		public readonly int[] Offsets = offsets;
+		public readonly int[] Counts = counts;
+		public readonly int SingleLod = singleLod;
+	}
+	const int LodCacheSlots = 4;
 	DrawSet _drawSet;
+	readonly CachedLodGroups[] _lodCache = new CachedLodGroups[LodCacheSlots];
+	int _lodCacheCursor;
 	static long _submittedInstances, _instanceDraws;
 	public static (long Submitted, long Draws) GetStatistics() =>
 		(System.Threading.Interlocked.Read( ref _submittedInstances ), System.Threading.Interlocked.Read( ref _instanceDraws ));
@@ -396,7 +409,7 @@ public class MountedInstanceBatch : SceneCustomObject, IMountedInstanceBatch
 	void DrawPerInstanceLods( DrawSet drawSet )
 	{
 		var all = drawSet.Transforms;
-		// A single instance needs no grouping and no scratch spans.
+		// A single instance needs no grouping and no cache entry.
 		if ( all.Length == 1 )
 		{
 			DrawInstances( all, drawSet.SourceIndices, _selectLod( QuantizedLodCamera( Graphics.CameraPosition ).Distance( all[0].Position ) ) );
@@ -404,22 +417,47 @@ public class MountedInstanceBatch : SceneCustomObject, IMountedInstanceBatch
 			System.Threading.Interlocked.Increment( ref _instanceDraws );
 			return;
 		}
-		// Small batches use only stack storage. Large batches rent scratch space per
-		// invocation, so recording multiple views cannot race on a shared scratch array.
-		Transform[] rentedTransforms = null;
+
+		var camera = QuantizedLodCamera( Graphics.CameraPosition );
+		var cached = FindCachedLodGroups( drawSet, camera ) ?? BuildAndCacheLodGroups( drawSet, camera );
+
+		System.Threading.Interlocked.Add( ref _submittedInstances, all.Length );
+		if ( cached.SingleLod >= 0 )
+		{
+			DrawInstances( drawSet.Transforms, drawSet.SourceIndices, cached.SingleLod );
+			System.Threading.Interlocked.Increment( ref _instanceDraws );
+			return;
+		}
+
+		for ( var lod = 0; lod < 4; lod++ )
+		{
+			var count = cached.Counts[lod];
+			if ( count == 0 ) continue;
+			var offset = cached.Offsets[lod];
+			DrawInstances( cached.Grouped.AsSpan( offset, count ), cached.SourceIndices.AsSpan( offset, count ), lod );
+			System.Threading.Interlocked.Increment( ref _instanceDraws );
+		}
+	}
+
+	CachedLodGroups FindCachedLodGroups( DrawSet drawSet, Vector3 camera )
+	{
+		for ( var i = 0; i < LodCacheSlots; i++ )
+		{
+			var entry = _lodCache[i];
+			if ( entry is not null && ReferenceEquals( entry.DrawSet, drawSet ) && entry.Camera == camera )
+				return entry;
+		}
+		return null;
+	}
+
+	CachedLodGroups BuildAndCacheLodGroups( DrawSet drawSet, Vector3 camera )
+	{
+		var all = drawSet.Transforms;
 		byte[] rentedLods = null;
-		int[] rentedSourceIndices = null;
-		Span<Transform> grouped = all.Length <= 64 ? stackalloc Transform[all.Length]
-			: (rentedTransforms = System.Buffers.ArrayPool<Transform>.Shared.Rent( all.Length )).AsSpan( 0, all.Length );
 		Span<byte> levels = all.Length <= 64 ? stackalloc byte[all.Length]
 			: (rentedLods = System.Buffers.ArrayPool<byte>.Shared.Rent( all.Length )).AsSpan( 0, all.Length );
-		Span<int> sourceIndices = all.Length <= 64 ? stackalloc int[all.Length]
-			: (rentedSourceIndices = System.Buffers.ArrayPool<int>.Shared.Rent( all.Length )).AsSpan( 0, all.Length );
 		try
 		{
-			// Snapped camera: the LOD groups (and the probe index tables they upload) only change
-			// when the camera crosses a grid line, not on every unit of movement.
-			var camera = QuantizedLodCamera( Graphics.CameraPosition );
 			Span<int> counts = stackalloc int[4];
 			counts.Clear();
 			for ( var i = 0; i < all.Length; i++ )
@@ -428,31 +466,49 @@ public class MountedInstanceBatch : SceneCustomObject, IMountedInstanceBatch
 				levels[i] = (byte)lod;
 				counts[lod]++;
 			}
-			System.Threading.Interlocked.Add( ref _submittedInstances, all.Length );
-			Span<int> offsets = stackalloc int[4];
-			offsets[0] = 0;
-			for ( var i = 1; i < 4; i++ ) offsets[i] = offsets[i - 1] + counts[i - 1];
-			Span<int> writes = stackalloc int[4];
-			offsets.CopyTo( writes );
-			for ( var i = 0; i < all.Length; i++ )
-			{
-				var write = writes[levels[i]]++;
-				grouped[write] = all[i];
-				sourceIndices[write] = drawSet.SourceIndices[i];
-			}
+
+			var singleLod = -1;
 			for ( var lod = 0; lod < 4; lod++ )
 			{
-				if ( counts[lod] == 0 ) continue;
-				var group = grouped.Slice( offsets[lod], counts[lod] );
-				DrawInstances( group, sourceIndices.Slice( offsets[lod], counts[lod] ), lod );
-				System.Threading.Interlocked.Increment( ref _instanceDraws );
+				if ( counts[lod] == all.Length )
+				{
+					singleLod = lod;
+					break;
+				}
 			}
+
+			CachedLodGroups built;
+			if ( singleLod >= 0 )
+			{
+				built = new CachedLodGroups( drawSet, camera, null, null, null, null, singleLod );
+			}
+			else
+			{
+				var offsets = new int[4];
+				var countsCopy = new int[4];
+				for ( var i = 0; i < 4; i++ ) countsCopy[i] = counts[i];
+				for ( var i = 1; i < 4; i++ ) offsets[i] = offsets[i - 1] + countsCopy[i - 1];
+
+				Span<int> writes = stackalloc int[4];
+				offsets.CopyTo( writes );
+				var grouped = new Transform[all.Length];
+				var sourceIndices = new int[all.Length];
+				for ( var i = 0; i < all.Length; i++ )
+				{
+					var write = writes[levels[i]]++;
+					grouped[write] = all[i];
+					sourceIndices[write] = drawSet.SourceIndices[i];
+				}
+				built = new CachedLodGroups( drawSet, camera, grouped, sourceIndices, offsets, countsCopy, -1 );
+			}
+
+			var slot = (System.Threading.Interlocked.Increment( ref _lodCacheCursor ) - 1) & (LodCacheSlots - 1);
+			System.Threading.Interlocked.Exchange( ref _lodCache[slot], built );
+			return built;
 		}
 		finally
 		{
-			if ( rentedTransforms is not null ) System.Buffers.ArrayPool<Transform>.Shared.Return( rentedTransforms );
 			if ( rentedLods is not null ) System.Buffers.ArrayPool<byte>.Shared.Return( rentedLods );
-			if ( rentedSourceIndices is not null ) System.Buffers.ArrayPool<int>.Shared.Return( rentedSourceIndices );
 		}
 	}
 }

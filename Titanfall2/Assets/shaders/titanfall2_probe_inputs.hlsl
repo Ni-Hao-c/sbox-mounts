@@ -17,9 +17,14 @@ int g_nT2ProbeLightIds01 < Attribute( "T2ProbeLightIds01" ); Default( 0 ); >;
 int g_nT2ProbeLightIds23 < Attribute( "T2ProbeLightIds23" ); Default( 0 ); >;
 StructuredBuffer<T2LightProbeData> g_T2LightProbes < Attribute( "T2LightProbes" ); >;
 StructuredBuffer<int> g_T2ProbeIndices < Attribute( "T2ProbeIndices" ); >;
+StructuredBuffer<T2LightProbeData> g_T2PropLightProbes < Attribute( "T2PropLightProbes" ); >;
+float3 g_vT2PropSkyColor < Attribute( "T2PropSkyColor" ); Default3( 0, 0, 0 ); >;
 
 T2LightProbeData T2ReadProbe( uint instanceIndex )
 {
+#if defined( S_T2_PROP_AGGREGATE ) && S_T2_PROP_AGGREGATE
+	return g_T2PropLightProbes[instanceIndex];
+#else
 	if ( g_nT2ProbeMode == 2 ) return g_T2LightProbes[g_T2ProbeIndices[instanceIndex]];
 	T2LightProbeData probe;
 	probe.red = g_vT2ProbeRed;
@@ -29,6 +34,7 @@ T2LightProbeData T2ReadProbe( uint instanceIndex )
 	probe.metadata = float4( g_nT2ProbeMode == 1 ? 1 : 0,
 		asfloat( g_nT2ProbeWeights ), asfloat( g_nT2ProbeLightIds01 ), asfloat( g_nT2ProbeLightIds23 ) );
 	return probe;
+#endif
 }
 
 #endif

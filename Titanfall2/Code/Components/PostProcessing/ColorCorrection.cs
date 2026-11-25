@@ -120,25 +120,61 @@ public sealed class Titanfall2ColorCorrection : BasePostProcess<Titanfall2ColorC
 		_entries = entries.ToArray();
 	}
 
+	internal bool TryPrepareInline( CameraComponent camera, CommandList targetCommands, out Texture lut, out float lutWeight )
+	{
+		lut = null;
+		lutWeight = 0;
+		if ( !Active || !camera.IsValid() ) return false;
+		RestoreEntries();
+		CleanupStaleViews();
+		if ( _entries.Length == 0 ) return false;
+		if ( !_views.TryGetValue( camera, out var view ) ) _views.Add( camera, view = new( _entries.Length ) );
+		if ( !EvaluateLut( camera, view, targetCommands, Weight, out lut, out lutWeight ) ) return false;
+		return true;
+	}
+
 	public override void Render()
 	{
+		// When Titanfall2Tonemapping is active in this scene, it samples the composed LUT inline
+		// inside its single full-screen display blit, avoiding a second 2560x1600 screen pass.
+		if ( Scene.GetAllComponents<Titanfall2Tonemapping>().Any( static display => display.Active ) ) return;
+
 		RestoreEntries();
-		_staleViews.Clear();
-		foreach ( var camera in _views.Keys ) if ( !camera.IsValid() ) _staleViews.Add( camera );
-		foreach ( var camera in _staleViews ) { _views[camera].Dispose(); _views.Remove( camera ); }
+		CleanupStaleViews();
 		if ( _entries.Length == 0 ) return;
 		if ( !_views.TryGetValue( Camera, out var view ) ) _views.Add( Camera, view = new( _entries.Length ) );
 		var commands = view.Commands;
 		commands.Reset();
-		var weight = GetWeighted( value => value.Weight );
-		if ( !float.IsFinite( weight ) || weight <= 0 ) return;
+		if ( !EvaluateLut( Camera, view, commands, GetWeighted( value => value.Weight ), out var lut, out var lutWeight ) ) return;
+
+		commands.Attributes.GrabFrameTexture( "ColorBuffer" );
+		_shader ??= Material.FromShader( "shaders/titanfall2_color_correction.shader" );
+		commands.ResourceBarrierTransition( lut, ResourceState.PixelShaderResource );
+		commands.Attributes.Set( "T2ColorLut", lut );
+		commands.Attributes.Set( "T2ColorLutWeight", lutWeight );
+		commands.Blit( _shader );
+		InsertCommandList( commands, Stage.AfterPostProcess, 3990, "Titanfall2ColorCorrection" );
+	}
+
+	void CleanupStaleViews()
+	{
+		_staleViews.Clear();
+		foreach ( var camera in _views.Keys ) if ( !camera.IsValid() ) _staleViews.Add( camera );
+		foreach ( var camera in _staleViews ) { _views[camera].Dispose(); _views.Remove( camera ); }
+	}
+
+	bool EvaluateLut( CameraComponent camera, ViewState view, CommandList commands, float weight, out Texture lut, out float lutWeight )
+	{
+		lut = null;
+		lutWeight = 0;
+		if ( !float.IsFinite( weight ) || weight <= 0 ) return false;
 		var total = 0d;
 		var active = 0;
 		Texture fallback = null;
 		for ( var i = 0; i < _entries.Length; ++i )
 		{
 			var entry = _entries[i];
-			var target = entry.Definition?.SpatialWeight( Camera.WorldPosition ) ?? 1;
+			var target = entry.Definition?.SpatialWeight( camera.WorldPosition ) ?? 1;
 			if ( entry.Definition is { IsBrush: true } definition )
 				target = view.Fades[i].Evaluate( target, Time.Now, definition.FadeIn, definition.FadeOut );
 			if ( target > 0 ) entry.Restore();
@@ -146,27 +182,22 @@ public sealed class Titanfall2ColorCorrection : BasePostProcess<Titanfall2ColorC
 			if ( view.Weights[i] > 0 ) { fallback ??= entry.Texture; active++; }
 			total += view.Weights[i];
 		}
-		if ( fallback is null || total <= 0 || !double.IsFinite( total ) ) return;
+		if ( fallback is null || total <= 0 || !double.IsFinite( total ) ) return false;
 		for ( var i = 0; i < _entries.Length; ++i )
 			view.Weights[i] = (float)(view.Weights[i] / total);
 		// The common single-table map needs no compute or temporary volume textures.
 		// Multiple tables are composed in this recording: an earlier camera build may
 		// have been culled before execution, so CPU bookkeeping cannot prove GPU validity.
 		if ( active == 1 ) view.Result = fallback;
-		else Compose( view, fallback );
-		commands.Attributes.GrabFrameTexture( "ColorBuffer" );
-		_shader ??= Material.FromShader( "shaders/titanfall2_color_correction.shader" );
-		commands.ResourceBarrierTransition( view.Result, ResourceState.PixelShaderResource );
-		commands.Attributes.Set( "T2ColorLut", view.Result );
-		commands.Attributes.Set( "T2ColorLutWeight", Math.Clamp( weight, 0, 1 ) * (float)Math.Clamp( total, 0, 1 ) );
-		commands.Blit( _shader );
-		InsertCommandList( commands, Stage.AfterPostProcess, 3990, "Titanfall2ColorCorrection" );
+		else Compose( view, fallback, commands );
+		lut = view.Result;
+		lutWeight = Math.Clamp( weight, 0, 1 ) * (float)Math.Clamp( total, 0, 1 );
+		return lut is { IsValid: true } && lutWeight > 0;
 	}
 
-	void Compose( ViewState view, Texture fallback )
+	void Compose( ViewState view, Texture fallback, CommandList commands )
 	{
 		view.EnsureTextures();
-		var commands = view.Commands;
 		using var profile = commands.ProfileScope( BlendProfile );
 		var first = true;
 		var outputIndex = 0;

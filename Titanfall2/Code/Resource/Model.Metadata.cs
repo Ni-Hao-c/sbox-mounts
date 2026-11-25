@@ -212,7 +212,7 @@ partial class ModelLoader
 			vertices.AddRange( mesh.Vertices.Select( vertex => ToSandbox( vertex.Position ) ) );
 			indices.AddRange( ReverseWinding( mesh.Indices ).Select( index => index + offset ) );
 		}
-		var collision = AddCollision( builder, parsed, skeleton, bytes, vertices, indices );
+		var collision = AddCollision( builder, parsed, skeleton, bytes, vertices, indices, out var collisionMesh );
 		if ( collision.HullCount == 0 )
 		{
 			if ( _collisionImportFailed ) return null;
@@ -229,8 +229,12 @@ partial class ModelLoader
 			ModelContents = unchecked((uint)parsed.Header.Contents)
 		} );
 		var model = builder.Create();
-		if ( IsUsableModel( model ) ) _collisionResult = new( Titanfall2CollisionModelStatus.Loaded,
-			model, unchecked((uint)parsed.Header.Contents), collision.Description );
+		if ( IsUsableModel( model ) )
+		{
+			RegisterCollisionMesh( model, collisionMesh );
+			_collisionResult = new( Titanfall2CollisionModelStatus.Loaded,
+				model, unchecked((uint)parsed.Header.Contents), collision.Description );
+		}
 		return model;
 	}
 }

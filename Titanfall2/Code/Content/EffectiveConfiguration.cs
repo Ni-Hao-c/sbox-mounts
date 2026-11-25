@@ -5,7 +5,7 @@ static class Titanfall2EffectiveConfiguration
 	{
 		ConverterFormatId = Titanfall2BuildIdentity.VersionId,
 		PackageIdent = "local.titanfall2",
-		RenderBackend = "NativeInstanceBatch",
+		RenderBackend = Titanfall2StreamingSettings.PropAggregate ? "PropAggregate" : "NativeInstanceBatch",
 		PlayerGraphics = Titanfall2GraphicsSettings.Current,
 		Quality = new
 		{
@@ -28,6 +28,7 @@ static class Titanfall2EffectiveConfiguration
 		Backend = new
 		{
 			Titanfall2StreamingSettings.WorldMaterialTable,
+			Titanfall2StreamingSettings.PropAggregate,
 			Titanfall2StreamingSettings.GpuStaticScene,
 			Titanfall2StreamingSettings.GpuMixedProps,
 			Titanfall2StreamingSettings.GpuStaticSceneBudgetMb,

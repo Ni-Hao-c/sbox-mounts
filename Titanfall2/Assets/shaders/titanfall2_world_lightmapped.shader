@@ -167,7 +167,13 @@ PS
 		float3 detail = g_flT2DetailBlend > 0.0
 			? T2DetailMultiplier( Tex2DS( g_tDetail, g_sAniso, uv ).rgb, g_flT2SpecularWorkflow )
 			: float3( 1.0, 1.0, 1.0 );
+#if D_T2_MATERIAL_TABLE
+		float ao = 1.0;
+		[branch] if ( (g_nT2TextureMask & 4) != 0 )
+			ao = Tex2DS( g_tAO, g_sAniso, T2SurfaceUv( i.vTextureCoords.xy, uv, g_vT2AuxUvChannels.z ) ).r;
+#else
 		float ao = Tex2DS( g_tAO, g_sAniso, T2SurfaceUv( i.vTextureCoords.xy, uv, g_vT2AuxUvChannels.z ) ).r;
+#endif
 		float3 emissive = T2ReadEmissive( i.vTextureCoords.xy, uv )
 			* g_vT2EmissiveTint.rgb * g_flT2EmissiveStrength;
 
@@ -233,13 +239,17 @@ PS
 			int2 pixel = clamp( int2( lightmapUv * float2( width, height ) ), 0, int2( width, height ) - 1 );
 			uint4 bytes = uint4( g_tLightmapRealTimeA.Load( int3( pixel, 0 ) ) * 255 + 0.5 );
 			uint packed = bytes.x | (bytes.y << 8) | (bytes.z << 16) | (bytes.w << 24);
-			uint page = (packed >> 24) * 63;
-			[unroll] for ( uint channel = 0; channel < 4; ++channel )
+			// All four 6-bit light slots == 63 (0x3F) means no compiled local lights touch this texel.
+			[branch] if ( (packed & 0x00FFFFFF) != 0x00FFFFFF )
 			{
-				uint local = (packed >> (channel * 6)) & 63;
-				if ( local == 63 || page + local >= uint( g_nT2LightPageEntryCount ) ) continue;
-				int sourceIndex = g_T2LightPages[page + local];
-				if ( sourceIndex >= 0 ) T2AddCompiledLight( lighting, combiner, uint( sourceIndex ), visibility[channel] );
+				uint page = (packed >> 24) * 63;
+				[unroll] for ( uint channel = 0; channel < 4; ++channel )
+				{
+					uint local = (packed >> (channel * 6)) & 63;
+					if ( local == 63 || page + local >= uint( g_nT2LightPageEntryCount ) ) continue;
+					int sourceIndex = g_T2LightPages[page + local];
+					if ( sourceIndex >= 0 ) T2AddCompiledLight( lighting, combiner, uint( sourceIndex ), visibility[channel] );
+				}
 			}
 		}
 		CalculateIndirectLighting( lighting, combiner );

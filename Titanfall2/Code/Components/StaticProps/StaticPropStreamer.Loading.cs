@@ -156,7 +156,13 @@ public sealed partial class Titanfall2StaticPropStreamer
 			_runtimeClusterQueue.Add( cluster );
 		}
 		foreach ( var cluster in _runtimeClusterQueue ) cluster.QueueMarked = false;
-		_runtimeClusterQueue.Sort( static ( left, right ) => left.DistanceSquared.CompareTo( right.DistanceSquared ) );
+		// Reveal newly PVS-visible clusters first so moving around a corner never waits
+		// behind distant hiding updates; break ties by distance to the camera.
+		_runtimeClusterQueue.Sort( ( left, right ) =>
+		{
+			var revealPriority = ClusterHasPendingReveal( right ).CompareTo( ClusterHasPendingReveal( left ) );
+			return revealPriority != 0 ? revealPriority : left.DistanceSquared.CompareTo( right.DistanceSquared );
+		} );
 		_runtimeClusterCursor = 0;
 		_runtimeQueueRefreshPending = false;
 		if ( _runtimeClusterQueue.Count == 0 ) _runtimePvsUpdatePending = false;
@@ -173,10 +179,12 @@ public sealed partial class Titanfall2StaticPropStreamer
 		UpdatePvsStatistics();
 		Log.Info( $"Titanfall 2 prop streaming complete: {_liveProps}/{_totalProps} retained in "
 			+ $"{_activeCells}/{_cells.Count} cells, "
+			+ $"{_aggregatedProps} aggregated ({_mixedAggregatedProps} mixed) in {_propAggregate?.AggregateCount ?? 0} native aggregates, "
 			+ $"{_instancedProps} CPU-instanced in {_batchCount} batches, "
 			+ $"{_skinnedProps} frozen-skinned fallbacks, {_plainProps} individual rigid, "
 			+ $"{_renderingProps} rendering, {_shadowCastingProps} casting shadows, "
 			+ $"{Collisions.Created}/{Collisions.Expected} colliders active "
+			+ (KeepAllCollisions ? $"in {Collisions.MergedBodyCount} merged bodies " : string.Empty)
 			+ $"({Collisions.Released} released, {Collisions.Filtered} zero-contents, {Collisions.Failures} unavailable, {Collisions.Deferred} deferred to runtime, "
 			+ $"{Collisions.Resumes} cell passes resumed), "
 			+ $"PVS cell {_pvsCameraCell} ({_pvsVisibleProps} visible/{_pvsCulledProps} culled), "

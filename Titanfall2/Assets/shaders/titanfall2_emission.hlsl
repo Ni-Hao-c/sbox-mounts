@@ -17,7 +17,11 @@ float3 T2ReadEmissive( float2 rawUv, float2 fallbackUv )
 {
 	// Zero strength disables both the base and modulation samples. Do not use a
 	// positive threshold: negative animated strengths retain their existing meaning.
+#if D_T2_MATERIAL_TABLE
+	[branch] if ( g_flT2EmissiveStrength == 0 || (g_nT2TextureMask & 8) == 0 ) return float3( 0, 0, 0 );
+#else
 	[branch] if ( g_flT2EmissiveStrength == 0 ) return float3( 0, 0, 0 );
+#endif
 	float2 uv = T2SurfaceUv( rawUv, fallbackUv, g_vT2AuxUvChannels.y );
 	float3 emission = Tex2DS( g_tEmissive, g_sAniso, uv ).rgb;
 	if ( g_flT2HasEmissiveMultiply > 0.5 )

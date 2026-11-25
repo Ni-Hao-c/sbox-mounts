@@ -222,20 +222,28 @@ public sealed partial class Titanfall2StaticPropStreamer
 	}
 
 	/// <summary>
+	/// Collidable gameplay props (cover, railings, boxes, walls) and medium/large architectural
+	/// props stay visible across distances through their LOD chain rather than binary-popping.
+	/// </summary>
+	static bool IsExemptFromDistanceCull( float radius, bool collidable )
+		=> collidable || radius >= CoverExemptionRadius;
+
+	/// <summary>
 	/// The distance at which one prop stops drawing, before its radius and hysteresis are added:
 	/// the nearer of the global PropRenderDistance and the prop's authored fade distance.
-	/// Infinity means distance never hides it.
+	/// Global distance <= 0 disables both global and authored distance hiding.
 	/// </summary>
 	static float GetRenderDistance( float fadeDistance )
 	{
-		var global = Titanfall2StreamingSettings.PropRenderDistance > 0 ? Titanfall2StreamingSettings.PropRenderDistance : float.PositiveInfinity;
-		if ( !(fadeDistance > 0) ) return global;
+		if ( Titanfall2StreamingSettings.PropRenderDistance <= 0f ) return float.PositiveInfinity;
+		var global = Titanfall2StreamingSettings.PropRenderDistance;
+		if ( !(fadeDistance > 0f) ) return global;
 		return MathF.Min( global, fadeDistance * Titanfall2StreamingSettings.PropAuthoredFadeScale );
 	}
 
-	bool IsWithinRenderDistance( Vector3 position, float radius, bool wasVisible, float fadeDistance )
+	bool IsWithinRenderDistance( Vector3 position, float radius, bool wasVisible, float fadeDistance, bool collidable )
 	{
-		if ( radius >= LandmarkRadius ) return true;
+		if ( IsExemptFromDistanceCull( radius, collidable ) ) return true;
 		var distance = GetRenderDistance( fadeDistance );
 		if ( float.IsPositiveInfinity( distance ) ) return true;
 		distance += radius + (wasVisible ? RenderDistanceHysteresis : 0);
@@ -248,9 +256,39 @@ public sealed partial class Titanfall2StaticPropStreamer
 		if ( batch.KeepDistances is { } cached && cached.Length == batch.FadeDistances.Count ) return cached;
 		var result = new float[batch.FadeDistances.Count];
 		for ( var index = 0; index < result.Length; index++ )
-			result[index] = GetRenderDistance( batch.FadeDistances[index] ) + RenderDistanceHysteresis;
+		{
+			var collidable = index < batch.Sources.Count && batch.Sources[index].Collidable;
+			var radius = index < batch.Radii.Count ? batch.Radii[index] : 0f;
+			if ( IsExemptFromDistanceCull( radius, collidable ) )
+			{
+				result[index] = float.PositiveInfinity;
+				continue;
+			}
+
+			var distance = GetRenderDistance( batch.FadeDistances[index] );
+			result[index] = float.IsPositiveInfinity( distance )
+				? float.PositiveInfinity
+				: distance + RenderDistanceHysteresis;
+		}
 		batch.KeepDistances = result;
 		return result;
+	}
+
+	bool ClusterHasPendingReveal( PropCluster cluster )
+	{
+		foreach ( var batch in cluster.Batches.Values )
+		{
+			if ( !batch.RenderingEnabled && IsRenderVisible( batch.PvsCells ) ) return true;
+		}
+		foreach ( var cell in cluster.Cells )
+		{
+			foreach ( var instance in cell.Instances )
+			{
+				if ( instance.IsBatched || instance.RenderingEnabled ) continue;
+				if ( IsRenderVisible( instance.Source.PvsCells ) ) return true;
+			}
+		}
+		return false;
 	}
 
 	void UpdateClusterVisibilityState( PropCluster cluster )
@@ -261,7 +299,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 			{
 				if ( instance.IsBatched ) continue;
 				var visible = IsRenderVisible( instance.Source.PvsCells )
-					&& IsWithinRenderDistance( instance.Position, instance.Radius, instance.RenderingEnabled, instance.Source.FadeDistance );
+					&& IsWithinRenderDistance( instance.Position, instance.Radius, instance.RenderingEnabled, instance.Source.FadeDistance, instance.Source.Collidable );
 				if ( visible == instance.RenderingEnabled ) continue;
 				instance.RenderingEnabled = visible;
 				if ( instance.RenderObject.IsValid() ) instance.RenderObject.RenderingEnabled = visible;

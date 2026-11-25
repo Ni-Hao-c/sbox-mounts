@@ -30,7 +30,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 		var anchor = Scene?.Camera.IsValid() == true
 			? Scene.Camera.WorldPosition
 			: FallbackAnchor;
-		var needsSpatialWork = _cpuRenderClusters != 0 || !PreparationComplete
+		var needsSpatialWork = _cpuRenderClusters != 0 || _propAggregate is not null || !PreparationComplete
 			|| Collisions.NeedsSpatialWork;
 		var pvsCellChanged = false;
 		if ( needsSpatialWork )
@@ -39,6 +39,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 			pvsCellChanged = pvsCell != _pvsCameraCell;
 			UpdateCellRefresh( anchor, pvsCell, pvsCellChanged );
 		}
+		_propAggregate?.UpdateCamera( anchor, _visiblePvsCells );
 
 		if ( !PreparationComplete && _workQueue.Count > 0 ) PopulateCells( PropsPerFrame, FrameBudgetMilliseconds );
 		if ( _runtimeClusterQueue.Count > 0 ) ProcessRuntimeClusterQueue();

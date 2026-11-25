@@ -99,7 +99,14 @@ void T2ReadSurfaceGeometry( PixelInput i, float2 uv, float layerWeight,
 {
 	float2 rawUv = i.vTextureCoords.xy;
 	float2 normalUv = T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.y );
+#if D_T2_MATERIAL_TABLE
+	[branch] if ( (g_nT2TextureMask & 1) != 0 )
+		gloss = Tex2DS( g_tGloss, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.z ) ).r;
+	else
+		gloss = 0.0;
+#else
 	gloss = Tex2DS( g_tGloss, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.z ) ).r;
+#endif
 	float3 normal = float3( 0, 0, 1 );
 	if ( g_flHasNormalMap > 0.5 )
 		normal = T2DecodeSurfaceNormal( Tex2DS( g_tNormal, g_sAniso, normalUv ).rgb, g_flT2NormalSlope, g_flT2NormalTwoChannel );
@@ -128,8 +135,19 @@ void T2ReadSurfaceGeometry( PixelInput i, float2 uv, float layerWeight,
 		normalWs = T2SurfaceNormalWs( i, normalUv, normal );
 }
 
+int g_nT2FastDepthNormals < Attribute( "T2FastDepthNormals" ); Default( 0 ); >;
+
 void T2ReadDepthSurface( PixelInput i, float2 uv, out float gloss, out float3 normalWs )
 {
+	// Skip normal-map sampling and screen-space derivative TBN in the depth-normal prepass
+	// when neither AO nor SSR consumes normals, or beyond 2048u where micro-bumps are sub-pixel.
+	float distSq = dot( i.vPositionWithOffsetWs, i.vPositionWithOffsetWs );
+	[branch] if ( g_nT2FastDepthNormals != 0 || distSq > 4194304.0 )
+	{
+		gloss = 0.0;
+		normalWs = T2GeometricNormalWs( i );
+		return;
+	}
 	float weight = 0;
 	if ( g_flT2Layered > 0.5 ) weight = T2LayerWeight( i, uv );
 	T2ReadSurfaceGeometry( i, uv, weight, gloss, normalWs );
@@ -140,7 +158,14 @@ void T2ReadSurface( PixelInput i, float2 uv, out float4 albedo, out float gloss,
 {
 	float2 rawUv = i.vTextureCoords.xy;
 	albedo = Tex2DS( g_tAlbedo, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.x ) );
+#if D_T2_MATERIAL_TABLE
+	[branch] if ( (g_nT2TextureMask & 2) != 0 )
+		specular = Tex2DS( g_tSpecular, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.w ) ).rgb;
+	else
+		specular = float3( 0, 0, 0 );
+#else
 	specular = Tex2DS( g_tSpecular, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2SurfaceUvChannels.w ) ).rgb;
+#endif
 	float weight = 0;
 	if ( g_flT2Layered > 0.5 )
 	{
@@ -160,7 +185,8 @@ float4 T2DepthNormals( PixelInput i, Material m )
 	m.WorldPosition = i.vPositionWithOffsetWs + g_vHighPrecisionLightingOffsetWs.xyz;
 	m.ScreenPosition = i.vPositionSs;
 	m.GeometricNormal = T2GeometricNormalWs( i );
-	Decals::Apply( m.WorldPosition, m );
+	if ( g_nT2FastDepthNormals == 0 && dot( i.vPositionWithOffsetWs, i.vPositionWithOffsetWs ) <= 4194304.0 )
+		Decals::Apply( m.WorldPosition, m );
 	AdjustAlphaToCoverage( m );
 	return DepthNormals::Output( m.Normal, m.Roughness, m.Opacity );
 }
@@ -169,6 +195,10 @@ float4 T2ShadeSurfaceWithoutFog( PixelInput i, Material m, float3 specularColor 
 {
 	if ( DepthNormals::WantsDepthNormals() ) return T2DepthNormals( i, m );
 	if ( g_flT2Unlit > 0.5 ) return float4( m.Albedo + m.Emission, m.Opacity );
+#if defined( S_T2_PROP_AGGREGATE ) && S_T2_PROP_AGGREGATE
+	T2LightProbeData probe = T2ReadProbe( i.nT2ProbeInstance );
+	if ( probe.metadata.x > 0.5 || g_flT2SpecularWorkflow > 0.5 ) return T2ShadeWithProbe( i, m, probe, specularColor );
+#else
 	if ( g_nT2ProbeMode != 0 || g_flT2SpecularWorkflow > 0.5 )
 	{
 		uint instanceIndex = 0;
@@ -182,6 +212,7 @@ float4 T2ShadeSurfaceWithoutFog( PixelInput i, Material m, float3 specularColor 
 		T2LightProbeData probe = T2ReadProbe( instanceIndex );
 		if ( probe.metadata.x > 0.5 || g_flT2SpecularWorkflow > 0.5 ) return T2ShadeWithProbe( i, m, probe, specularColor );
 	}
+#endif
 	return ShadingModelStandard::Shade( i, m );
 }
 

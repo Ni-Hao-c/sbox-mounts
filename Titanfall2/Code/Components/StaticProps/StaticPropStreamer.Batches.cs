@@ -38,6 +38,8 @@ public sealed partial class Titanfall2StaticPropStreamer
 		if ( _batchesBuilt ) return;
 		_batchesBuilt = true;
 
+		TryBuildPropAggregates();
+
 		foreach ( var cluster in _clusters.Values )
 		{
 			foreach ( var pendingBatch in cluster.Batches.Values )
@@ -90,6 +92,215 @@ public sealed partial class Titanfall2StaticPropStreamer
 		RefreshCpuRenderOwnership();
 		LogBatchShadowConfiguration();
 		CompileRenderCensus();
+	}
+
+	void TryBuildPropAggregates()
+	{
+		if ( !Titanfall2StreamingSettings.PropAggregate || Application.IsDedicatedServer || !Graphics.IsAvailable ) return;
+
+		var mount = Sandbox.Mounting.Directory.Get( MountIdent ) as Titanfall2Mount;
+		var entries = new List<Titanfall2StaticPropAggregate.PropEntry>();
+		var residualEntries = new List<Titanfall2StaticPropAggregate.ResidualEntry>();
+		var eligibleBatches = new List<(PropCluster Cluster, Model Model)>();
+		var fullyResidualBatchedInstances = new List<PropInstance>();
+		var mixedResidualKeptInstances = new List<(PropInstance Instance, ulong ResidualMask, bool ResidualHasOpaque)>();
+		var nonOpaqueShadowInstances = new List<PropInstance>();
+		var fallbackProps = new HashSet<Titanfall2StaticPropSceneData.StreamedProp>();
+		var mixedPropCount = 0;
+
+		foreach ( var cluster in _clusters.Values )
+		{
+			foreach ( var (model, pendingBatch) in cluster.Batches )
+			{
+				if ( pendingBatch.Transforms.Count == 0 ) continue;
+				if ( !Titanfall2StaticPropAggregate.CanAggregate( model, out var geometry ) )
+				{
+					foreach ( var src in pendingBatch.Sources ) fallbackProps.Add( src );
+					continue;
+				}
+
+				eligibleBatches.Add( (cluster, model) );
+				for ( var index = 0; index < pendingBatch.Transforms.Count; index++ )
+				{
+					var radius = pendingBatch.Radii[index];
+					var src = pendingBatch.Sources[index];
+					entries.Add( new Titanfall2StaticPropAggregate.PropEntry(
+						model,
+						geometry,
+						pendingBatch.Transforms[index],
+						radius,
+						src.FadeDistance,
+						src.Collidable,
+						ShouldAggregateCastShadows( radius ),
+						pendingBatch.Probes[index],
+						src.PvsCells ) );
+				}
+			}
+
+			foreach ( var cell in cluster.Cells )
+			{
+				foreach ( var instance in cell.Instances )
+				{
+					if ( instance.IsBatched || !instance.RenderObject.IsValid() ) continue;
+					var model = instance.RenderObject.Model;
+					var prop = instance.Source;
+					var scale = MathF.Max( prop.Scale, 0.001f );
+					var transform = new Transform( prop.Position, prop.Rotation.ToRotation(), scale );
+
+					if ( Titanfall2StaticPropAggregate.CanAggregate( model, out var mixedGeometry, allowMixed: true ) )
+					{
+						mixedPropCount++;
+						entries.Add( new Titanfall2StaticPropAggregate.PropEntry(
+							model,
+							mixedGeometry,
+							transform,
+							instance.Radius,
+							prop.FadeDistance,
+							prop.Collidable,
+							ShouldAggregateCastShadows( instance.Radius ),
+							prop.Probe,
+							prop.PvsCells ) );
+
+						if ( Titanfall2StaticPropAggregate.CanBatchResidualMeshes( mixedGeometry ) )
+						{
+							residualEntries.Add( new Titanfall2StaticPropAggregate.ResidualEntry(
+								mixedGeometry.ResidualMeshes,
+								transform,
+								ShouldAggregateCastShadows( instance.Radius ) && mixedGeometry.ResidualHasOpaque ) );
+							fullyResidualBatchedInstances.Add( instance );
+						}
+						else
+						{
+							mixedResidualKeptInstances.Add( (instance, mixedGeometry.ResidualMask, mixedGeometry.ResidualHasOpaque) );
+							fallbackProps.Add( prop );
+						}
+					}
+					else if ( ModelLoader.TryGetGpuGeometry( model, out var pureSpecialGeometry )
+						&& !pureSpecialGeometry.HasGpuMeshes
+						&& Titanfall2StaticPropAggregate.CanBatchResidualMeshes( pureSpecialGeometry ) )
+					{
+						residualEntries.Add( new Titanfall2StaticPropAggregate.ResidualEntry(
+							pureSpecialGeometry.ResidualMeshes,
+							transform,
+							ShouldAggregateCastShadows( instance.Radius ) && pureSpecialGeometry.ResidualHasOpaque ) );
+						fullyResidualBatchedInstances.Add( instance );
+					}
+					else
+					{
+						fallbackProps.Add( prop );
+						if ( instance.CastShadows && !HasOpaqueShadowMaterial( model ) )
+							nonOpaqueShadowInstances.Add( instance );
+					}
+				}
+			}
+		}
+
+		if ( entries.Count == 0 && residualEntries.Count == 0 ) return;
+
+		var fallbackIndices = new List<int>( fallbackProps.Count );
+		if ( fallbackProps.Count > 0 && _compiledScene?.Props is { Length: > 0 } allProps )
+		{
+			for ( var i = 0; i < allProps.Length; i++ )
+			{
+				if ( fallbackProps.Contains( allProps[i] ) ) fallbackIndices.Add( i );
+			}
+		}
+
+		try
+		{
+			var payload = Titanfall2StaticPropAggregate.CompilePayload(
+				entries,
+				residualEntries,
+				fallbackIndices.ToArray(),
+				_totalProps,
+				mixedPropCount,
+				fullyResidualBatchedInstances.Count,
+				out var liveMaterials );
+			if ( payload is null ) return;
+
+			var anchor = _hasAnchor ? _lastAnchor : FallbackAnchor;
+			var aggregate = Titanfall2StaticPropAggregate.CreateFromPayload(
+				GameObject,
+				Scene,
+				mount,
+				MapPath,
+				payload,
+				BakedSkyColor,
+				anchor,
+				Active,
+				loadedFromCache: false,
+				liveMaterials );
+			if ( aggregate is null ) return;
+
+			_propAggregate = aggregate;
+			_mixedAggregatedProps = mixedPropCount;
+			_aggregatedProps = aggregate.PropCount;
+			var fullBatchProps = Math.Max( 0, _aggregatedProps - _mixedAggregatedProps );
+			_instancedProps = Math.Max( 0, _instancedProps - fullBatchProps );
+			foreach ( var (cluster, model) in eligibleBatches )
+				cluster.Batches.Remove( model );
+
+			foreach ( var instance in fullyResidualBatchedInstances )
+			{
+				if ( instance.CastShadows )
+				{
+					instance.CastShadows = false;
+					_shadowCastingProps = Math.Max( 0, _shadowCastingProps - 1 );
+				}
+				if ( instance.RenderObject.IsValid() ) instance.RenderObject.Delete();
+			}
+
+			foreach ( var (instance, residualMask, residualHasOpaque) in mixedResidualKeptInstances )
+			{
+				if ( !instance.RenderObject.IsValid() ) continue;
+				instance.RenderObject.MeshGroupMask = residualMask;
+				if ( !residualHasOpaque && instance.CastShadows )
+				{
+					instance.CastShadows = false;
+					instance.RenderObject.Flags.CastShadows = false;
+					_shadowCastingProps = Math.Max( 0, _shadowCastingProps - 1 );
+				}
+			}
+
+			foreach ( var instance in nonOpaqueShadowInstances )
+			{
+				if ( !instance.RenderObject.IsValid() || !instance.CastShadows ) continue;
+				instance.CastShadows = false;
+				instance.RenderObject.Flags.CastShadows = false;
+				_shadowCastingProps = Math.Max( 0, _shadowCastingProps - 1 );
+			}
+
+			var cacheId = Titanfall2StaticPropAggregate.BuildCacheIdentity( mount, MapPath );
+			if ( !string.IsNullOrEmpty( cacheId ) )
+				Titanfall2StaticPropAggregate.WriteCache( cacheId, payload );
+		}
+		catch ( Exception exception )
+		{
+			Log.Warning( exception, $"Titanfall 2 static prop aggregation failed; falling back to instanced batches ({MapPath})." );
+		}
+	}
+
+	static bool ShouldAggregateCastShadows( float radius )
+		=> Titanfall2StreamingSettings.PropShadows && radius >= Titanfall2StaticPropAggregate.AggregateShadowMinimumRadius;
+
+	static bool HasOpaqueShadowMaterial( Model model )
+	{
+		if ( model is null ) return false;
+		foreach ( var material in model.Materials )
+		{
+			if ( material is null ) continue;
+			var name = (material.ShaderName ?? string.Empty).Replace( '\\', '/' );
+			if ( !name.Contains( "translucent", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "decal", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "additive", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "alpha", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "water", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "godray", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "distortion", StringComparison.OrdinalIgnoreCase )
+				&& !name.Contains( "hologram", StringComparison.OrdinalIgnoreCase ) )
+				return true;
+		}
+		return false;
 	}
 
 	/// <summary>

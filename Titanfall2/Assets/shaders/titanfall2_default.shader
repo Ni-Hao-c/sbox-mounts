@@ -8,6 +8,7 @@ HEADER
 FEATURES
 {
 	#include "common/features.hlsl"
+	Feature( F_T2_PROP_AGGREGATE, 0..1, "Static prop aggregate material and probe table" );
 }
 
 MODES
@@ -18,7 +19,11 @@ MODES
 
 COMMON
 {
-	DynamicCombo( D_T2_MATERIAL_TABLE, 0..1, Sys( ALL ) );
+	StaticCombo( S_T2_PROP_AGGREGATE, F_T2_PROP_AGGREGATE, Sys( ALL ) );
+	#define D_T2_MATERIAL_TABLE S_T2_PROP_AGGREGATE
+#if S_T2_PROP_AGGREGATE
+	#define T2_MATERIAL_BUFFER_ATTRIBUTE "T2PropMaterials"
+#endif
 	#ifndef S_ALPHA_TEST
 	#define S_ALPHA_TEST 0
 	#endif
@@ -37,9 +42,8 @@ struct VertexInput
 	#include "common/vertexinput.hlsl"
 	float4 vColor : COLOR0 < Semantic( Color ); >;
 	uint nT2InstanceIndex : SV_InstanceID;
-#if D_T2_STATIC_SCENE
-	uint nT2VisibleBase : TEXCOORD8;
-	uint nT2MaterialId : TEXCOORD9;
+#if S_T2_PROP_AGGREGATE
+	float2 vT2PropIds : TEXCOORD9;
 #endif
 };
 
@@ -56,32 +60,23 @@ struct PixelInput
 
 VS
 {
-	DynamicCombo( D_T2_STATIC_SCENE, 0..1, Sys( ALL ) );
 	#include "common/vertex.hlsl"
-	#include "titanfall2_static_scene_vertex.hlsl"
 
 	PixelInput MainVs( VertexInput v )
 	{
-#if D_T2_STATIC_SCENE
-		uint sourceId;
-		PixelInput i = T2ProcessStaticVertex( v, sourceId );
-#else
 		PixelInput i = ProcessVertex( v );
-#endif
 		i.vVertexColor *= float4( SrgbGammaToLinear( v.vColor.rgb ), v.vColor.a );
 		i.vPositionOs = v.vPositionOs.xyz;
-#if D_T2_STATIC_SCENE
+#if S_T2_PROP_AGGREGATE
 		i.vProbeTint = float4( 1, 1, 1, 1 );
-		i.nT2ProbeInstance = sourceId;
-		i.nT2MaterialId = v.nT2MaterialId;
+		i.nT2MaterialId = (uint)(v.vT2PropIds.x + 0.5);
+		i.nT2ProbeInstance = (uint)(v.vT2PropIds.y + 0.5);
 #else
 		i.vProbeTint = GetExtraPerInstanceShaderData( v.nInstanceTransformID ).vTint;
 		i.nT2ProbeInstance = v.nT2InstanceIndex;
 		i.nT2MaterialId = 0;
 #endif
-
 		VS_DecodeObjectSpaceNormalAndTangent( v, i.vNormalOs, i.vTangentUOs_flTangentVSign );
-
 		return FinalizeVertex( i );
 	}
 }
@@ -231,12 +226,10 @@ float g_flUseVertexColor < Default( 0 ); >;
 			float gloss;
 			float3 normal;
 			T2ReadDepthSurface( i, uv, gloss, normal );
-			float alpha = Tex2DS( g_tAlbedo, g_sAniso, T2SurfaceUv( i.vTextureCoords.xy, uv, g_vT2SurfaceUvChannels.x ) ).a;
-			float opacity = Tex2DS( g_tOpacity, g_sAniso, T2SurfaceUv( i.vTextureCoords.xy, uv, g_vT2AuxUvChannels.x ) ).r;
 			Material depth = Material::Init();
 			depth.Normal = normal;
 			depth.Roughness = T2Roughness( gloss );
-			depth.Opacity = alpha * opacity * g_flT2MaterialOpacity;
+			depth.Opacity = 1.0;
 			depth.TextureCoords = uv;
 			return T2DepthNormals( i, depth );
 		}
@@ -255,8 +248,13 @@ float g_flUseVertexColor < Default( 0 ); >;
 		float4 albedo; float gloss; float3 specular; float3 surfaceNormal;
 		T2ReadSurface( i, uv, albedo, gloss, specular, surfaceNormal );
 		float2 rawUv = i.vTextureCoords.xy;
+#if D_T2_MATERIAL_TABLE
+		float ao = 1.0;
+		[branch] if ( (g_nT2TextureMask & 4) != 0 )
+			ao = Tex2DS( g_tAO, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2AuxUvChannels.z ) ).r;
+#else
 		float ao = Tex2DS( g_tAO, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2AuxUvChannels.z ) ).r;
-		float opacity = Tex2DS( g_tOpacity, g_sAniso, T2SurfaceUv( rawUv, uv, g_vT2AuxUvChannels.x ) ).r;
+#endif
 		float3 emissive = T2ReadEmissive( rawUv, uv );
 
 		m.Normal = surfaceNormal;
@@ -264,7 +262,7 @@ float g_flUseVertexColor < Default( 0 ); >;
 		m.Roughness = T2Roughness( gloss );
 		m.Metalness = T2Metalness( specular );
 		m.AmbientOcclusion = ao;
-		m.Opacity = albedo.a * opacity * g_flT2MaterialOpacity;
+		m.Opacity = 1.0;
 		m.Emission = emissive.xyz * g_vT2EmissiveTint.rgb * g_flT2EmissiveStrength * i.vProbeTint.rgb;
 		m.Emission += T2Environment( i.vPositionWithOffsetWs + g_vHighPrecisionLightingOffsetWs.xyz, m.Normal, m.Roughness );
 

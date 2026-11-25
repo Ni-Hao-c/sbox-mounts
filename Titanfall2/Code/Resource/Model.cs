@@ -367,7 +367,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			return null;
 		}
 		var allMeshes = levelLods.SelectMany( level => level.Meshes ).ToArray();
-		var mixed = !canInstance && Titanfall2StreamingSettings.GpuStaticScene && Titanfall2StreamingSettings.GpuMixedProps
+		var mixed = !canInstance && (Titanfall2StreamingSettings.GpuStaticScene || Titanfall2StreamingSettings.PropAggregate) && Titanfall2StreamingSettings.GpuMixedProps
 			&& allMeshes.Any( mesh => mesh.GpuCompatible ) && allMeshes.Any( mesh => !mesh.GpuCompatible );
 
 		// The deepest band this model actually resolved. Bands 4..7 alias it, and it must be the
@@ -594,10 +594,11 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 
 		var collisionDescription = "none";
 		var collisionHullCount = 0;
+		CollisionMeshData collisionMesh = null;
 		if ( hasMesh && !isVista && !separateResources )
 		{
 			(collisionDescription, collisionHullCount) = AddCollision(
-				builder, parsed, skeleton, data, collisionVertices, collisionIndices );
+				builder, parsed, skeleton, data, collisionVertices, collisionIndices, out collisionMesh );
 			RecordCollisionStatistics( collisionDescription, collisionIndices.Count / 3 );
 		}
 
@@ -618,7 +619,9 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			HullCount = collisionHullCount,
 			ModelContents = unchecked((uint)parsed.Header.Contents)
 		} );
-		return builder.Create();
+		var createdModel = builder.Create();
+		RegisterCollisionMesh( createdModel, collisionMesh );
+		return createdModel;
 	}
 
 	static SkeletonData AddSkeleton( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel parsed, Rotation? modelRotation = null )
@@ -909,8 +912,10 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		SkeletonData skeleton,
 		byte[] data,
 		List<Vector3> renderVertices,
-		List<int> renderIndices )
+		List<int> renderIndices,
+		out CollisionMeshData collisionMesh )
 	{
+		collisionMesh = null;
 		try
 		{
 			var physics = Titanfall2Mdl53PhysicsReader.ParseData( data, parsed.Header, parsed.Bones.Length );
@@ -933,13 +938,13 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				{
 					if ( TryAddRagdollCollision(
 						builder, parsed, skeleton, hulls, physics.Solids, physics.Constraints,
-						out var bodyCount, out var jointCount ) )
+						out var bodyCount, out var jointCount, out collisionMesh ) )
 					{
 						Titanfall2Log.Trace( $"Titanfall 2 ragdoll imported: {ImportPath} ({bodyCount} bodies, {jointCount} joints)." );
 					}
 					else
 					{
-						AddCollisionHulls( builder, parsed, skeleton, hulls );
+						collisionMesh = AddCollisionHulls( builder, parsed, skeleton, hulls );
 					}
 					return ("VPHY", hulls.Length);
 				}
@@ -955,7 +960,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		var hitboxHulls = CreateHitboxHulls( parsed );
 		if ( hitboxHulls.Length > 0 )
 		{
-			AddCollisionHulls( builder, parsed, skeleton, hitboxHulls );
+			collisionMesh = AddCollisionHulls( builder, parsed, skeleton, hitboxHulls );
 			return ("hitbox", hitboxHulls.Length);
 		}
 
@@ -964,14 +969,18 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			var triangleCount = renderIndices.Count / 3;
 			if ( triangleCount <= CollisionMeshMaxTriangles )
 			{
+				var meshVerts = renderVertices.ToArray();
+				var meshIndices = renderIndices.ToArray();
 				builder.AddTraceMesh( renderVertices, renderIndices );
-				builder.AddCollisionMesh( renderVertices.ToArray(), renderIndices.ToArray() );
+				builder.AddCollisionMesh( meshVerts, meshIndices );
+				var collisionIndices = EnsureOutwardMeshWinding( meshVerts, meshIndices );
+				collisionMesh = new CollisionMeshData( meshVerts, collisionIndices, Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost ) );
 				return ("render-mesh fallback", 1);
 			}
 
 			if ( CreateBoundsHull( renderVertices ) is { } boundsHull )
 			{
-				AddCollisionHulls( builder, parsed, skeleton, [boundsHull] );
+				collisionMesh = AddCollisionHulls( builder, parsed, skeleton, [boundsHull] );
 				Titanfall2Log.Trace( $"Titanfall 2 model collision simplified: {ImportPath} ({triangleCount} render triangles -> one bounds hull)." );
 				return ("simplified-box", 1);
 			}
@@ -1044,7 +1053,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			+ $"{_fallbackTriangleCount} source fallback triangles inspected." );
 	}
 
-	void AddCollisionHulls(
+	CollisionMeshData AddCollisionHulls(
 		ModelBuilder builder,
 		Titanfall2Mdl53Reader.ParsedModel parsed,
 		SkeletonData skeleton,
@@ -1061,10 +1070,12 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			break;
 		}
 		var rootPose = rootBoneIndex >= 0 ? skeleton.ModelTransforms[rootBoneIndex] : Transform.Zero;
-		var body = builder.AddBody( mass, Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost ), rootBoneIndex >= 0 ? skeleton.Names[rootBoneIndex] : null );
+		var surface = Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost );
+		var body = builder.AddBody( mass, surface, rootBoneIndex >= 0 ? skeleton.Names[rootBoneIndex] : null );
 		if ( rootBoneIndex >= 0 ) body.SetBindPose( rootPose );
 		var traceVertices = new List<Vector3>();
 		var traceIndices = new List<int>();
+		var collisionIndices = new List<int>();
 
 		foreach ( var hull in hulls )
 		{
@@ -1089,10 +1100,56 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				traceIndices.Add( traceBase + hull.Indices[index + 2] );
 				traceIndices.Add( traceBase + hull.Indices[index + 1] );
 			}
+			AppendOutwardHullTriangles( collisionIndices, traceBase, modelPoints, hull.Indices );
 		}
 
 		if ( traceVertices.Count > 0 && traceIndices.Count > 0 )
+		{
 			builder.AddTraceMesh( traceVertices, traceIndices );
+			return new CollisionMeshData( traceVertices.ToArray(), collisionIndices.ToArray(), surface );
+		}
+		return null;
+	}
+
+	// Rubikon PhysicsBodyBuilder.AddMesh expects outward-facing CCW triangles (positive signed volume).
+	// VPHY hulls already arrive outward while synthetic hitbox/bounds boxes arrive inward, so orient
+	// every triangle relative to its convex hull centroid to eliminate inside-out collision traps.
+	static void AppendOutwardHullTriangles( List<int> destination, int baseVertex, IReadOnlyList<Vector3> points, int[] hullIndices )
+	{
+		if ( points.Count == 0 || hullIndices is null || hullIndices.Length < 3 ) return;
+		var centroid = Vector3.Zero;
+		for ( var i = 0; i < points.Count; i++ ) centroid += points[i];
+		centroid /= points.Count;
+
+		for ( var i = 0; i + 2 < hullIndices.Length; i += 3 )
+		{
+			var ia = hullIndices[i];
+			var ib = hullIndices[i + 1];
+			var ic = hullIndices[i + 2];
+			if ( (uint)ia >= (uint)points.Count || (uint)ib >= (uint)points.Count || (uint)ic >= (uint)points.Count ) continue;
+
+			var a = points[ia];
+			var b = points[ib];
+			var c = points[ic];
+			var outward = Vector3.Dot( Vector3.Cross( b - a, c - a ), a - centroid ) >= 0f;
+			destination.Add( baseVertex + ia );
+			destination.Add( baseVertex + (outward ? ib : ic) );
+			destination.Add( baseVertex + (outward ? ic : ib) );
+		}
+	}
+
+	static int[] EnsureOutwardMeshWinding( Vector3[] vertices, int[] indices )
+	{
+		double signedVolume = 0;
+		for ( var i = 0; i + 2 < indices.Length; i += 3 )
+		{
+			var ia = indices[i];
+			var ib = indices[i + 1];
+			var ic = indices[i + 2];
+			if ( (uint)ia >= (uint)vertices.Length || (uint)ib >= (uint)vertices.Length || (uint)ic >= (uint)vertices.Length ) continue;
+			signedVolume += Vector3.Dot( vertices[ia], Vector3.Cross( vertices[ib], vertices[ic] ) );
+		}
+		return signedVolume >= 0 ? indices : ReverseWinding( indices );
 	}
 
 	bool TryAddRagdollCollision(
@@ -1103,10 +1160,12 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		IReadOnlyList<Titanfall2Mdl53PhysicsReader.PhysicsSolid> physicsSolids,
 		IReadOnlyList<Titanfall2Mdl53PhysicsReader.RagdollConstraint> physicsConstraints,
 		out int bodyCount,
-		out int jointCount )
+		out int jointCount,
+		out CollisionMeshData collisionMesh )
 	{
 		bodyCount = 0;
 		jointCount = 0;
+		collisionMesh = null;
 		if ( physicsSolids.Count < 2 || physicsConstraints.Count == 0 ) return false;
 
 		var solids = physicsSolids
@@ -1147,6 +1206,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		var bodyIndices = new Dictionary<int, int>();
 		var traceVertices = new List<Vector3>();
 		var traceIndices = new List<int>();
+		var collisionIndices = new List<int>();
 		var fallbackMass = parsed.Header.Mass > 0.0f && float.IsFinite( parsed.Header.Mass )
 			? parsed.Header.Mass / bodies.Count
 			: 0.0f;
@@ -1165,13 +1225,17 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 			{
 				body.AddHull( hull.Points );
 				var traceBase = traceVertices.Count;
-				foreach ( var point in hull.Points ) traceVertices.Add( bindPose.PointToWorld( point ) );
+				var worldPoints = new Vector3[hull.Points.Length];
+				for ( var index = 0; index < hull.Points.Length; index++ )
+					worldPoints[index] = bindPose.PointToWorld( hull.Points[index] );
+				traceVertices.AddRange( worldPoints );
 				for ( var index = 0; index + 2 < hull.Indices.Length; index += 3 )
 				{
 					traceIndices.Add( traceBase + hull.Indices[index] );
 					traceIndices.Add( traceBase + hull.Indices[index + 2] );
 					traceIndices.Add( traceBase + hull.Indices[index + 1] );
 				}
+				AppendOutwardHullTriangles( collisionIndices, traceBase, worldPoints, hull.Indices );
 			}
 		}
 
@@ -1190,7 +1254,11 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		}
 
 		if ( traceVertices.Count > 0 && traceIndices.Count > 0 )
+		{
 			builder.AddTraceMesh( traceVertices, traceIndices );
+			collisionMesh = new CollisionMeshData( traceVertices.ToArray(), collisionIndices.ToArray(),
+				Titanfall2Surface.Resolve( parsed.SurfaceProperty, ImportPath, ImportHost ) );
+		}
 		bodyCount = bodies.Count;
 		return true;
 	}

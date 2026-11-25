@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Titanfall2;
 
 public sealed partial class Titanfall2StaticPropStreamer
@@ -7,11 +8,68 @@ public sealed partial class Titanfall2StaticPropStreamer
 	// This worker owns physics scheduling and readiness; render ownership is independent.
 	sealed class CollisionRuntime( Titanfall2StaticPropStreamer owner )
 	{
+		const float CollisionChunkSize = 512f;
+		const string CollisionCacheKind = "propcol";
+		const uint CollisionCacheMagic = 0x43503254; // "T2PC"
+		const int CollisionCacheVersion = 1;
+		readonly record struct ChunkKey( int X, int Y );
+
+		sealed record CachedChunk( Vector3[] Vertices, uint[] Indices, byte[] TriangleSurfaces );
+		sealed record CachedGroup( bool HasContents, uint Contents, int PropCount, string[] SurfaceKeys, CachedChunk[] Chunks );
+		sealed record CachedCollisionPayload( int Expected, int Created, int Filtered, CachedGroup[] Groups );
+
+		sealed class SpatialMeshChunk
+		{
+			public readonly List<Vector3> Vertices = new();
+			public readonly List<uint> Indices = new();
+			public readonly List<byte> TriangleSurfaces = new();
+		}
+
+		sealed class MergedContentsGroup
+		{
+			public readonly Dictionary<ChunkKey, SpatialMeshChunk> Chunks = new();
+			public readonly List<Surface> Surfaces = new();
+			public readonly Dictionary<Surface, PhysicsBodyBuilder> FallbackHullBodies = new();
+			public PhysicsBodyBuilder DefaultFallbackHullBody;
+			public readonly List<(PropInstance Instance, Model Model)> Members = new();
+			public int PropCount => Members.Count;
+
+			public PhysicsBodyBuilder GetFallbackHullBody( Surface surface )
+			{
+				if ( surface is null )
+					return DefaultFallbackHullBody ??= new PhysicsBodyBuilder();
+				if ( !FallbackHullBodies.TryGetValue( surface, out var body ) )
+					FallbackHullBodies[surface] = body = new PhysicsBodyBuilder { Surface = surface };
+				return body;
+			}
+
+			public byte GetSurfaceIndex( Surface surface )
+			{
+				var resolved = surface ?? Surface.FindByName( "default" );
+				if ( resolved is null ) return 0;
+				var index = Surfaces.IndexOf( resolved );
+				if ( index >= 0 ) return (byte)index;
+				if ( Surfaces.Count > byte.MaxValue ) return 0;
+				Surfaces.Add( resolved );
+				return (byte)(Surfaces.Count - 1);
+			}
+
+			public SpatialMeshChunk GetChunk( ChunkKey key )
+			{
+				if ( !Chunks.TryGetValue( key, out var chunk ) )
+					Chunks[key] = chunk = new SpatialMeshChunk();
+				return chunk;
+			}
+		}
+
 		public readonly List<PropCell> Queue = new();
+		readonly List<GameObject> _groupedObjects = new();
+		readonly List<PhysicsGroupDescription> _groupedPhysics = new();
 		public bool Dirty;
 		public int Cursor;
 		public int Expected;
 		public int Created;
+		public int MergedBodyCount;
 		public int Failures;
 		public int Filtered;
 		public int Released;
@@ -21,27 +79,35 @@ public sealed partial class Titanfall2StaticPropStreamer
 		public int PreloadAttempts;
 		public int Deferred;
 		public int Resumes;
-		public int InstanceLimitOverride;
-		public float BudgetOverrideMilliseconds;
 		public bool ResidentReady;
+		public bool LoadedFromCache;
 		public bool HasPending => Created + Filtered + Failures < Expected;
 		public bool NeedsSpatialWork => !owner.KeepAllCollisions || HasPending || Dirty;
+		public int ResidentBodyCount => owner.KeepAllCollisions ? MergedBodyCount : Created;
 
 		public void BeginPopulate() => PreloadAttempts = 0;
 
 		public void Clear()
 		{
+			foreach ( var obj in _groupedObjects )
+			{
+				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Destroy();
+			}
+			_groupedObjects.Clear();
+			_groupedPhysics.Clear();
 			Queue.Clear();
 			Cursor = 0;
-			Expected = Created = Filtered = Failures = 0;
-			ResidentReady = Dirty = false;
+			Expected = Created = MergedBodyCount = Filtered = Failures = 0;
+			ResidentReady = Dirty = LoadedFromCache = false;
 		}
 
 		public void Register( PropInstance instance, Model model, Stopwatch timer, float budgetMilliseconds )
 		{
 			if ( !instance.Source.Collidable ) return;
 			Expected++;
-			if ( Application.IsDedicatedServer ) return;
+			// Resident maps merge all static prop hulls/meshes per (cluster, contents) during
+			// Preload instead of spawning thousands of individual ModelCollider GameObjects.
+			if ( owner.KeepAllCollisions || Application.IsDedicatedServer ) return;
 			if ( PreloadAttempts < PreloadCollisionBodiesPerYield && timer.Elapsed.TotalMilliseconds < budgetMilliseconds )
 			{
 				PreloadAttempts++;
@@ -52,24 +118,26 @@ public sealed partial class Titanfall2StaticPropStreamer
 
 		public void Refresh()
 		{
-			if ( !owner.KeepAllCollisions || HasPending ) RebuildCollisionQueue();
+			if ( !owner.KeepAllCollisions ) RebuildCollisionQueue();
 		}
 
 		public void Tick()
 		{
+			if ( owner.KeepAllCollisions )
+			{
+				if ( Dirty && !owner._releasing )
+				{
+					Dirty = false;
+					RebuildMergedResidentCollisions();
+				}
+				return;
+			}
 			if ( Dirty )
 			{
 				Dirty = false;
 				RebuildCollisionQueue();
 			}
 			if ( Queue.Count > 0 ) ProcessCollisionQueue();
-			if ( owner.KeepAllCollisions && !ResidentReady && owner._failedProps == 0 && Failures == 0
-				&& Created + Filtered == Expected )
-			{
-				ResidentReady = true;
-				Titanfall2Log.Info( $"Titanfall 2 resident prop collision became ready after the loading pass: "
-					+ $"{Created}/{Expected} colliders ({owner.MapPath})." );
-			}
 		}
 		/// <summary>
 		/// Applies collision state on its own schedule. One collider costs a synchronous model
@@ -114,14 +182,8 @@ public sealed partial class Titanfall2StaticPropStreamer
 		/// </summary>
 		public bool UpdateCellCollisionState( PropCell cell, Vector3 anchor, Stopwatch budgetTimer )
 		{
-			// The loading pass that gates readiness overrides both budgets with the preload
-			// settings; the runtime pass keeps the churn caps.
-			var frameBudget = BudgetOverrideMilliseconds > 0f
-				? BudgetOverrideMilliseconds
-				: CollisionFrameBudgetMilliseconds;
-			var instanceLimit = InstanceLimitOverride > 0
-				? InstanceLimitOverride
-				: CollisionInstancesPerFrame;
+			var frameBudget = CollisionFrameBudgetMilliseconds;
+			var instanceLimit = CollisionInstancesPerFrame;
 
 			// Resume from this cell's own cursor. Restarting the scan from the first
 			// instance every frame would re-spend the whole per-frame cap on the same
@@ -300,42 +362,545 @@ public sealed partial class Titanfall2StaticPropStreamer
 		}
 
 
+		public bool HasDiskCache()
+		{
+			var identity = BuildCollisionCacheIdentity();
+			if ( !Titanfall2StreamingSettings.ProcessedCache || string.IsNullOrEmpty( identity ) ) return false;
+			try { return Titanfall2Storage.FileExists( Titanfall2ProcessedCache.GetPath( CollisionCacheKind, identity ) ); }
+			catch ( Exception ) { return false; }
+		}
+
+		string BuildCollisionCacheIdentity()
+		{
+			if ( string.IsNullOrWhiteSpace( owner.MapPath ) || string.IsNullOrWhiteSpace( owner.MountIdent ) ) return null;
+			if ( Sandbox.Mounting.Directory.Get( owner.MountIdent ) is not Titanfall2Mount mount ) return null;
+			return $"{mount.ContentFingerprint}|{owner.MapPath}|propcol-addmesh-ccw-v{CollisionCacheVersion}";
+		}
+
 		public async Task Preload( LoadingContext context )
 		{
-			// Readiness must arrive in a bounded number of yields. At the runtime churn cap
-			// (2 colliders per frame) a map with thousands of solid props would take
-			// thousands of frames after the prop pass, so the load pass uses the preload
-			// count/budget instead.
-			InstanceLimitOverride = PreloadCollisionBodiesPerYield;
-			BudgetOverrideMilliseconds = PreloadBudgetMilliseconds;
+			// Merge all resident static prop collisions globally by EffectiveContents and split
+			// triangles into 512u spatial AddMesh chunks (identical to Map.Collision.cs). This turns
+			// ~18,000 individual broadphase hull shapes into ~14 bodies / ~500 mesh chunks while
+			// preserving per-triangle Surface and retail EffectiveContents classification.
+			if ( await TryPreloadFromCacheAsync( context ) ) return;
+			await BuildMergedResidentCollisionsAsync( context );
+		}
+
+		public async Task<bool> TryPreloadFromCacheAsync( LoadingContext context )
+		{
+			var identity = BuildCollisionCacheIdentity();
+			if ( !Titanfall2StreamingSettings.ProcessedCache || string.IsNullOrEmpty( identity ) ) return false;
 			try
 			{
-				foreach ( var cell in owner._cells.Values )
-				{
-					cell.CollisionCursor = 0;
-					bool complete;
-					do
-					{
-						if ( !owner.IsValid() || !owner.GameObject.IsValid() ) return;
-						Timer.Restart();
-						Changes = 0;
-						complete = UpdateCellCollisionState( cell, owner.FallbackAnchor, Timer );
-						context.Title = $"Loading Titanfall 2 prop collision ({Created}/{Expected})";
-						if ( !complete ) await owner.Task.Yield();
-					} while ( !complete );
-				}
+				if ( !Titanfall2Storage.FileExists( Titanfall2ProcessedCache.GetPath( CollisionCacheKind, identity ) ) ) return false;
 			}
-			finally
+			catch ( Exception ) { return false; }
+
+			context.Title = "Loading cached Titanfall 2 prop collision";
+			var timer = Stopwatch.StartNew();
+			var payload = await Titanfall2Workers.Run( () => ReadCollisionCache( identity ) );
+			if ( payload is null || payload.Groups.Length == 0 || !owner.IsValid() || !owner.GameObject.IsValid() )
+				return false;
+
+			DestroyGroupedObjects();
+			Created = MergedBodyCount = Filtered = Failures = 0;
+			ResidentReady = false;
+			LoadedFromCache = false;
+
+			foreach ( var group in payload.Groups )
 			{
-				InstanceLimitOverride = 0;
-				BudgetOverrideMilliseconds = 0f;
+				if ( group.Chunks.Length == 0 ) continue;
+				var surfaces = new List<Surface>( group.SurfaceKeys.Length );
+				foreach ( var key in group.SurfaceKeys )
+					surfaces.Add( Surface.FindByName( key ) ?? Surface.FindByName( "default" ) );
+
+				var meshBody = new PhysicsBodyBuilder();
+				var hasSurfaces = surfaces.Count > 0;
+				var addedChunk = false;
+				foreach ( var chunk in group.Chunks )
+				{
+					if ( chunk.Vertices.Length < 3 || chunk.Indices.Length < 3 ) continue;
+					var triSurfaces = hasSurfaces && chunk.TriangleSurfaces.Length == chunk.Indices.Length / 3
+						? chunk.TriangleSurfaces.AsSpan()
+						: Span<byte>.Empty;
+					meshBody.AddMesh( chunk.Vertices.AsSpan(), chunk.Indices.AsSpan(), triSurfaces );
+					addedChunk = true;
+				}
+				if ( !addedChunk ) continue;
+
+				var tagSuffix = group.HasContents ? group.Contents.ToString( "x8" ) : "raw";
+				var name = $"{owner.MapPath}/staticprops_contents_{tagSuffix}.vphys";
+				var physics = PhysicsGroupDescription.Create( name, [meshBody], hasSurfaces ? surfaces : null );
+				if ( !physics.IsValid() || physics.Parts.Count == 0 )
+				{
+					DestroyGroupedObjects();
+					return false;
+				}
+
+				AttachMergedPhysicsGroup( physics, tagSuffix, group.HasContents, group.Contents, group.PropCount );
 			}
+
+			Expected = payload.Expected;
+			Filtered = payload.Filtered;
+			if ( Created + Filtered != Expected || MergedBodyCount == 0 )
+			{
+				DestroyGroupedObjects();
+				Expected = Created = MergedBodyCount = Filtered = 0;
+				return false;
+			}
+
+			LoadedFromCache = true;
+			ResidentReady = true;
+			Queue.Clear();
+			Cursor = 0;
+			Log.Info( $"Titanfall 2 static prop collision cache hit: {Created}/{Expected} colliders in {MergedBodyCount} merged bodies restored in {timer.Elapsed.TotalSeconds:0.00}s ({owner.MapPath})." );
+			return true;
+		}
+
+		static CachedCollisionPayload ReadCollisionCache( string identity )
+		{
+			CachedCollisionPayload parsed = null;
+			var hit = Titanfall2ProcessedCache.TryRead( CollisionCacheKind, identity, reader =>
+			{
+				if ( reader.ReadUInt32() != CollisionCacheMagic || reader.ReadInt32() != CollisionCacheVersion )
+					throw new InvalidDataException( "Collision cache header mismatch." );
+
+				var expected = reader.Count( 1_000_000 );
+				var created = reader.Count( 1_000_000 );
+				var filtered = reader.Count( 1_000_000 );
+				var groupCount = reader.Count( 4096 );
+				var groups = new CachedGroup[groupCount];
+				for ( var g = 0; g < groupCount; g++ )
+				{
+					var hasContents = reader.ReadBoolean();
+					var contents = reader.ReadUInt32();
+					var propCount = reader.Count( 1_000_000 );
+					var surfCount = reader.Count( 512 );
+					var surfKeys = new string[surfCount];
+					for ( var s = 0; s < surfCount; s++ ) surfKeys[s] = reader.Text();
+					var chunkCount = reader.Count( 65536 );
+					var chunks = new CachedChunk[chunkCount];
+					for ( var c = 0; c < chunkCount; c++ )
+					{
+						var verts = reader.Array<Vector3>( 4_000_000 );
+						var idxs = reader.Array<uint>( 12_000_000 );
+						var tris = reader.Array<byte>( 4_000_000 );
+						chunks[c] = new CachedChunk( verts, idxs, tris );
+					}
+					groups[g] = new CachedGroup( hasContents, contents, propCount, surfKeys, chunks );
+				}
+				parsed = new CachedCollisionPayload( expected, created, filtered, groups );
+			} );
+			return hit ? parsed : null;
+		}
+
+		void WriteCollisionCache( Dictionary<(bool HasContents, uint Contents), MergedContentsGroup> groups )
+		{
+			var identity = BuildCollisionCacheIdentity();
+			if ( !Titanfall2StreamingSettings.ProcessedCache || string.IsNullOrEmpty( identity ) ) return;
+			if ( Failures > 0 || Created + Filtered != Expected ) return;
+			// Only cache pure AddMesh builds; fallback hull groups are rare and stay on the live builder.
+			foreach ( var g in groups.Values )
+				if ( g.DefaultFallbackHullBody is not null || g.FallbackHullBodies.Count > 0 ) return;
+
+			var cachedGroups = new List<CachedGroup>( groups.Count );
+			foreach ( var ((hasContents, contents), group) in groups )
+			{
+				if ( group.PropCount == 0 || group.Chunks.Count == 0 ) continue;
+				var surfKeys = new string[group.Surfaces.Count];
+				for ( var i = 0; i < group.Surfaces.Count; i++ )
+				{
+					var s = group.Surfaces[i];
+					surfKeys[i] = !string.IsNullOrWhiteSpace( s?.ResourcePath ) && s.ResourcePath.StartsWith( "mount://", StringComparison.OrdinalIgnoreCase )
+						? s.ResourcePath
+						: s?.ResourceName ?? "default";
+				}
+				var chunks = new List<CachedChunk>( group.Chunks.Count );
+				foreach ( var chunk in group.Chunks.Values )
+				{
+					if ( chunk.Vertices.Count < 3 || chunk.Indices.Count < 3 ) continue;
+					chunks.Add( new CachedChunk( chunk.Vertices.ToArray(), chunk.Indices.ToArray(), chunk.TriangleSurfaces.ToArray() ) );
+				}
+				if ( chunks.Count > 0 )
+					cachedGroups.Add( new CachedGroup( hasContents, contents, group.PropCount, surfKeys, chunks.ToArray() ) );
+			}
+			if ( cachedGroups.Count == 0 ) return;
+
+			var payload = new CachedCollisionPayload( Expected, Created, Filtered, cachedGroups.ToArray() );
+			var timer = Stopwatch.StartNew();
+			var written = Titanfall2ProcessedCache.Write( CollisionCacheKind, identity, writer =>
+			{
+				writer.Write( CollisionCacheMagic );
+				writer.Write( CollisionCacheVersion );
+				writer.Write( payload.Expected );
+				writer.Write( payload.Created );
+				writer.Write( payload.Filtered );
+				writer.Write( payload.Groups.Length );
+				foreach ( var g in payload.Groups )
+				{
+					writer.Write( g.HasContents );
+					writer.Write( g.Contents );
+					writer.Write( g.PropCount );
+					writer.Write( g.SurfaceKeys.Length );
+					foreach ( var key in g.SurfaceKeys ) Titanfall2ProcessedCache.WriteString( writer, key );
+					writer.Write( g.Chunks.Length );
+					foreach ( var c in g.Chunks )
+					{
+						Titanfall2ProcessedCache.WriteArray( writer, c.Vertices );
+						Titanfall2ProcessedCache.WriteArray( writer, c.Indices );
+						Titanfall2ProcessedCache.WriteArray( writer, c.TriangleSurfaces );
+					}
+				}
+			} );
+			if ( written )
+				Log.Info( $"Titanfall 2 static prop collision cache written ({payload.Groups.Length} bodies) in {timer.Elapsed.TotalSeconds:0.00}s ({owner.MapPath})." );
+		}
+
+		void AttachMergedPhysicsGroup( PhysicsGroupDescription physics, string tagSuffix, bool hasContents, uint contents, int propCount )
+		{
+			_groupedPhysics.Add( physics );
+			var obj = new GameObject( owner.GameObject, owner.Active, $"t2_prop_col_{tagSuffix}" );
+			obj.Flags |= GameObjectFlags.NotSaved;
+			obj.IsStatic = true;
+			if ( Titanfall2StreamingSettings.NavMeshStaticProps )
+				obj.Tags.Add( Titanfall2DeferredNavMeshBuilder.NavMeshBodyTag );
+
+			var collider = obj.AddComponent<PhysicsCollider>();
+			collider.Physics = physics;
+			collider.Static = true;
+
+			var source = obj.AddComponent<Titanfall2CollisionSource>();
+			source.MountIdent = owner.MountIdent;
+			source.MapPath = owner.MapPath;
+			source.GeometrySource = "merged static prop mesh";
+			source.HasEffectiveContents = hasContents;
+			source.EffectiveContents = contents;
+			source.CollisionDestroyed = OnResidentCollisionDestroyed;
+
+			if ( hasContents ) Titanfall2CollisionQueries.Classify( obj, collider, contents );
+			_groupedObjects.Add( obj );
+			MergedBodyCount++;
+			Created += propCount;
+		}
+
+		void RebuildMergedResidentCollisions()
+		{
+			DestroyGroupedObjects();
+			Created = MergedBodyCount = Filtered = Failures = 0;
+			ResidentReady = false;
+			var groups = new Dictionary<(bool HasContents, uint Contents), MergedContentsGroup>();
+			foreach ( var cluster in owner._clusters.Values )
+			{
+				if ( !owner.IsValid() || !owner.GameObject.IsValid() ) return;
+				CollectClusterProps( cluster, groups );
+			}
+			CreateMergedGroups( groups );
 			ResidentReady = owner._failedProps == 0 && Failures == 0
 				&& Created + Filtered == Expected;
-			if ( !HasPending )
+		}
+
+		async Task BuildMergedResidentCollisionsAsync( LoadingContext context )
+		{
+			DestroyGroupedObjects();
+			Created = MergedBodyCount = Filtered = Failures = 0;
+			ResidentReady = false;
+			var groups = new Dictionary<(bool HasContents, uint Contents), MergedContentsGroup>();
+			var collected = 0;
+			Timer.Restart();
+
+			foreach ( var cluster in owner._clusters.Values )
 			{
-				Queue.Clear();
-				Cursor = 0;
+				if ( !owner.IsValid() || !owner.GameObject.IsValid() ) return;
+				collected += CollectClusterProps( cluster, groups );
+				context.Title = $"Preparing Titanfall 2 prop collision ({collected}/{Expected})";
+				if ( Timer.Elapsed.TotalMilliseconds >= PreloadBudgetMilliseconds )
+				{
+					await owner.Task.Yield();
+					Timer.Restart();
+				}
+			}
+
+			CreateMergedGroups( groups );
+			context.Title = $"Loading Titanfall 2 prop collision ({Created}/{Expected})";
+			ResidentReady = owner._failedProps == 0 && Failures == 0
+				&& Created + Filtered == Expected;
+			if ( ResidentReady ) WriteCollisionCache( groups );
+			Queue.Clear();
+			Cursor = 0;
+		}
+
+		void DestroyGroupedObjects()
+		{
+			foreach ( var obj in _groupedObjects )
+			{
+				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Destroy();
+			}
+			_groupedObjects.Clear();
+			_groupedPhysics.Clear();
+		}
+
+		int CollectClusterProps( PropCluster cluster, Dictionary<(bool HasContents, uint Contents), MergedContentsGroup> groups )
+		{
+			var visited = 0;
+			foreach ( var cell in cluster.Cells )
+			{
+				foreach ( var instance in cell.Instances )
+				{
+					if ( !instance.Source.Collidable ) continue;
+					visited++;
+					var prop = instance.Source;
+					var resourcePath = $"mount://{owner.MountIdent}/{prop.ModelPath}.vmdl";
+					var collision = owner.LoadCollisionModelWithRetryCache( resourcePath, prop.Skin );
+					if ( collision.Status == Titanfall2CollisionModelStatus.Filtered )
+					{
+						instance.CollisionFiltered = true;
+						Filtered++;
+						continue;
+					}
+					if ( collision.Status == Titanfall2CollisionModelStatus.Empty )
+					{
+						instance.CollisionUnavailable = true;
+						Failures++;
+						if ( owner._failureLogs++ < 16 )
+							Titanfall2Log.Warning( $"Titanfall 2 static prop imported without usable collision geometry: '{prop.ModelPath}' ({owner.MapPath})." );
+						continue;
+					}
+					var resolvedModel = ModelLoader.IsUsableModel( collision.Model ) ? collision.Model : null;
+					if ( !ModelLoader.IsUsableModel( resolvedModel ) || resolvedModel.Physics is not { Parts.Count: > 0 } )
+					{
+						Failures++;
+						instance.CollisionUnavailable = true;
+						if ( owner._failureLogs++ < 16 )
+							Titanfall2Log.Warning( $"Titanfall 2 static prop collision model is unavailable: '{prop.ModelPath}' at {prop.Position} ({owner.MapPath})." );
+						continue;
+					}
+
+					var data = resolvedModel.GetData<Titanfall2ModelCollisionData>();
+					var hasContents = prop.SourceIndex >= 0 && data is not null;
+					var contents = hasContents ? Titanfall2CollisionSource.StaticPropContents( data.ModelContents, prop.CollisionFlagsRemove ) : 0u;
+					if ( hasContents && contents == 0 )
+					{
+						instance.CollisionFiltered = true;
+						Filtered++;
+						continue;
+					}
+
+					var key = (hasContents, contents);
+					if ( !groups.TryGetValue( key, out var group ) )
+						groups[key] = group = new MergedContentsGroup();
+
+					var scale = MathF.Max( prop.Scale, 0.001f );
+					if ( !AppendPropGeometry( group, resolvedModel, prop.Position, prop.Rotation, scale ) )
+					{
+						// Models whose compiled PhysicsGroupDescription has zero actual shapes
+						// (e.g. degenerate garbage bag hulls) have no native physics body.
+						instance.CollisionFiltered = true;
+						Filtered++;
+						continue;
+					}
+					group.Members.Add( (instance, resolvedModel) );
+				}
+			}
+			return visited;
+		}
+
+		void CreateMergedGroups( Dictionary<(bool HasContents, uint Contents), MergedContentsGroup> groups )
+		{
+			foreach ( var ((hasContents, contents), group) in groups )
+			{
+				if ( group.PropCount == 0 ) continue;
+				var bodies = new List<PhysicsBodyBuilder>( group.FallbackHullBodies.Count + 2 );
+				if ( group.Chunks.Count > 0 )
+				{
+					var meshBody = new PhysicsBodyBuilder();
+					var hasSurfaces = group.Surfaces.Count > 0;
+					foreach ( var chunk in group.Chunks.Values )
+					{
+						if ( chunk.Indices.Count < 3 ) continue;
+						var triSurfaces = hasSurfaces
+							? CollectionsMarshal.AsSpan( chunk.TriangleSurfaces )
+							: Span<byte>.Empty;
+						meshBody.AddMesh(
+							CollectionsMarshal.AsSpan( chunk.Vertices ),
+							CollectionsMarshal.AsSpan( chunk.Indices ),
+							triSurfaces );
+					}
+					bodies.Add( meshBody );
+				}
+				if ( group.DefaultFallbackHullBody is not null ) bodies.Add( group.DefaultFallbackHullBody );
+				bodies.AddRange( group.FallbackHullBodies.Values );
+				if ( bodies.Count == 0 ) continue;
+
+				var tagSuffix = hasContents ? contents.ToString( "x8" ) : "raw";
+				var name = $"{owner.MapPath}/staticprops_contents_{tagSuffix}.vphys";
+				var surfaces = group.Surfaces.Count > 0 ? group.Surfaces : null;
+				var physics = PhysicsGroupDescription.Create( name, bodies, surfaces );
+				if ( !physics.IsValid() || physics.Parts.Count == 0 )
+				{
+					Log.Warning( $"Titanfall 2 failed to build merged static prop physics '{name}' for {group.PropCount} props; falling back to individual colliders ({owner.MapPath})." );
+					foreach ( var (member, memberModel) in group.Members )
+					{
+						if ( !CreateFallbackResidentCollider( member, memberModel ) )
+						{
+							Failures++;
+							member.CollisionUnavailable = true;
+						}
+					}
+					continue;
+				}
+
+				AttachMergedPhysicsGroup( physics, tagSuffix, hasContents, contents, group.PropCount );
+			}
+		}
+
+		static bool AppendPropGeometry(
+			MergedContentsGroup group,
+			Model resolvedModel,
+			Vector3 position,
+			Rotation rotation,
+			float scale )
+		{
+			var fullTransform = new Transform( position, rotation, scale );
+			if ( ModelLoader.TryGetCollisionMesh( resolvedModel, out var mesh )
+				&& mesh.Vertices.Length >= 3 && mesh.Indices.Length >= 3 )
+			{
+				var surfaceIndex = group.GetSurfaceIndex( mesh.Surface );
+				AppendTriangulatedMesh( group, mesh.Vertices, mesh.Indices, null, surfaceIndex, fullTransform );
+				return true;
+			}
+
+			// Fallback when a model was created outside ModelLoader's triangulated collision path.
+			var physics = resolvedModel.Physics;
+			if ( physics is null ) return false;
+			var placement = new Transform( position, rotation );
+			var unitScale = MathF.Abs( scale - 1f ) < 0.0001f;
+			var added = false;
+
+			foreach ( var part in physics.Parts )
+			{
+				var bodyTransform = part.Transform;
+				foreach ( var m in part.Meshes )
+				{
+					var verts = m.GetVertices();
+					var indices = m.GetIndices();
+					if ( verts.Length < 3 || indices.Length < 3 ) continue;
+					for ( var i = 0; i < verts.Length; i++ )
+						verts[i] = bodyTransform.PointToWorld( verts[i] );
+					var defaultSurf = group.GetSurfaceIndex( m.Surface );
+					AppendTriangulatedMesh( group, verts, indices, m.GetTriangleSurfaces(), defaultSurf, fullTransform );
+					added = true;
+				}
+				foreach ( var hull in part.Hulls )
+				{
+					var pts = hull.GetPoints().ToArray();
+					if ( pts.Length < 4 ) continue;
+					for ( var i = 0; i < pts.Length; i++ )
+						pts[i] = bodyTransform.PointToWorld( pts[i] );
+					var body = group.GetFallbackHullBody( hull.Surface );
+					body.AddHull( unitScale ? pts : ScalePoints( pts, scale ), placement );
+					added = true;
+				}
+			}
+			return added;
+		}
+
+		static void AppendTriangulatedMesh(
+			MergedContentsGroup group,
+			Vector3[] localVertices,
+			int[] indices,
+			Surface[] triangleSurfaces,
+			byte defaultSurfaceIndex,
+			Transform worldTransform )
+		{
+			var inverseChunk = 1f / CollisionChunkSize;
+			var triCount = indices.Length / 3;
+			for ( var t = 0; t < triCount; t++ )
+			{
+				var ia = indices[t * 3];
+				var ib = indices[t * 3 + 1];
+				var ic = indices[t * 3 + 2];
+				if ( (uint)ia >= (uint)localVertices.Length
+					|| (uint)ib >= (uint)localVertices.Length
+					|| (uint)ic >= (uint)localVertices.Length ) continue;
+
+				var a = worldTransform.PointToWorld( localVertices[ia] );
+				var b = worldTransform.PointToWorld( localVertices[ib] );
+				var c = worldTransform.PointToWorld( localVertices[ic] );
+				var center = (a + b + c) * (1f / 3f);
+				var chunk = group.GetChunk( new ChunkKey(
+					(int)MathF.Floor( center.x * inverseChunk ),
+					(int)MathF.Floor( center.y * inverseChunk ) ) );
+
+				var baseVert = (uint)chunk.Vertices.Count;
+				chunk.Vertices.Add( a );
+				chunk.Vertices.Add( b );
+				chunk.Vertices.Add( c );
+				chunk.Indices.Add( baseVert );
+				chunk.Indices.Add( baseVert + 1 );
+				chunk.Indices.Add( baseVert + 2 );
+
+				var surf = triangleSurfaces is not null && t < triangleSurfaces.Length
+					? group.GetSurfaceIndex( triangleSurfaces[t] )
+					: defaultSurfaceIndex;
+				chunk.TriangleSurfaces.Add( surf );
+			}
+		}
+
+		static Vector3[] ScalePoints( Vector3[] points, float scale )
+		{
+			var scaled = new Vector3[points.Length];
+			for ( var i = 0; i < points.Length; i++ )
+				scaled[i] = points[i] * scale;
+			return scaled;
+		}
+
+		bool CreateFallbackResidentCollider( PropInstance instance, Model resolvedModel )
+		{
+			var prop = instance.Source;
+			var data = resolvedModel.GetData<Titanfall2ModelCollisionData>();
+			var hasContents = prop.SourceIndex >= 0 && data is not null;
+			var contents = hasContents ? Titanfall2CollisionSource.StaticPropContents( data.ModelContents, prop.CollisionFlagsRemove ) : 0u;
+			var collisionObject = new GameObject( owner.GameObject, owner.Active, System.IO.Path.GetFileNameWithoutExtension( prop.ModelPath ) );
+			collisionObject.Flags |= GameObjectFlags.NotSaved;
+			collisionObject.WorldPosition = prop.Position;
+			collisionObject.WorldRotation = prop.Rotation;
+			collisionObject.WorldScale = Vector3.One * MathF.Max( prop.Scale, 0.001f );
+			collisionObject.IsStatic = true;
+			if ( Titanfall2StreamingSettings.NavMeshStaticProps )
+				collisionObject.Tags.Add( Titanfall2DeferredNavMeshBuilder.NavMeshBodyTag );
+			var collider = collisionObject.AddComponent<ModelCollider>();
+			collider.Model = resolvedModel;
+			collider.Static = true;
+			var source = collisionObject.AddComponent<Titanfall2CollisionSource>();
+			source.MountIdent = owner.MountIdent;
+			source.MapPath = owner.MapPath;
+			source.ModelPath = prop.ModelPath;
+			source.SourceIndex = prop.SourceIndex;
+			source.HasInstanceMetadata = prop.SourceIndex >= 0;
+			source.SolidType = prop.SolidType;
+			source.ReservedCollisionData = prop.ReservedCollisionData;
+			source.CollisionFlagsRemove = prop.CollisionFlagsRemove;
+			source.HasEffectiveContents = hasContents;
+			source.EffectiveContents = contents;
+			if ( hasContents ) Titanfall2CollisionQueries.Classify( collisionObject, collider, contents );
+			if ( ModelLoader.IsUsableModel( collider.Model ) && collider.Model.Physics is { Parts.Count: > 0 } )
+			{
+				source.CollisionDestroyed = OnResidentCollisionDestroyed;
+				_groupedObjects.Add( collisionObject );
+				MergedBodyCount++;
+				Created++;
+				return true;
+			}
+			collisionObject.Destroy();
+			return false;
+		}
+
+		public void SetGroupedEnabled( bool enabled )
+		{
+			foreach ( var obj in _groupedObjects )
+			{
+				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = enabled;
 			}
 		}
 

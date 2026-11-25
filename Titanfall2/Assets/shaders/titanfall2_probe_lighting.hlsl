@@ -29,6 +29,8 @@ float3 T2DiffuseFresnel( CombinerInput combiner, float3 directionToLight )
 float T2ProbeSunVisibility( T2LightProbeData probe, float3 positionWithOffsetWs )
 {
 	float bakedVisibility = probe.metadata.x > 0.5 ? saturate( probe.skyDirectionSunVisibility.w ) : 1;
+	// Fully sunlit props evaluate to 1.0 regardless of cascade coverage; skip 4 cascade projections.
+	[branch] if ( bakedVisibility >= 0.999 ) return 1.0;
 	// ComputeDirectionalLight already evaluates the surface's CSM/contact shadow.
 	// A prop's single baked sample can be inside its own geometry; multiplying
 	// that occlusion again would black out even its sunlit exterior. Retain the
@@ -87,7 +89,11 @@ float4 T2ShadeWithProbe( PixelInput i, Material m, T2LightProbeData probe, float
 	CalculateIndirectLighting( lighting, combiner );
 	// Replace diffuse fill only. Albedo, emission and probe reflections keep
 	// their own meanings. Native dynamic/local lighting is still evaluated.
+#if defined( S_T2_PROP_AGGREGATE ) && S_T2_PROP_AGGREGATE
+	if ( probe.metadata.x > 0.5 ) lighting.vIndirectDiffuse.rgb = T2ProbeIrradiance( probe, m.Normal, T2CurrentSkyColor( g_vT2PropSkyColor ) );
+#else
 	if ( probe.metadata.x > 0.5 ) lighting.vIndirectDiffuse.rgb = T2ProbeIrradiance( probe, m.Normal, T2CurrentSkyColor( g_vT2ProbeSkyColor ) );
+#endif
 	float3 diffuseAo = CalculateDiffuseAmbientOcclusion( combiner, lighting );
 	float3 specularAo = CalculateSpecularAmbientOcclusion( combiner, lighting );
 	float3 diffuse = (lighting.vDiffuse.rgb * lerp( 1.0, diffuseAo, combiner.flAmbientOcclusionDirectDiffuse )
