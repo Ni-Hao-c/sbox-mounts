@@ -178,14 +178,17 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		var turn = Math.Clamp( angles.yaw, -100 * Time.Delta, 100 * Time.Delta );
 		if ( MathF.Abs( turn ) > 0.001f ) { WorldRotation *= Rotation.FromYaw( turn ); pilot.EyeAngles = angles.WithYaw( angles.yaw - turn ); }
 		var input = Input.AnalogMove;
-		if ( input.LengthSquared < 0.01f ) return;
+		if ( input.LengthSquared < 0.01f ) { TryDrive( Vector3.Zero ); return; }
 		var planar = (pilot.EyeTransform.Rotation * input).WithZ( 0 );
 		TryDrive( planar.Normal * (MathF.Min( 1, input.Length ) * DriveSpeed * Time.Delta) );
 	}
 
 	internal bool TryDrive( Vector3 displacement )
 	{
-		if ( !Networking.IsHost || !Active || Actor is not { Active: true, TitanCanAct: true } || !displacement.IsFinite || displacement.LengthSquared <= 0.001f ) return false;
+		if ( !Networking.IsHost || !Active || Actor is not { Active: true, TitanCanAct: true } || !displacement.IsFinite ) return false;
+		if ( Time.Delta > 0 && Actor.GetComponent<Titanfall2TetherConstraint>() is { HasTethers: true } tether )
+			displacement = tether.Constrain( Actor, displacement / Time.Delta, Time.Delta ) * Time.Delta;
+		if ( displacement.LengthSquared <= 0.001f ) return false;
 		var radius = MathF.Max( 4, Actor.BodyRadius - 2 );
 		var hull = new BBox( new Vector3( -radius, -radius, 0 ), new Vector3( radius, radius, Actor.BodyHeight - 2 ) );
 		var origin = WorldPosition + Vector3.Up * 2;
@@ -200,7 +203,7 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 
 	SceneTraceResult TraceHull( BBox hull, Vector3 start, Vector3 end, Titanfall2TraceMask mask ) =>
 		Titanfall2CollisionQueries.Run( Scene.Trace.Box( hull, start, end ).IgnoreGameObjectHierarchy( GameObject )
-			.WithoutTags( "trigger", "projectile" ), mask );
+			.WithoutTags( "trigger", "projectile", "tether-trap" ), mask );
 
 	bool HasFootSupport( Vector3 position, float radius, Titanfall2TraceMask mask )
 	{

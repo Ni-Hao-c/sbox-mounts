@@ -96,7 +96,7 @@ public sealed partial class Titanfall2TitanCockpitHud
 		Titanfall2TitanKit.Chassis.Legion => "rui/titan_loadout/defensive/titan_defensive_gun_shield",
 		Titanfall2TitanKit.Chassis.Tone => "rui/titan_loadout/defensive/titan_defensive_particle_wall",
 		Titanfall2TitanKit.Chassis.Scorch => "rui/titan_loadout/defensive/titan_defensive_heat_shield",
-		Titanfall2TitanKit.Chassis.Northstar => "rui/titan_loadout/tactical/titan_tactical_electric_smoke",
+		Titanfall2TitanKit.Chassis.Northstar => "rui/titan_loadout/ordnance/tether",
 		Titanfall2TitanKit.Chassis.Ronin => "rui/titan_loadout/defensive/titan_defensive_sword_block",
 		_ => null
 	};

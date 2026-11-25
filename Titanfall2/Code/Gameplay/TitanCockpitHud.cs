@@ -132,7 +132,8 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 			SetAbility( 0, "attack2", AbilityName( kit.OffenseName ), kit.OffenseRemaining,
 				kit.OffenseCooldown, kit.Kit == Titanfall2TitanKit.Chassis.Tone ? $"标记 {kit.TrackerMarks}/3" : null,
 				kit.Kit != Titanfall2TitanKit.Chassis.Tone || kit.HasTrackerLock );
-			SetAbility( 1, "duck", AbilityName( kit.DefenseName ), kit.DefenseRemaining, kit.DefenseCooldown,
+			SetAbility( 1, "duck", AbilityName( kit.DefenseName ), kit.DefenseRemaining,
+				kit.Kit == Titanfall2TitanKit.Chassis.Northstar ? Titanfall2TetherRules.RecoverySeconds : kit.DefenseCooldown,
 				kit.GuardRemaining > 0 ? $"生效 {kit.GuardRemaining:0.0}s" : null );
 			}
 			Fill( _dashFill, 1 - kit.DashRemaining / MathF.Max( 0.1f, kit.DashRechargeSeconds ) );
@@ -194,7 +195,7 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		"Rocket Salvo" => "火箭齐射", "Laser Shot" => "激光肩炮", "Power Shot" => "强力射击", "Tracker Rockets" => "追踪火箭",
 		"Firewall" => "火墙", "Cluster Missile" => "集束导弹", "Arc Wave" => "电弧波", "Vortex Guard" => "涡旋护盾",
 		"Gun Shield" => "枪盾", "Particle Guard" => "粒子护盾", "Thermal Shield" => "热能护盾", "Electric Smoke" => "电烟雾",
-		"Sword Block" => "剑格挡", "Energy Siphon" => "能量虹吸", "Upgrade Core" => "升级核心", "Laser Core" => "激光核心",
+		"Sword Block" => "剑格挡", "Tether Trap" => "绊索陷阱", "Energy Siphon" => "能量虹吸", "Upgrade Core" => "升级核心", "Laser Core" => "激光核心",
 		"Smart Core" => "智能核心", "Sword Core" => "剑核心", "Salvo Core" => "齐射核心", "Flame Core" => "火焰核心", "Flight Core" => "飞行核心", _ => name
 	};
 }

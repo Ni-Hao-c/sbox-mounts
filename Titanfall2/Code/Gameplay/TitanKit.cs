@@ -20,7 +20,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	public string DefenseName => Kit switch
 	{
 		Chassis.Ion => "Vortex Guard", Chassis.Legion => "Gun Shield", Chassis.Tone => "Particle Guard",
-		Chassis.Scorch => "Thermal Shield", Chassis.Northstar => "Electric Smoke", Chassis.Ronin => "Sword Block", _ => "Energy Siphon"
+		Chassis.Scorch => "Thermal Shield", Chassis.Northstar => "Tether Trap", Chassis.Ronin => "Sword Block", _ => "Energy Siphon"
 	};
 	int _rockets;
 	TimeUntil _volleyStep;
@@ -124,14 +124,16 @@ public sealed partial class Titanfall2TitanKit : Component
 		// AI uses a bounded tactical hold. The cockpit supplies hold/release separately.
 		if ( Kit == Chassis.Ion ) return !DefenseVolumeActive && TryStartIonVortex( aim );
 		if ( DefenseRemaining > 0 ) return false;
+		if ( Kit == Chassis.Northstar )
+		{
+			var owner = Actor.Seat?.GetOccupant()?.GameObject ?? Actor.GameObject;
+			if ( !Titanfall2TetherTrap.Launch( Actor, aim, owner ).IsValid() ) return false;
+			DefenseRemaining = Titanfall2TetherRules.RecoverySeconds;
+			return true;
+		}
 		DefenseRemaining = Math.Clamp( DefenseCooldown, 1, 120 );
 		PlayActivation( true );
 		if ( Kit == Chassis.Monarch ) Beam( aim, attacker, siphon: true, AbilityData( defense: true ) );
-		else if ( Kit == Chassis.Northstar )
-		{
-			var smoke = new Titanfall2ProjectileSettings { Behavior = Titanfall2ProjectileBehavior.ElectricSmoke, SplashRadius = 280, Tint = new Color( 0.3f, 0.6f, 1f ) };
-			Titanfall2AreaHazard.Spawn( Scene, Actor.WorldPosition + Vector3.Up * 40, smoke, 10, 100, Actor.GameObject, GameObject, Actor.GameObject );
-		}
 		else if ( Kit is Chassis.Ion or Chassis.Legion ) BeginDefenseVolume();
 		else GuardRemaining = Kit == Chassis.Ronin ? 3 : 5;
 		return true;
