@@ -16,6 +16,8 @@ internal static class Titanfall2PhaseDimension
 
 	static readonly Dictionary<CameraComponent, int> _cameraPhaseRefCount = [];
 
+	internal static void ClearCameraRefs() => _cameraPhaseRefCount.Clear();
+
 	/// <summary>
 	/// Ensures physics collision pairs ignore contacts between phased entities and realspace actors/projectiles
 	/// while preserving all solid world/terrain collisions.

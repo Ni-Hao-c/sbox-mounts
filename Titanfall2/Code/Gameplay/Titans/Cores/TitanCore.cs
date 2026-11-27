@@ -19,14 +19,10 @@ public sealed class Titanfall2TitanCore : Component
 	public bool IsCharging => ChargeupRemaining > 0;
 	public bool CanActivate => Active && Supported && Actor is { Active: true, IsTitan: true, Dead: false, CanFight: true }
 		&& Actor.TitanCanAct && Charge >= 1 && !IsActive && !IsCharging;
-	public string Name => Kit switch
-	{
-		Chassis.Monarch => "Upgrade Core", Chassis.Ion => "Laser Core", Chassis.Legion => "Smart Core", Chassis.Ronin => "Sword Core",
-		Chassis.Tone => "Salvo Core", Chassis.Scorch => "Flame Core", Chassis.Northstar => "Flight Core", _ => "Core Unavailable"
-	};
+	public string Name => Titanfall2TitanChassisCatalog.Get( Kit ).CoreName;
 	public float Duration => CoreDuration( Kit );
-	public bool BlocksPrimary => (IsActive || IsCharging) && Kit is Chassis.Ion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch or Chassis.Northstar;
-	public bool UnlimitedAmmo => IsActive && Kit == Chassis.Legion;
+	public bool BlocksPrimary => (IsActive || IsCharging) && Titanfall2TitanChassisCatalog.Get( Kit ).CoreBlocksPrimary;
+	public bool UnlimitedAmmo => IsActive && Titanfall2TitanChassisCatalog.Get( Kit ).CoreUnlimitedAmmo;
 	public bool SwordCoreActive => IsActive && Kit == Chassis.Ronin;
 	public bool FlightCoreActive => (IsActive || IsCharging) && Kit == Chassis.Northstar;
 	public bool ArcRoundsActive => Kit == Chassis.Monarch && UpgradeLevel > 0 && HasXo16;
@@ -67,10 +63,10 @@ public sealed class Titanfall2TitanCore : Component
 	int _flightRockets;
 	float _aiFlightBaseZ;
 
-	internal static bool Supports( Chassis kit ) => kit is Chassis.Monarch or Chassis.Ion or Chassis.Legion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch or Chassis.Northstar;
-	internal static float BuildSeconds( Chassis kit ) => kit == Chassis.Monarch ? 100 : kit == Chassis.Ronin ? 120 : 150;
-	internal static float CoreDuration( Chassis kit ) => kit switch { Chassis.Monarch or Chassis.Scorch => 0.5f, Chassis.Ion => 3.5f, Chassis.Legion or Chassis.Ronin => 12, Chassis.Tone => 2, Chassis.Northstar => 6, _ => 0 };
-	internal static float CoreChargeup( Chassis kit ) => kit switch { Chassis.Ion => 1.1f, Chassis.Ronin or Chassis.Scorch => 0.75f, Chassis.Tone => 0.5f, Chassis.Northstar => 0.4f, _ => 0 };
+	internal static bool Supports( Chassis kit ) => Titanfall2TitanChassisCatalog.Get( kit ).CoreSupported;
+	internal static float BuildSeconds( Chassis kit ) => Titanfall2TitanChassisCatalog.Get( kit ).CoreBuildSeconds;
+	internal static float CoreDuration( Chassis kit ) => Titanfall2TitanChassisCatalog.Get( kit ).CoreDuration;
+	internal static float CoreChargeup( Chassis kit ) => Titanfall2TitanChassisCatalog.Get( kit ).CoreChargeup;
 	internal static float AddCharge( float current, float gain )
 	{
 		current = float.IsFinite( current ) ? Math.Clamp( current, 0, 1 ) : 0;
@@ -547,45 +543,6 @@ public sealed partial class Titanfall2Npc
 	{
 		if ( !Networking.IsHost || IsProxy ) return;
 		Rounds = Math.Max( Rounds, capacity ); Reloading = false; _nextShot = 0;
-	}
-}
-
-public partial class Titanfall2Mount
-{
-	Titanfall2ContentSnapshot _salvoCoreSnapshot;
-	Titanfall2TitanAbilityData _salvoCoreOrdnance;
-	internal Titanfall2TitanAbilityData GetSalvoCoreOrdnance()
-	{
-		if ( _contentSnapshot is null ) return null;
-		if ( ReferenceEquals( _salvoCoreSnapshot, _contentSnapshot ) ) return _salvoCoreOrdnance;
-		_salvoCoreSnapshot = _contentSnapshot;
-		try
-		{
-			_salvoCoreOrdnance = Titanfall2WeaponData.ReadTitanAbility( "scripts/weapons/mp_titancore_salvo_core.txt", Read,
-				1000, Titanfall2ProjectileBehavior.HomingTitan );
-		}
-		catch ( InvalidDataException ) { _salvoCoreOrdnance = null; }
-		return _salvoCoreOrdnance;
-		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
-			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? System.Text.Encoding.UTF8.GetString( bytes ) : null;
-	}
-
-	Titanfall2ContentSnapshot _flightCoreSnapshot;
-	Titanfall2TitanAbilityData _flightCoreOrdnance;
-	internal Titanfall2TitanAbilityData GetFlightCoreOrdnance()
-	{
-		if ( _contentSnapshot is null ) return null;
-		if ( ReferenceEquals( _flightCoreSnapshot, _contentSnapshot ) ) return _flightCoreOrdnance;
-		_flightCoreSnapshot = _contentSnapshot;
-		try
-		{
-			_flightCoreOrdnance = Titanfall2WeaponData.ReadTitanAbility( "scripts/weapons/mp_titanweapon_flightcore_rockets.txt", Read,
-				1850f, Titanfall2ProjectileBehavior.Standard );
-		}
-		catch ( InvalidDataException ) { _flightCoreOrdnance = null; }
-		return _flightCoreOrdnance;
-		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
-			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? System.Text.Encoding.UTF8.GetString( bytes ) : null;
 	}
 }
 

@@ -122,17 +122,14 @@ static class Titanfall2StreamingSettings
 		};
 	}
 
-	static int GetInt( string name, int fallback, int minimum, int maximum )
-	{
-		return GetOptionalInt( name, minimum, maximum ) ?? fallback;
-	}
+	static int GetInt( string name, int fallback, int minimum, int maximum ) =>
+		Titanfall2Options.GetOptionalInt( name, minimum, maximum ) ?? fallback;
 
 	internal static int? GetOptionalInt( string name, int minimum, int maximum ) =>
-		ParseOptionalInt( Titanfall2Options.Get( name ), minimum, maximum );
+		Titanfall2Options.GetOptionalInt( name, minimum, maximum );
 
 	internal static int? ParseOptionalInt( string text, int minimum, int maximum ) =>
-		int.TryParse( text, out var value )
-			? Math.Clamp( value, minimum, maximum ) : null;
+		Titanfall2Options.ParseOptionalInt( text, minimum, maximum );
 
 	static float GetFloat( string name, float fallback, float minimum, float maximum )
 	{
@@ -142,13 +139,5 @@ static class Titanfall2StreamingSettings
 			: fallback;
 	}
 
-	static bool GetBool( string name, bool fallback )
-	{
-		var value = Titanfall2Options.Get( name )?.Trim();
-		if ( string.IsNullOrWhiteSpace( value ) ) return fallback;
-		return value == "1"
-			|| value.Equals( "true", StringComparison.OrdinalIgnoreCase )
-			|| value.Equals( "yes", StringComparison.OrdinalIgnoreCase )
-			|| value.Equals( "on", StringComparison.OrdinalIgnoreCase );
-	}
+	static bool GetBool( string name, bool fallback ) => Titanfall2Options.GetBool( name, fallback );
 }

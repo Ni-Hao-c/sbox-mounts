@@ -8,7 +8,7 @@ using Sandbox;
 internal static class Titanfall2Log
 {
 	static readonly Sandbox.Diagnostics.Logger Log = new( "Titanfall2Mount" );
-	static readonly bool Verbose = ReadBool( "SBOX_TITANFALL2_VERBOSE_LOG", false );
+	static readonly bool Verbose = Titanfall2Options.GetBool( "SBOX_TITANFALL2_VERBOSE_LOG", false );
 	// Warnings and budget spikes shown before the rest are suppressed (verbose shows all warnings).
 	const int WarningLimit = 32;
 	const int SpikeLogLimit = 32;
@@ -133,14 +133,5 @@ internal static class Titanfall2Log
 
 		if ( System.Threading.Interlocked.Exchange( ref _suppressionNotice, 1 ) == 0 )
 			Log.Warning( $"Titanfall 2 mount warning limit reached ({WarningLimit}); additional mount warnings are suppressed. Set SBOX_TITANFALL2_VERBOSE_LOG=1 for full diagnostics." );
-	}
-
-	static bool ReadBool( string name, bool fallback )
-	{
-		var value = Titanfall2Options.Get( name )?.Trim();
-		if ( string.IsNullOrWhiteSpace( value ) ) return fallback;
-		return value == "1" || value.Equals( "true", StringComparison.OrdinalIgnoreCase )
-			|| value.Equals( "yes", StringComparison.OrdinalIgnoreCase )
-			|| value.Equals( "on", StringComparison.OrdinalIgnoreCase );
 	}
 }

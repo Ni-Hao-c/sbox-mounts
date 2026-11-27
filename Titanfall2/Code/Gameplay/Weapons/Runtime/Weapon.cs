@@ -221,10 +221,6 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	Titanfall2PilotViewPoseState _parkourPose;
 	ITitanfall2PilotParkourState _parkourState;
-	GameObject _parkourOwner;
-	Component _parkourComponent;
-	PropertyDescription _wallrunProp;
-	PropertyDescription _mantleProp;
 
 	void UpdatePilotViewState()
 	{
@@ -256,40 +252,11 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			return;
 		}
 
-		// Prefer the typed Pilot Jump Kit component; re-query so mid-hold equips take effect immediately.
+		// Use the typed Pilot Jump Kit component; re-query so mid-hold equips take effect immediately.
 		var typed = ownerGo.GetComponent<ITitanfall2PilotParkourState>();
 		_parkourState = typed;
 		if ( typed is { Equipped: true } )
-		{
 			pose = typed.ViewPoseState;
-			return;
-		}
-
-		if ( _parkourOwner != ownerGo )
-		{
-			_parkourOwner = ownerGo;
-			_parkourComponent = null;
-			_wallrunProp = null;
-			_mantleProp = null;
-			foreach ( var comp in ownerGo.Components.GetAll() )
-			{
-				if ( !comp.IsValid() || comp is ITitanfall2PilotParkourState ) continue;
-				var desc = Game.TypeLibrary.GetType( comp.GetType() );
-				if ( desc is null ) continue;
-				var wall = desc.GetProperty( "WallrunSide" );
-				var mantle = desc.GetProperty( "MantleProgress" );
-				if ( wall?.PropertyType != typeof( float ) && mantle?.PropertyType != typeof( float ) ) continue;
-				_parkourComponent = comp;
-				_wallrunProp = wall?.PropertyType == typeof( float ) ? wall : null;
-				_mantleProp = mantle?.PropertyType == typeof( float ) ? mantle : null;
-				break;
-			}
-		}
-		if ( !_parkourComponent.IsValid() ) return;
-		var wallrunSide = _wallrunProp?.GetValue( _parkourComponent ) is float w ? w : 0f;
-		var mantleProgress = _mantleProp?.GetValue( _parkourComponent ) is float m ? m : 0f;
-		pose = new Titanfall2PilotViewPoseState( wallrunSide, 0f, mantleProgress, 0f, 0f, 0f,
-			MathF.Abs( wallrunSide ) > 0.1f, false, mantleProgress > 0.01f, false );
 	}
 
 	protected override void OnAdded( BaseInventoryComponent inventory )

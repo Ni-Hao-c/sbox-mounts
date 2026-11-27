@@ -19,21 +19,13 @@ public sealed partial class Titanfall2TitanKit : Component
 	[Sync( SyncFlags.FromHost )] public int DashCharges { get; private set; } = 1;
 	[Sync( SyncFlags.FromHost )] public float DashRechargeProgress { get; private set; } = 1f;
 	public int MaxDashCharges => MaxDashChargesForChassis( Kit );
-	internal static int MaxDashChargesForChassis( Chassis kit ) => kit is Chassis.Northstar or Chassis.Ronin ? 2 : 1;
+	internal static int MaxDashChargesForChassis( Chassis kit ) => Titanfall2TitanChassisCatalog.Get( kit ).MaxDashCharges;
 	Chassis _initializedDashKit = (Chassis)(-1);
 	float _dashChargeTimer;
-	public string OffenseName => Kit switch
-	{
-		Chassis.Ion => "Laser Shot", Chassis.Legion => "Power Shot", Chassis.Tone => "Tracker Rockets",
-		Chassis.Scorch => "Firewall", Chassis.Northstar => "Cluster Missile", Chassis.Ronin => "Arc Wave", _ => "Rocket Salvo"
-	};
-	public string DefenseName => Kit switch
-	{
-		Chassis.Ion => "Vortex Guard", Chassis.Legion => "Gun Shield", Chassis.Tone => "Particle Guard",
-		Chassis.Scorch => "Thermal Shield", Chassis.Northstar => "Tether Trap", Chassis.Ronin => "Sword Block", _ => "Energy Siphon"
-	};
+	public string OffenseName => Titanfall2TitanChassisCatalog.Get( Kit ).OffenseName;
+	public string DefenseName => Titanfall2TitanChassisCatalog.Get( Kit ).DefenseName;
 	public string SmokeName => "Electric Smoke";
-	public string MeleeName => Kit == Chassis.Ronin ? "Broad Sword" : "Titan Melee";
+	public string MeleeName => Titanfall2TitanChassisCatalog.Get( Kit ).MeleeName;
 	public float CurrentMeleeCooldown => Kit == Chassis.Ronin
 		? (Actor.IsValid() && Actor.GetComponent<Titanfall2TitanCore>() is { SwordCoreActive: true } ? 0.65f : 0.85f)
 		: Math.Clamp( TitanMeleeCooldown, 0.4f, 5f );

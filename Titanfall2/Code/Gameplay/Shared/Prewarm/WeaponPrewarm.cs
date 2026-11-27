@@ -154,8 +154,7 @@ public partial class Titanfall2Mount
 						request.Add( new( Titanfall2WeaponPrewarmKind.Event, evt.Options ) );
 				break;
 			case Titanfall2WeaponPrewarmKind.Impact:
-				CombatImpactValue( item.Name, "FX", "C" ); // populate only this weapon's table
-				if ( _combatTables.TryGetValue( item.Name, out var blocks ) && blocks.FirstOrDefault() is { } table )
+				if ( GetCombatImpactBlocks( item.Name ).FirstOrDefault() is { } table )
 					foreach ( var section in table.Children.Where( block => block.Name is "FX" or "Sound" ) )
 						foreach ( var value in section.Values.Values ) request.Add( new( section.Name == "FX" ? Titanfall2WeaponPrewarmKind.Particle : Titanfall2WeaponPrewarmKind.Event, value ) );
 				foreach ( var sound in GetOrdnanceSamples( item.Name ) ) request.Add( new( Titanfall2WeaponPrewarmKind.Sound, sound ) );

@@ -4,11 +4,10 @@
 public partial class Titanfall2Mount
 {
 	int _mapSceneLeases;
-	readonly Titanfall2SceneReleaseGeneration _sceneReleaseGeneration = new();
-	internal void BeginMapBuild( Scene buildScene ) => InvalidateSceneReleaseWork();
-	void InvalidateSceneReleaseWork() => _sceneReleaseGeneration.Advance();
-	internal void AddMapSceneLease() { InvalidateSceneReleaseWork(); _mapSceneLeases++; }
+	internal void BeginMapBuild( Scene buildScene ) { }
+	internal void AddMapSceneLease() => _mapSceneLeases++;
 	internal void OnSceneOwnerDestroyed( Scene scene ) { if ( _mapSceneLeases > 0 ) _mapSceneLeases--; }
+	void ResetMapSceneLeases() => _mapSceneLeases = 0;
 	internal void ReleaseSceneResourcesBeforeBuild( MapLoader building )
 	{
 		if ( _mapSceneLeases == 0 ) ReleaseMountCaches();

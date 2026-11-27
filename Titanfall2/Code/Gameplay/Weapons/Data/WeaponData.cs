@@ -43,20 +43,19 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		var pellets = Number( "projectiles_per_shot", shotgun ? 8 : 1 );
 		var burst = Number( "burst_fire_count", 1 );
 		var speed = Number( "projectile_launch_speed", Number( "bolt_speed", fallbackSpeed ) );
-		var pattern = Get( "OnWeaponPrimaryAttack" ) switch
+		var primaryCallback = Get( "OnWeaponPrimaryAttack" );
+		var hasPrimaryOverride = Titanfall2WeaponScriptOverrides.TryGetPrimaryAttack( primaryCallback, out var primaryOverride );
+		var pattern = hasPrimaryOverride ? primaryOverride.Pattern : Titanfall2BoltPattern.Default;
+		var firing = new Titanfall2WeaponFiring
 		{
-			"OnWeaponPrimaryAttack_weapon_doubletake" => Titanfall2BoltPattern.DoubleTake,
-			"OnWeaponPrimaryAttack_weapon_mastiff" => Titanfall2BoltPattern.Mastiff,
-			"OnWeaponPrimaryAttack_weapon_shotgun_pistol" => Titanfall2BoltPattern.Mozambique,
-			_ => Titanfall2BoltPattern.Default
-		};
-		var firing = new Titanfall2WeaponFiring { Pattern = pattern,
+			Pattern = pattern,
 			AmmoPerShot = (int)Math.Clamp( Number( "ammo_per_shot", 1 ), 1, 250 ),
 			AmmoMinToFire = (int)Math.Clamp( Number( "ammo_min_to_fire", 1 ), 1, 250 ),
-			BoltSpreadHip = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.05f : Math.Clamp( Number( "bolt_spread_max" ), 0, 1 ),
-			BoltSpreadAds = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.025f : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 ) };
-		if ( pattern == Titanfall2BoltPattern.Mastiff ) { pellets = 8; speed = 3000; }
-		else if ( pattern == Titanfall2BoltPattern.Mozambique ) { pellets = 3; speed = 3000; }
+			BoltSpreadHip = hasPrimaryOverride && primaryOverride.BoltSpreadHip is { } hipSpread ? hipSpread : Math.Clamp( Number( "bolt_spread_max" ), 0, 1 ),
+			BoltSpreadAds = hasPrimaryOverride && primaryOverride.BoltSpreadAds is { } adsSpread ? adsSpread : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 )
+		};
+		if ( hasPrimaryOverride && primaryOverride.Pellets is { } overridePellets ) pellets = overridePellets;
+		if ( hasPrimaryOverride && primaryOverride.Speed is { } overrideSpeed ) speed = overrideSpeed;
 		if ( (!integrated && world is null) || mode is not ("auto" or "semi-auto")
 			|| pellets is < 1 or > 12 || pellets != MathF.Truncate( pellets )
 			|| burst is < 1 or > 8 || burst != MathF.Truncate( burst ) || (pellets > 1 && burst > 1)
@@ -80,7 +79,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			{
 				Speed = speed,
 				VortexAbsorbOnly = Get( "vortex_refire_behavior" ).Equals( "absorb", StringComparison.OrdinalIgnoreCase ),
-				GravityScale = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.09f : Math.Clamp( Number( "projectile_gravity_scale", Number( "bolt_gravity_amount", ordnance ? 1.1f : 0 ) ), 0, 4 ),
+				GravityScale = hasPrimaryOverride && primaryOverride.GravityScale is { } overrideGravity ? overrideGravity : Math.Clamp( Number( "projectile_gravity_scale", Number( "bolt_gravity_amount", ordnance ? 1.1f : 0 ) ), 0, 4 ),
 				Lifetime = Math.Clamp( Number( "projectile_lifetime", MathF.Max( ordnance ? 3.5f : 1.25f, range / speed ) ), 0.1f, 8 ),
 				Radius = Math.Clamp( Number( "projectile_radius", impactRadius > 0 ? 3 : 1.5f ), 0.5f, 10 ),
 				SplashRadius = impactRadius,
@@ -89,14 +88,11 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				ImpactTable = Get( "impact_effect_table" ) is { Length: > 0 } table ? table : "default",
 				TrailEffect = Get( "projectile_trail_effect_0" ),
 				TrailAttachment = Get( "projectile_trail_attachment" ),
-				// This active client callback adds an ABSORIGIN_FOLLOW effect in
-				// addition to projectile_trail_effect_0; it does not replace it.
-				ScriptTrailEffect = Get( "OnWeaponPrimaryAttack" ) == "OnWeaponPrimaryAttack_weapon_sniper" ? "Rocket_Smoke_SMR_Glow" : null,
+				ScriptTrailEffect = hasPrimaryOverride ? primaryOverride.ScriptTrailEffect : null,
 				FuseSeconds = behavior == Titanfall2ProjectileBehavior.FragGrenade ? Math.Clamp( Number( "grenade_fuse_time", 3.25f ), 0.1f, 12 ) : 0,
 				HazardSeconds = behavior == Titanfall2ProjectileBehavior.GravityPull ? 2.9f
 					: Math.Clamp( Number( "grenade_ignition_time", behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 6.5f : 3.5f ), 0.1f, 12 ),
-				HazardEffect = behavior switch { Titanfall2ProjectileBehavior.ThermiteBurn => "P_grenade_thermite", Titanfall2ProjectileBehavior.GravityPull => "P_wpn_grenade_gravity",
-					Titanfall2ProjectileBehavior.ElectricSmoke => "P_wpn_smk_electric_pilot", _ => null },
+				HazardEffect = Titanfall2WeaponScriptOverrides.GetHazardEffect( behavior ),
 				DamageOwner = Get( "explosion_damages_owner" ) == "1" || ordnance,
 				ModelPath = projectileModel == "models/dev/empty_model.mdl" ? null : projectileModel,
 				Tint = tint ?? Color.White,
@@ -126,12 +122,9 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			ShellAttachmentScoped = Get( "fx_shell_eject_attach_scoped" ), Shell2View = Get( "fx_shell_eject2_view" ),
 			Shell2World = Get( "fx_shell_eject2_world" ), Shell2Attachment = Get( "fx_shell_eject2_attach" ),
 			TracerView = Get( "tracer_effect_first_person" ), TracerWorld = Get( "tracer_effect" ), ImpactTable = Get( "impact_effect_table" ),
-			MuzzleLayers = Get( "OnClientAnimEvent" ) is "OnClientAnimEvent_weapon_sniper" or "OnClientAnimEvent_weapon_dmr"
-				? new[] { "muzzle_flash_L", "muzzle_flash_R" }.Select( attachment => new Titanfall2WeaponMuzzleLayer(
-					"wpn_mflash_snp_hmn_smoke_side_FP", "wpn_mflash_snp_hmn_smoke_side", attachment, true,
-					Get( "OnClientAnimEvent" ) == "OnClientAnimEvent_weapon_dmr" ) ).ToArray() : [],
-			ShellSound = Get( "OnClientAnimEvent" ) == "OnClientAnimEvent_weapon_dmr" ? "large_shell_drop" : null,
-			ShellSoundDelay = Get( "OnClientAnimEvent" ) == "OnClientAnimEvent_weapon_dmr" ? 0.6f : 0f,
+			MuzzleLayers = Titanfall2WeaponScriptOverrides.TryGetClientAnimEvent( Get( "OnClientAnimEvent" ), out var animOverride ) ? animOverride.MuzzleLayers : [],
+			ShellSound = animOverride.ShellSound,
+			ShellSoundDelay = animOverride.ShellSoundDelay,
 			BodyGroups = Enumerable.Range( 1, 16 ).Where( i => Get( $"bodygroup{i}_name" ).Length > 0 )
 				.Select( i => new Titanfall2WeaponBodyGroup( Get( $"bodygroup{i}_name" ), (int)Math.Clamp( Number( $"bodygroup{i}_set" ), 0, 32 ) ) ).ToArray()
 		};

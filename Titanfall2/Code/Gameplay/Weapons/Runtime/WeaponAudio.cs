@@ -43,21 +43,6 @@ internal sealed partial record Titanfall2WeaponData
 
 public partial class Titanfall2Mount
 {
-	readonly Dictionary<string, Titanfall2WeaponAudio> _weaponAudio = new( StringComparer.OrdinalIgnoreCase );
-	readonly HashSet<string> _missingWeaponEvents = new( StringComparer.OrdinalIgnoreCase );
-	internal Titanfall2WeaponAudio GetWeaponAudio( Titanfall2WeaponData data )
-	{
-		if ( _weaponAudio.TryGetValue( data.ScriptName, out var audio ) ) return audio;
-		audio = data.Audio;
-		string[] Sources( string name ) => TryGetSoundEvent( name, out var definition )
-			? definition.Layers.SelectMany( layer => layer.Choice.Sources ).Distinct( StringComparer.OrdinalIgnoreCase ).ToArray() : [];
-		audio.Start1P = Sources( string.IsNullOrEmpty( audio.Player1P.Start ) ? audio.Player1P.Fire1 : audio.Player1P.Start );
-		audio.Start3P = Sources( string.IsNullOrEmpty( audio.Player3P.Start ) ? audio.Player3P.Fire1 : audio.Player3P.Start );
-		audio.Loop1P = Sources( audio.Player1P.Loop ); audio.Loop3P = Sources( audio.Player3P.Loop );
-		audio.Tail1P = Sources( audio.Player1P.End ); audio.Tail3P = Sources( audio.Player3P.End );
-		return _weaponAudio[data.ScriptName] = audio;
-	}
-
 	internal bool TryGetSoundEvent( string name, out MilesSoundEvent definition )
 	{
 		definition = null;
@@ -66,31 +51,12 @@ public partial class Titanfall2Mount
 		// Retail impact tables use these legacy dotted spellings; the installed Miles
 		// bank contains these exact underscore events. Keep this verified alias
 		// set bounded instead of applying punctuation/fuzzy matching to all sounds.
-		if ( RetailImpactEventAliases.TryGetValue( name, out var alias )
+		if ( Titanfall2ImpactAudioAliasCatalog.TryGetAlias( name, out var alias )
 			&& _milesArchive?.Events is { } aliasEvents && aliasEvents.TryGet( alias, out definition, out _ ) ) return true;
-		if ( _missingWeaponEvents.Add( name ) && Titanfall2Log.VerboseLogging )
+		if ( _gameplayCache.RecordMissingWeaponEvent( name ) && Titanfall2Log.VerboseLogging )
 			Titanfall2Log.Warning( $"TF2 exact sound event '{name}' is unavailable; no fuzzy substitution was made." );
 		return false;
 	}
-
-	static readonly Dictionary<string, string> RetailImpactEventAliases = new( StringComparer.OrdinalIgnoreCase )
-	{
-		["Default.Energy.BulletImpact_3P_vs_3P"] = "default_energy_bulletimpact_3p_vs_3p",
-		["Titan.Energy.BulletImpact_3P_vs_3P"] = "titan_energy_bulletimpact_3p_vs_3p",
-		["Android.Energy.BulletImpact_3P_vs_3P"] = "android_energy_bulletimpact_3p_vs_3p",
-		["TitanBubbleShield.Energy.BulletImpact_3P_vs_3P"] = "titanbubbleshield_energy_bulletimpact_3p_vs_3p",
-		["TitanShield.Energy.BulletImpact_3P_vs_3P"] = "titanshield_energy_bulletimpact_3p_vs_3p",
-		["Concrete.Heavy.BulletImpact_3P_vs_3P"] = "concrete_heavy_bulletimpact_3p_vs_3p",
-		["Dirt.Heavy.BulletImpact_3P_vs_3P"] = "dirt_heavy_bulletimpact_3p_vs_3p",
-		["Titan.AmpedXO16.BulletImpact_3P_vs_3P"] = "titan_ampedxo16_bulletimpact_3p_vs_3p",
-		["Flesh.LSTAR.BulletImpact_3P_vs_3P"] = "flesh_lstar_bulletimpact_3p_vs_3p",
-		["MetalGrate.Heavy.BulletImpact_3P_vs_3P"] = "metalgrate_heavy_bulletimpact_3p_vs_3p",
-		["Grass.Heavy.BulletImpact_3P_vs_3P"] = "grass_heavy_bulletimpact_3p_vs_3p",
-		["Mud.Heavy.BulletImpact_3P_vs_3P"] = "mud_heavy_bulletimpact_3p_vs_3p",
-		["Default.Heavy.BulletImpact_3P_vs_3P"] = "default_heavy_bulletimpact_3p_vs_3p",
-		["SolidMetal.Heavy.BulletImpact_3P_vs_3P"] = "solidmetal_heavy_bulletimpact_3p_vs_3p",
-		["Sand.Heavy.BulletImpact_3P_vs_3P"] = "sand_heavy_bulletimpact_3p_vs_3p"
-	};
 
 	internal bool TryGetExactSound( string name, bool loop, out SoundFile sound )
 	{

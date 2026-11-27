@@ -4,7 +4,7 @@ static class Titanfall2Workers
 	internal static Task Run( Action work ) => Run( () => { work(); return true; } );
 	internal static Task<T> Run<T>( Func<T> work )
 	{
-		var completion = new TaskCompletionSource<T>();
+		var completion = new TaskCompletionSource<T>( TaskCreationOptions.RunContinuationsAsynchronously );
 		_ = Schedule();
 		return completion.Task;
 

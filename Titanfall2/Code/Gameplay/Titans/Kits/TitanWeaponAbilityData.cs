@@ -5,16 +5,11 @@ using System.Text;
 internal sealed record Titanfall2TitanAbilityData( Titanfall2ProjectileSettings Projectile, float Damage,
 	float TitanDamage, float Range, int Shots, float Interval, string Sound, string Tracer )
 {
-	internal static string ScriptFor( Titanfall2TitanKit.Chassis kit, bool defense = false ) => defense
-		? kit == Titanfall2TitanKit.Chassis.Monarch ? "mp_titanweapon_stun_laser" : null
-		: kit switch
-		{
-			Titanfall2TitanKit.Chassis.Monarch => "mp_titanweapon_salvo_rockets",
-			Titanfall2TitanKit.Chassis.Ion => "mp_titanweapon_laser_lite",
-			Titanfall2TitanKit.Chassis.Tone => "mp_titanweapon_tracker_rockets",
-			Titanfall2TitanKit.Chassis.Northstar => "mp_titanweapon_dumbfire_rockets",
-			_ => null
-		};
+	internal static string ScriptFor( Titanfall2TitanKit.Chassis kit, bool defense = false )
+	{
+		var profile = Titanfall2TitanChassisCatalog.Get( kit );
+		return defense ? profile.DefenseScript : profile.OffenseScript;
+	}
 }
 
 internal sealed partial record Titanfall2WeaponData
@@ -78,50 +73,6 @@ internal sealed partial record Titanfall2WeaponData
 			1f / Math.Clamp( Number( "fire_rate", 10 ), 0.1f, 60 ),
 			Get( "fire_sound_1_player_3p" ) is { Length: > 0 } sound ? sound : Get( "burst_or_looping_fire_sound_start_3p" ),
 			Get( "tracer_effect" ) );
-	}
-}
-
-public partial class Titanfall2Mount
-{
-	Titanfall2ContentSnapshot _ionSnapshot;
-	Titanfall2IonData _ionData;
-	internal Titanfall2IonData GetIonData()
-	{
-		if ( _contentSnapshot is null ) return null;
-		if ( ReferenceEquals( _ionSnapshot, _contentSnapshot ) ) return _ionData;
-		_ionSnapshot = _contentSnapshot;
-		try { _ionData = Titanfall2WeaponData.ReadIonData( Read ); }
-		catch ( InvalidDataException ) { _ionData = null; }
-		return _ionData;
-		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
-			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? Encoding.UTF8.GetString( bytes ) : null;
-	}
-	Titanfall2ContentSnapshot _titanAbilitySnapshot;
-	readonly Dictionary<string, Titanfall2TitanAbilityData> _titanAbilities = new( StringComparer.OrdinalIgnoreCase );
-
-	internal Titanfall2TitanAbilityData GetTitanAbility( Titanfall2TitanKit.Chassis kit, bool defense = false )
-	{
-		var script = Titanfall2TitanAbilityData.ScriptFor( kit, defense );
-		if ( script is null || _contentSnapshot is null ) return null;
-		if ( !ReferenceEquals( _titanAbilitySnapshot, _contentSnapshot ) )
-		{
-			_titanAbilitySnapshot = _contentSnapshot;
-			_titanAbilities.Clear();
-		}
-		if ( _titanAbilities.TryGetValue( script, out var result ) ) return result;
-		try
-		{
-			var speed = kit == Titanfall2TitanKit.Chassis.Northstar ? 3500f : kit == Titanfall2TitanKit.Chassis.Tone ? 1800f : 2200f;
-			var behavior = kit == Titanfall2TitanKit.Chassis.Tone ? Titanfall2ProjectileBehavior.HomingTitan
-				: kit == Titanfall2TitanKit.Chassis.Northstar ? Titanfall2ProjectileBehavior.ClusterBurst : Titanfall2ProjectileBehavior.Standard;
-			result = Titanfall2WeaponData.ReadTitanAbility( $"scripts/weapons/{script}.txt", Read, speed, behavior );
-		}
-		catch ( InvalidDataException ) { result = null; }
-		_titanAbilities[script] = result;
-		return result;
-
-		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
-			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? Encoding.UTF8.GetString( bytes ) : null;
 	}
 }
 

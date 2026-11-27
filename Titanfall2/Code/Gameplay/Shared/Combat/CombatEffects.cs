@@ -1,34 +1,3 @@
-/// <summary>Snapshot-bound retail impact tables shared by weapons, NPCs and projectiles.</summary>
-public partial class Titanfall2Mount
-{
-	readonly Dictionary<string, IReadOnlyList<Titanfall2VmtDefinition.VmtBlock>> _combatTables = new( StringComparer.OrdinalIgnoreCase );
-
-	internal string CombatImpactValue( string table, string section, string material )
-	{
-		if ( string.IsNullOrWhiteSpace( table ) || table.IndexOfAny( ['/', '\\', '.'] ) >= 0 ) table = "default";
-		if ( !_combatTables.TryGetValue( table, out var blocks ) )
-		{
-			blocks = [];
-			if ( _contentSnapshot?.GetSource( $"scripts/impacts/{table}.txt" ) is { } source
-				&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length < 1024 * 1024
-				&& Titanfall2VmtReader.TryReadBlocks( bytes, out var parsed, out _ ) ) blocks = parsed;
-			_combatTables[table] = blocks;
-		}
-		return blocks.FirstOrDefault()?.Children.FirstOrDefault( b => b.Name.Equals( section, StringComparison.OrdinalIgnoreCase ) )
-			?.Values.GetValueOrDefault( material );
-	}
-
-	internal string CombatSurfaceMaterial( Surface surface )
-	{
-		var path = surface?.ResourcePath ?? "";
-		var marker = path.IndexOf( "surfaceproperties/", StringComparison.OrdinalIgnoreCase );
-		if ( marker < 0 ) return null;
-		var name = Uri.UnescapeDataString( path[(marker + 18)..] );
-		if ( name.EndsWith( ".surface", StringComparison.OrdinalIgnoreCase ) ) name = name[..^8];
-		return _surfaceCatalog?.Resolve( name )?.GetValueOrDefault( "gamematerial" )?.ToUpperInvariant();
-	}
-}
-
 /// <summary>Local presentation only. Damage and hit decisions stay on the host.</summary>
 static class Titanfall2CombatEffects
 {

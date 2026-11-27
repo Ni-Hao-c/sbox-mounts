@@ -47,26 +47,6 @@ internal sealed record Titanfall2NpcGrenadeData( Titanfall2ProjectileSettings Pr
 	}
 }
 
-public partial class Titanfall2Mount
-{
-	Titanfall2ContentSnapshot _npcGrenadeSnapshot;
-	Titanfall2NpcGrenadeData _npcGrenadeData;
-
-	internal Titanfall2NpcGrenadeData GetNpcGrenadeData()
-	{
-		if ( ReferenceEquals( _npcGrenadeSnapshot, _contentSnapshot ) ) return _npcGrenadeData;
-		_npcGrenadeSnapshot = _contentSnapshot;
-		_npcGrenadeData = null;
-		try
-		{
-			_npcGrenadeData = Titanfall2NpcGrenadeData.Read( path => _contentSnapshot?.GetSource( path ) is { } source
-				&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? Encoding.UTF8.GetString( bytes ) : null );
-		}
-		catch ( InvalidDataException error ) { Titanfall2Log.Warning( $"NPC frag grenade is unavailable: {error.Message}" ); }
-		return _npcGrenadeData;
-	}
-}
-
 public sealed partial class Titanfall2Npc
 {
 	[Property] public bool UseGrenades { get; set; } = true;

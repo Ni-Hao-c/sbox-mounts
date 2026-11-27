@@ -6,19 +6,19 @@ public partial class Titanfall2Mount : BaseGameMount
 	const long AppId = 1237970;
 
 	string _root;
-	// Material prefetch workers read these two while the mount may fill or clear them
-	// (remount/shutdown), so they are concurrent rather than plain dictionaries.
+	// Background material/model prefetch workers read these while Mount/Shutdown may
+	// populate or clear them, so they use ConcurrentDictionary.
 	readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, string> _texturePaths = new();
-	readonly Dictionary<ulong, string> _shaderSetNames = new();
-	readonly Dictionary<ulong, MountedAssetSource> _shaderSetSources = new();
-	readonly Dictionary<ulong, MountedAssetSource> _shaderSources = new();
+	readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, string> _shaderSetNames = new();
+	readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, MountedAssetSource> _shaderSetSources = new();
+	readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, MountedAssetSource> _shaderSources = new();
 	readonly Dictionary<ulong, DxbcShaderReflection> _shaderReflections = new();
 	readonly Dictionary<ulong, string> _shaderReflectionErrors = new();
 	readonly Dictionary<string, string> _materialPaths = new( StringComparer.OrdinalIgnoreCase );
 	readonly System.Collections.Concurrent.ConcurrentDictionary<string, MountedAssetSource> _materialSources = new( StringComparer.OrdinalIgnoreCase );
-	readonly Dictionary<string, ITitanfall2AssetSource> _legacyMaterialSources = new( StringComparer.OrdinalIgnoreCase );
-	readonly Dictionary<string, ITitanfall2AssetSource> _legacyTextureSources = new( StringComparer.OrdinalIgnoreCase );
-	readonly Dictionary<string, ITitanfall2AssetSource> _modelSources = new( StringComparer.OrdinalIgnoreCase );
+	readonly System.Collections.Concurrent.ConcurrentDictionary<string, ITitanfall2AssetSource> _legacyMaterialSources = new( StringComparer.OrdinalIgnoreCase );
+	readonly System.Collections.Concurrent.ConcurrentDictionary<string, ITitanfall2AssetSource> _legacyTextureSources = new( StringComparer.OrdinalIgnoreCase );
+	readonly System.Collections.Concurrent.ConcurrentDictionary<string, ITitanfall2AssetSource> _modelSources = new( StringComparer.OrdinalIgnoreCase );
 	readonly List<Titanfall2BrushModelSource> _brushModelSources = new();
 	readonly Dictionary<string, Titanfall2VmtDefinition> _legacyMaterialDefinitions = new( StringComparer.OrdinalIgnoreCase );
 	readonly Dictionary<string, string> _legacyMaterialErrors = new( StringComparer.OrdinalIgnoreCase );
@@ -74,7 +74,7 @@ public partial class Titanfall2Mount : BaseGameMount
 	protected override Task Mount( MountContext context )
 	{
 		Titanfall2GraphicsSettings.Connect();
-		InvalidateSceneReleaseWork();
+		ResetMapSceneLeases();
 		_contentFingerprint = null;
 		var registered = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 		var profile = Titanfall2Options.Get( "SBOX_TITANFALL2_NORTHSTAR_PROFILE" );
@@ -150,24 +150,17 @@ public partial class Titanfall2Mount : BaseGameMount
 
 	protected override void Shutdown()
 	{
-		ResetWeaponPrewarm();
 		ClearUiAtlasCache();
 		ClearWeaponUiLayouts();
 		ResetWeaponFonts();
 		_mapPreviewImages.Clear();
 		_mapPreviewNames.Clear();
-		_combatTables.Clear();
-		_pilotSettings = null;
-		_pilotMeleeSettings = null;
-		_defaultOffhandOrdnance = null;
-		_weaponAudio.Clear();
-		_ordnanceSoundSamples.Clear();
-		_missingWeaponEvents.Clear();
-		_combatDecals.Clear();
+		_gameplayCache.Reset();
 		_surfaceCatalog = null;
 		Titanfall2GraphicsSettings.Disconnect();
-		InvalidateSceneReleaseWork();
+		ResetMapSceneLeases();
 		_contentSnapshot = null;
+		_contentFingerprint = null;
 		ReleaseMountCaches();
 		ReleaseMapImports();
 		foreach ( var source in _brushModelSources ) source.Dispose();
@@ -208,12 +201,13 @@ public partial class Titanfall2Mount : BaseGameMount
 		_milesSoundOrdered = null;
 		_soundscapeScriptSource = null;
 		_soundscapeLoops = null;
-		_soundLookupTicks = 0;
-		_soundReadTicks = 0;
-		_soundDecodeTicks = 0;
-		_soundCreateTicks = 0;
-		_soundPcmBytes = 0;
-		_soundLoadCount = 0;
+		System.Threading.Interlocked.Exchange( ref _soundLookupTicks, 0 );
+		System.Threading.Interlocked.Exchange( ref _soundReadTicks, 0 );
+		System.Threading.Interlocked.Exchange( ref _soundDecodeTicks, 0 );
+		System.Threading.Interlocked.Exchange( ref _soundCreateTicks, 0 );
+		System.Threading.Interlocked.Exchange( ref _soundPcmBytes, 0 );
+		System.Threading.Interlocked.Exchange( ref _soundLoadCount, 0 );
+		System.Threading.Interlocked.Exchange( ref _failedSoundLookups, 0 );
 		lock ( _materialDescriptorLock )
 		{
 			_materialDescriptors.Clear();
@@ -330,12 +324,12 @@ public partial class Titanfall2Mount : BaseGameMount
 		var inBank = _milesArchive is not null && (exact
 			? _milesSoundAssets.TryGetValue( key, out asset )
 			: TryFindMilesAsset( key, out asset ));
-		_soundLookupTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+		System.Threading.Interlocked.Add( ref _soundLookupTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started );
 		if ( inBank )
 		{
 			started = System.Diagnostics.Stopwatch.GetTimestamp();
 			var read = _milesArchive.TryReadBcf( asset, out var bcf, out var readError );
-			_soundReadTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+			System.Threading.Interlocked.Add( ref _soundReadTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started );
 			if ( !read )
 			{
 				error = readError;
@@ -344,7 +338,7 @@ public partial class Titanfall2Mount : BaseGameMount
 			{
 				started = System.Diagnostics.Stopwatch.GetTimestamp();
 				var decoded = _milesArchive.TryDecode( bcf, out var pcm, out var rate, out var channels, out var decodeError );
-				_soundDecodeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+				System.Threading.Interlocked.Add( ref _soundDecodeTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started );
 				if ( !decoded )
 				{
 					error = decodeError;
@@ -359,11 +353,11 @@ public partial class Titanfall2Mount : BaseGameMount
 						Bits = 16,
 						Loop = loop
 					} );
-					_soundCreateTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+					System.Threading.Interlocked.Add( ref _soundCreateTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started );
 					if ( sound is not null )
 					{
-						_soundPcmBytes += pcm.Length;
-						_soundLoadCount++;
+						System.Threading.Interlocked.Add( ref _soundPcmBytes, pcm.Length );
+						System.Threading.Interlocked.Increment( ref _soundLoadCount );
 						return sound;
 					}
 					error = "SoundFile.FromPcm returned null";
@@ -386,7 +380,7 @@ public partial class Titanfall2Mount : BaseGameMount
 		}
 
 		error ??= $"sound '{key}' was not found";
-		if ( _failedSoundLookups++ < 4 )
+		if ( System.Threading.Interlocked.Increment( ref _failedSoundLookups ) <= 4 )
 		{
 			var tail = StripSoundPrefix( key );
 			var samples = _milesSoundAssets.Keys

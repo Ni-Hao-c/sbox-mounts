@@ -729,8 +729,17 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		if ( _hud.IsValid() ) _hud.Destroy();
 		if ( _cockpitView.IsValid() ) _cockpitView.Destroy();
 	}
-	protected override void OnDisabled() => ReleaseSeat();
-	protected override void OnDestroy() => ReleaseSeat();
+	protected override void OnEnabled() => Scene?.GetSystem<Titanfall2PilotInputInterceptor>()?.RegisterSeat( this );
+	protected override void OnDisabled()
+	{
+		Scene?.GetSystem<Titanfall2PilotInputInterceptor>()?.UnregisterSeat( this );
+		ReleaseSeat();
+	}
+	protected override void OnDestroy()
+	{
+		Scene?.GetSystem<Titanfall2PilotInputInterceptor>()?.UnregisterSeat( this );
+		ReleaseSeat();
+	}
 	public override void OnDamage( in DamageInfo damage ) { }
 }
 

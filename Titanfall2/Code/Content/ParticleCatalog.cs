@@ -141,8 +141,13 @@ public partial class Titanfall2Mount
 
 	void RecordParticleFailure( string path, string error )
 	{
-		lock ( _particleCatalogLock ) _particleFileFailures++;
-		if ( _particleFailureLogs++ < 16 )
+		bool shouldLog;
+		lock ( _particleCatalogLock )
+		{
+			_particleFileFailures++;
+			shouldLog = _particleFailureLogs++ < 16;
+		}
+		if ( shouldLog )
 			Titanfall2Log.Warning( $"Unable to index Titanfall 2 particle library '{path}': {error}" );
 	}
 

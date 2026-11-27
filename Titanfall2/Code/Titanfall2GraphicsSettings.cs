@@ -12,7 +12,7 @@ static class Titanfall2GraphicsSettings
 
 	internal sealed record Snapshot( string TextureQuality, int TextureMaxDimension, string Source );
 
-	static readonly int? TextureOverride = Titanfall2StreamingSettings.GetOptionalInt(
+	static readonly int? TextureOverride = Titanfall2Options.GetOptionalInt(
 		"SBOX_TITANFALL2_TEXTURE_MAX", 64, 16384 );
 	static Snapshot _current = Resolve( null, TextureOverride );
 	static RenderSettings _settings;

@@ -1,5 +1,3 @@
-using System.Text;
-
 internal sealed partial record Titanfall2WeaponData
 {
 	internal static Titanfall2TitanAbilityData ReadMortarAbility( Func<string, string> read )
@@ -15,22 +13,5 @@ internal sealed partial record Titanfall2WeaponData
 			TrailEffect = mortar.Values.GetValueOrDefault( "projectile_trail_effect_0", ability.Projectile.TrailEffect ),
 			ImpactTable = mortar.Values.GetValueOrDefault( "impact_effect_table", ability.Projectile.ImpactTable )
 		} };
-	}
-}
-
-public partial class Titanfall2Mount
-{
-	Titanfall2ContentSnapshot _mortarWeaponSnapshot;
-	Titanfall2TitanAbilityData _mortarWeapon;
-	internal Titanfall2TitanAbilityData GetMortarWeapon()
-	{
-		if ( _contentSnapshot is null ) return null;
-		if ( ReferenceEquals( _mortarWeaponSnapshot, _contentSnapshot ) ) return _mortarWeapon;
-		_mortarWeaponSnapshot = _contentSnapshot;
-		try { _mortarWeapon = Titanfall2WeaponData.ReadMortarAbility( Read ); }
-		catch ( InvalidDataException error ) { Titanfall2Log.Warning( $"Mortar weapon unavailable: {error.Message}" ); _mortarWeapon = null; }
-		return _mortarWeapon;
-		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source && source.TryReadAllBytes( out var bytes, out _ )
-			? Encoding.UTF8.GetString( bytes ) : null;
 	}
 }

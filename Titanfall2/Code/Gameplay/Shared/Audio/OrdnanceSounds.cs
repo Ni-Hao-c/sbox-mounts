@@ -24,15 +24,3 @@ static class Titanfall2OrdnanceSounds
 		return handle.IsValid();
 	}
 }
-
-public partial class Titanfall2Mount
-{
-	readonly Dictionary<string, string[]> _ordnanceSoundSamples = new( StringComparer.OrdinalIgnoreCase );
-	internal string[] GetOrdnanceSamples( string role )
-	{
-		if ( _ordnanceSoundSamples.TryGetValue( role, out var samples ) ) return samples;
-		var prefix = Titanfall2OrdnanceSounds.Prefix( role );
-		return _ordnanceSoundSamples[role] = prefix is null ? [] : _milesSoundAssets.Keys
-			.Where( name => name.StartsWith( prefix, StringComparison.OrdinalIgnoreCase ) ).OrderBy( name => name, StringComparer.OrdinalIgnoreCase ).ToArray();
-	}
-}
