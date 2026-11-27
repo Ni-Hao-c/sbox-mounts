@@ -134,7 +134,7 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 	[Sync] public Vector3 SlideDirection { get; internal set; }
 	[Sync] public int DoubleJumpsRemaining { get; internal set; } = 1;
 
-	public bool CombatBusy => _combat.IsValid() && _combat.CombatBusy;
+	public bool CombatBusy => (_combat.IsValid() && _combat.CombatBusy) || (_tactical.IsValid() && _tactical.IsPhaseActive);
 
 	public Titanfall2PilotViewPoseState ViewPoseState => new(
 		WallrunSide, SlideBlend, MantleProgress, _airborneBlend, HorizontalSpeed,
@@ -1372,9 +1372,12 @@ public sealed class Titanfall2PilotMoveMode : MoveMode
 		var halfWidth = MathF.Max( 4f, BodyHalfWidth - 0.5f );
 		var height = Math.Clamp( Controller.CurrentHeight - 2f, 28f, 96f );
 		var box = new BBox( new Vector3( -halfWidth, -halfWidth, 0f ), new Vector3( halfWidth, halfWidth, height ) );
-		return Titanfall2CollisionQueries.Run( Scene.Trace.Box( box, start, end )
-			.IgnoreGameObjectHierarchy( GameObject )
-			.WithoutTags( "trigger", "projectile", "player" ), Titanfall2TraceMask.PlayerSolid );
+		var phased = Parkour.IsValid() && Parkour.Tactical is { IsValid: true, IsPhaseActive: true };
+		var query = Scene.Trace.Box( box, start, end ).IgnoreGameObjectHierarchy( GameObject );
+		query = phased
+			? query.WithoutTags( "trigger", "projectile", "player", "npc", "titan", Titanfall2PhaseDimension.RealspaceTag )
+			: query.WithoutTags( "trigger", "projectile", "player" );
+		return Titanfall2CollisionQueries.Run( query, Titanfall2TraceMask.PlayerSolid );
 	}
 
 	static bool IsRunnableWallHit( in SceneTraceResult hit ) =>

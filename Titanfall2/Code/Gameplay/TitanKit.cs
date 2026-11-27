@@ -210,7 +210,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	public bool TryOffense( Ray aim, GameObject attacker )
 	{
 		LastOffenseFailure = null;
-		if ( !Ready || !ValidAim( aim ) ) { LastOffenseFailure = "机体无法使用攻击技能"; return false; }
+		if ( !Ready || IsPhasing || !ValidAim( aim ) ) { LastOffenseFailure = "机体无法使用攻击技能"; return false; }
 		if ( OffenseRemaining > 0 || _rockets > 0 ) { LastOffenseFailure = "攻击技能冷却中"; return false; }
 		var data = AbilityData();
 		if ( Titanfall2TitanAbilityData.ScriptFor( Kit ) is not null && data is null )
@@ -298,7 +298,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	/// <summary>Slot 3 countermeasure: deploys an anti-pilot/area Electric Smoke cloud centered on the Titan.</summary>
 	public bool TryElectricSmoke( GameObject attacker )
 	{
-		if ( !Ready || SmokeRemaining > 0 ) return false;
+		if ( !Ready || IsPhasing || SmokeRemaining > 0 ) return false;
 		SmokeRemaining = Math.Clamp( SmokeCooldown, 2f, 120f );
 		var origin = Actor.WorldPosition + Vector3.Up * (Actor.BodyHeight * 0.42f);
 		var smokeSettings = new Titanfall2ProjectileSettings
@@ -321,7 +321,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	/// <summary>Slot 4 close-quarters strike: initiates Titan-vs-Titan Termination on a Doomed enemy Titan, else heavy punch/sword cleave.</summary>
 	public bool TryTitanMelee( Ray aim, GameObject attacker )
 	{
-		if ( !Ready || Actor.IsInTermination || MeleeRemaining > 0 || !ValidAim( aim ) ) return false;
+		if ( !Ready || IsPhasing || Actor.IsInTermination || MeleeRemaining > 0 || !ValidAim( aim ) ) return false;
 		var core = Actor.GetComponent<Titanfall2TitanCore>();
 		if ( core is { BlocksPrimary: true, SwordCoreActive: false } ) return false;
 
@@ -688,9 +688,13 @@ public sealed partial class Titanfall2TitanKit : Component
 	protected override void OnDisabled()
 	{
 		if ( _guardVisual.IsValid() ) _guardVisual.Destroy();
+		ReleaseRoninPhaseCamera();
 		if ( Actor.IsValid() && Actor.Renderer.IsValid() ) Actor.Renderer.RenderOptions.Game = true;
+		if ( Actor.IsValid() ) Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: true );
 		if ( Networking.IsHost && !IsProxy ) { _rockets = 0; GuardRemaining = 0; ClearUtilityState(); ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); ClearHoldDefenseInput(); }
 	}
+
+	protected override void OnDestroy() => ReleaseRoninPhaseCamera();
 }
 
 public sealed partial class Titanfall2Npc

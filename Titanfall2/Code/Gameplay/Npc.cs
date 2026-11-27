@@ -185,6 +185,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		EyeHeight = BodyHeight * 0.79f;
 		FollowDistance = MathF.Max( 120f, BodyRadius * 8f );
 		if ( string.IsNullOrWhiteSpace( Faction ) ) Faction = "imc";
+		GameObject.Tags.Add( Titanfall2PhaseDimension.RealspaceTag );
 		base.OnStart();
 
 		if ( Networking.IsHost && !IsProxy )

@@ -57,7 +57,7 @@ public sealed partial class Titanfall2TitanKit
 	public bool BlocksTitanPrimary =>
 		(Kit == Chassis.Ion && (IonVortexActive || IonZoomFraction is > 0 and < 1))
 		|| (Kit == Chassis.Scorch && DefenseVolumeActive)
-		|| (Kit == Chassis.Ronin && RoninBlocking);
+		|| (Kit == Chassis.Ronin && (RoninBlocking || IsPhasing));
 	public bool CanIonLaser => Kit == Chassis.Ion && !IonVortexActive && OffenseRemaining <= 0
 		&& IonData() is { } data && SharedEnergy >= data.LaserCost;
 	readonly Titanfall2IonEnergy _ionEnergy = new();

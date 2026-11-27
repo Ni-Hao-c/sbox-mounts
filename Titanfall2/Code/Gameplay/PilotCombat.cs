@@ -50,6 +50,9 @@ public sealed class Titanfall2PilotInputInterceptor : GameObjectSystem<Titanfall
 
 		if ( Application.IsHeadless ) return;
 
+		var tactical = localCombat.GameObject.GetComponent<Titanfall2PilotTactical>();
+		var inPhase = tactical is { IsValid: true, Active: true, IsPhaseActive: true };
+
 		var meleePressed = Input.Pressed( "Flashlight" );
 		var ordnancePressed = Input.Pressed( "drop" );
 		var ordnanceDown = Input.Down( "drop" );
@@ -64,11 +67,22 @@ public sealed class Titanfall2PilotInputInterceptor : GameObjectSystem<Titanfall
 		ClearAction( "toolmenu" );
 		ClearAction( "spray" );
 
-		localCombat.ProcessFrameInput( meleePressed, ordnancePressed, ordnanceDown, ordnanceReleased );
-		if ( localCombat.GameObject.GetComponent<Titanfall2PilotTactical>() is { IsValid: true, Active: true } tactical )
+		if ( inPhase )
 		{
-			if ( tacticalCyclePressed ) tactical.CycleTactical();
-			if ( tacticalPressed ) tactical.TriggerTactical();
+			// Retail Phase Dimension rule: no firing, ADS, melee, or ordnance throws while phased (reload & parkour stay allowed).
+			ClearAction( "attack1" );
+			ClearAction( "attack2" );
+			localCombat.OnInputYielded();
+		}
+		else
+		{
+			localCombat.ProcessFrameInput( meleePressed, ordnancePressed, ordnanceDown, ordnanceReleased );
+		}
+
+		if ( tactical is { IsValid: true, Active: true } )
+		{
+			if ( !inPhase && tacticalCyclePressed ) tactical.CycleTactical();
+			if ( !inPhase && tacticalPressed ) tactical.TriggerTactical();
 		}
 	}
 
@@ -305,6 +319,13 @@ public sealed class Titanfall2PilotCombat : Component
 		YieldedToSandbox = Titanfall2PilotCombatRules.ShouldYieldCombatInput(
 			equipped, pilotModeActive, useInput, uiCapturing, activeType );
 		return YieldedToSandbox;
+	}
+
+	internal void NotifyTelefragKillHost()
+	{
+		if ( !Networking.IsHost ) return;
+		MeleeLastHitWasKill = true;
+		MeleeHitSerial = MeleeHitSerial == int.MaxValue ? 1 : MeleeHitSerial + 1;
 	}
 
 	internal void OnInputYielded()

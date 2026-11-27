@@ -64,6 +64,16 @@ public sealed partial class Titanfall2Projectile : Component
 	Surface _stuckSurface;
 	readonly List<GameObject> _trails = [];
 
+	internal GameObject StuckTarget => _stuck ? _stuckTo : null;
+
+	internal void CleanseFromPhase()
+	{
+		if ( !Networking.IsHost || IsProxy || _finished ) return;
+		_finished = true;
+		ReleaseTrail();
+		GameObject.Destroy();
+	}
+
 	internal void SetHostVelocity( Vector3 velocity )
 	{
 		if ( Networking.IsHost && !IsProxy && !_finished && velocity.IsFinite ) Velocity = velocity;

@@ -64,8 +64,9 @@ titanfall2pilotcombathud {
 		background-color: #16ff8814;
 	}
 	.tactical-overlay.phase {
-		border: 18px solid #63d9ff88;
-		background-color: #12283852;
+		border: 20px solid #76e4ff99;
+		background-color: #162a3a72;
+		backdrop-filter: saturate(20%) contrast(1.1);
 	}
 	.tactical-overlay.active { opacity: 1; }
 

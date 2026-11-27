@@ -98,11 +98,12 @@ public sealed class Titanfall2PilotTactical : Component
 	PropertyDescription _maxHealthProp;
 	bool _resolvedHealthProps;
 
-	// Local/3P grapple rope & anchor visuals.
+	// Local/3P grapple rope & phase camera isolation state.
 	GameObject _ropeVisual;
 	GameObject _ropeStartObj;
 	GameObject _ropeEndObj;
 	LineRenderer _ropeLine;
+	CameraComponent _phaseCamera;
 
 	internal static Titanfall2PilotTacticalSettings ResolveSettings( string mountIdent ) =>
 		Sandbox.Mounting.Directory.Get( mountIdent ?? "titanfall2" ) is Titanfall2Mount mount
@@ -345,6 +346,10 @@ public sealed class Titanfall2PilotTactical : Component
 				ChargeUnits = MathF.Max( 0f, ChargeUnits - Titanfall2PilotTacticalRules.ChargeUnitsPerUse );
 				PhaseRemaining = Settings.PhaseDuration;
 				ActivationSerial++;
+				Titanfall2PhaseDimension.EnsurePhysicsRules( Scene );
+				Titanfall2PhaseDimension.MarkRealspace( GameObject, inRealspace: false );
+				Titanfall2PhaseDimension.CleanseStuckProjectiles( Scene, GameObject );
+				SpawnPhaseRiftRpc( WorldPosition + Vector3.Up * 36f );
 				PlayTacticalSoundRpc( "Jumpjet_Wallrun_Start_1P", "Jumpjet_Wallrun_Start_3P", WorldPosition );
 				return true;
 
@@ -512,38 +517,9 @@ public sealed class Titanfall2PilotTactical : Component
 	void ResolvePhaseExitSafetyHost()
 	{
 		if ( !_controller.IsValid() ) return;
-		var half = MathF.Max( 8f, _controller.BodyRadius * 0.5f );
-		var height = _controller.IsDucking ? _controller.DuckedHeight : _controller.BodyHeight;
-		var hull = new BBox( new Vector3( -half, -half, 2f ), new Vector3( half, half, height ) );
-		var check = Scene.Trace.Box( hull, WorldPosition, WorldPosition )
-			.IgnoreGameObjectHierarchy( GameObject )
-			.WithoutTags( "trigger", "projectile" )
-			.Run();
-		if ( !check.StartedSolid ) return;
-
-		// Try cardinal escape offsets around the exit point so the Pilot never sticks inside an NPC or Titan.
-		Vector3[] offsets =
-		[
-			Vector3.Up * 32f,
-			WorldRotation.Backward * 48f,
-			WorldRotation.Right * 48f,
-			WorldRotation.Left * 48f,
-			WorldRotation.Forward * 48f,
-			Vector3.Up * 64f
-		];
-		foreach ( var offset in offsets )
-		{
-			var candidate = WorldPosition + offset;
-			var probe = Scene.Trace.Box( hull, candidate, candidate )
-				.IgnoreGameObjectHierarchy( GameObject )
-				.WithoutTags( "trigger", "projectile" )
-				.Run();
-			if ( !probe.StartedSolid )
-			{
-				WorldPosition = candidate;
-				return;
-			}
-		}
+		Titanfall2PhaseDimension.MarkRealspace( GameObject, inRealspace: true );
+		Titanfall2PhaseDimension.ResolvePilotExitHost( _controller, MountIdent );
+		SpawnPhaseRiftRpc( WorldPosition + Vector3.Up * 36f );
 	}
 
 	Vector3 ResolveCurrentAnchor()
@@ -576,9 +552,12 @@ public sealed class Titanfall2PilotTactical : Component
 
 		if ( phased )
 		{
-			GameObject.Tags.Add( PhasedTag );
+			Titanfall2PhaseDimension.EnsurePhysicsRules( Scene );
+			Titanfall2PhaseDimension.MarkRealspace( GameObject, inRealspace: false );
 			if ( !Application.IsHeadless && _controller.IsValid() && _controller.Renderer.IsValid() && (IsProxy || _controller.ThirdPerson) )
 				_controller.Renderer.RenderOptions.Game = false;
+			if ( !IsProxy )
+				Titanfall2PhaseDimension.SetCameraPhaseIsolation( Scene, ref _phaseCamera, active: true );
 		}
 		else
 		{
@@ -590,10 +569,18 @@ public sealed class Titanfall2PilotTactical : Component
 	{
 		_wasPhased = false;
 		if ( GameObject.IsValid() )
+		{
 			GameObject.Tags.Remove( PhasedTag );
+			GameObject.Tags.Remove( Titanfall2PhaseDimension.RealspaceTag );
+		}
 		if ( _controller.IsValid() && _controller.Renderer.IsValid() )
 			_controller.Renderer.RenderOptions.Game = true;
+		Titanfall2PhaseDimension.SetCameraPhaseIsolation( Scene, ref _phaseCamera, active: false );
 	}
+
+	[Rpc.Broadcast( NetFlags.HostOnly )]
+	void SpawnPhaseRiftRpc( Vector3 origin ) =>
+		Titanfall2PhaseDimension.SpawnPhaseRiftVisual( Scene, origin, large: false );
 
 	void UpdateGrappleVisual()
 	{

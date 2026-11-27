@@ -12,7 +12,7 @@ titanfall2titancockpithud {
 	text-shadow: 0 1px 3px #000e;
 	image { object-fit: contain; background-repeat: no-repeat; background-position: center; background-size: contain; }
 	.damage-overlay { position: absolute; width: 100%; height: 100%; opacity: 0; object-fit: fill; background-size: 100% 100%; }
-	.phase-overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0; border: 20px solid #63d9ff88; background-color: #10263664; transition: opacity 0.12s ease; }
+	.phase-overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0; border: 22px solid #76e4ff99; background-color: #162a3a72; backdrop-filter: saturate(20%) contrast(1.1); transition: opacity 0.12s ease; }
 	.phase-overlay.active { opacity: 1; }
 	.sonar-marker { position: absolute; width: 18px; height: 18px; margin-left: -9px; margin-top: -9px; border: 2px solid #ff7a2e; background-color: #ff601433; transform: rotate(45deg); display: none; }
 	.sonar-marker.visible { display: flex; }

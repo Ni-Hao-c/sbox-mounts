@@ -26,6 +26,7 @@ public sealed partial class Titanfall2TitanKit
 	float _thermalRechargeDelay;
 	bool _wasPhasingHost;
 	bool _wasPhasingVisual;
+	CameraComponent _roninPhaseCamera;
 
 	public string UtilityName => Kit switch
 	{
@@ -75,7 +76,8 @@ public sealed partial class Titanfall2TitanKit
 
 		if ( Kit == Chassis.Ronin )
 		{
-			RoninBlocking = held && !IsPhasing;
+			// Retail Ronin tech: holding Sword Block during Phase Dash braces against Titan exit-overlap recoil.
+			RoninBlocking = held;
 			GuardRemaining = RoninBlocking ? 0.25f : 0f;
 			return;
 		}
@@ -158,7 +160,7 @@ public sealed partial class Titanfall2TitanKit
 		}
 		else if ( Kit == Chassis.Ronin && RoninBlocking )
 		{
-			if ( !_holdDefenseHeld || !_holdDefensePilot.IsValid() || IsPhasing )
+			if ( !_holdDefenseHeld || !_holdDefensePilot.IsValid() )
 			{
 				RoninBlocking = false;
 				GuardRemaining = 0f;
@@ -184,46 +186,31 @@ public sealed partial class Titanfall2TitanKit
 	void UpdatePhaseVisual()
 	{
 		var phasing = IsPhasing;
+		var localPiloted = Actor.IsValid() && Actor.Seat?.LocalPilot is not null;
+		Titanfall2PhaseDimension.SetCameraPhaseIsolation( Scene, ref _roninPhaseCamera, active: phasing && localPiloted );
+
 		if ( phasing == _wasPhasingVisual ) return;
 		_wasPhasingVisual = phasing;
 		if ( !Actor.IsValid() ) return;
+		Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: !phasing );
 		if ( Actor.Renderer.IsValid() ) Actor.Renderer.RenderOptions.Game = !phasing;
 		Actor.ShowCorePrimaryWeapon( !phasing );
 	}
 
+	void ReleaseRoninPhaseCamera() =>
+		Titanfall2PhaseDimension.SetCameraPhaseIsolation( Scene, ref _roninPhaseCamera, active: false );
+
 	void ResolveRoninPhaseExitHost()
 	{
 		if ( !Networking.IsHost || !Actor.IsValid() || !Scene.IsValid() ) return;
-		var radius = MathF.Max( 16f, Actor.BodyRadius - 2f );
-		var hull = new BBox( new Vector3( -radius, -radius, 4f ), new Vector3( radius, radius, MathF.Max( 36f, Actor.BodyHeight - 4f ) ) );
-		var check = Scene.Trace.Box( hull, Actor.WorldPosition, Actor.WorldPosition )
-			.IgnoreGameObjectHierarchy( Actor.GameObject )
-			.WithoutTags( "trigger", "projectile", "tether-trap" )
-			.Run();
-		if ( !check.StartedSolid ) return;
-
-		Vector3[] escapes =
-		[
-			Actor.WorldRotation.Backward * 110f,
-			Actor.WorldRotation.Right * 110f,
-			Actor.WorldRotation.Left * 110f,
-			Actor.WorldRotation.Forward * 110f,
-			Actor.WorldRotation.Backward * 180f
-		];
-		foreach ( var offset in escapes )
-		{
-			var candidate = Actor.WorldPosition + offset;
-			var probe = Scene.Trace.Box( hull, candidate, candidate )
-				.IgnoreGameObjectHierarchy( Actor.GameObject )
-				.WithoutTags( "trigger", "projectile", "tether-trap" )
-				.Run();
-			if ( !probe.StartedSolid )
-			{
-				Actor.WorldPosition = candidate;
-				return;
-			}
-		}
+		Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: true );
+		Titanfall2PhaseDimension.ResolveRoninExitHost( Actor, this );
+		SpawnRoninPhaseRiftRpc( Actor.WorldPosition + Vector3.Up * 90f );
 	}
+
+	[Rpc.Broadcast( NetFlags.HostOnly )]
+	void SpawnRoninPhaseRiftRpc( Vector3 origin ) =>
+		Titanfall2PhaseDimension.SpawnPhaseRiftVisual( Scene, origin, large: true );
 
 	/// <summary>Activates the chassis-specific Slot 3 Utility/Tactical ability on the host.</summary>
 	public bool TryUtility( Ray aim, GameObject attacker )
@@ -283,12 +270,15 @@ public sealed partial class Titanfall2TitanKit
 			case Chassis.Ronin:
 				UtilityRemaining = UtilityCooldownSeconds;
 				PhaseRemaining = RoninPhaseDuration;
-				RoninBlocking = false;
+				Titanfall2PhaseDimension.EnsurePhysicsRules( Scene );
+				Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: false );
+				Titanfall2PhaseDimension.CleanseStuckProjectiles( Scene, Actor.GameObject );
 				// Retail Ronin Phase Dash cleanses enemy tether traps and Tone tracker locks.
 				foreach ( var trap in Scene.GetAllComponents<Titanfall2TetherTrap>().ToArray() )
 					if ( trap.IsValid() && trap.Attached && trap.Target == Actor ) trap.Release();
 				foreach ( var enemyKit in Scene.GetAllComponents<Titanfall2TitanKit>() )
 					if ( enemyKit.IsValid() && enemyKit != this ) enemyKit.ClearTrackerOnTarget( Actor );
+				SpawnRoninPhaseRiftRpc( Actor.WorldPosition + Vector3.Up * 90f );
 				PlayUtilitySoundRpc( "phase", Eye );
 				return true;
 
