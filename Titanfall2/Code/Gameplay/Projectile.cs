@@ -183,16 +183,15 @@ public sealed partial class Titanfall2Projectile : Component
 		if ( _ignore.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( _ignore );
 		if ( _weapon.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( _weapon );
 		var hit = Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Grenade );
-		// Resolve the nearest shield before actor/world impact, fuse bounce or detonation.
+		// Resolve the nearest shield or Tone Particle Wall before actor/world impact, fuse bounce or detonation.
 		// Consume this entity exactly once. No damage callback or explosion runs on capture.
-		if ( !hit.StartedSolid && Titanfall2TitanDefense.ValidSource( Scene, _attacker, _weapon )
-			&& Titanfall2TitanDefense.TryFind( Scene, start, hit.EndPosition, Math.Clamp( Settings.Radius, 0, 12 ), _attacker,
-				out var shield, out var shieldPoint, out _ ) )
+		var capturedPayload = new Titanfall2CapturedProjectile( Settings, _damage, _heavyDamage, _damageProfile, _npcFired, _expiry );
+		if ( !hit.StartedSolid
+			&& Titanfall2TitanDefense.TryInterceptProjectile( Scene, start, hit.EndPosition, Math.Clamp( Settings.Radius, 0, 12 ),
+				_attacker, _weapon, capturedPayload, _launchOrigin, out var shieldPoint ) )
 		{
 			_finished = true;
 			WorldPosition = shieldPoint;
-			var captured = new Titanfall2CapturedProjectile( Settings, _damage, _heavyDamage, _damageProfile, _npcFired, _expiry );
-			shield.AbsorbProjectile( captured, _launchOrigin.Distance( shieldPoint ), _attacker, _weapon, shieldPoint );
 			ReleaseTrail();
 			GameObject.Destroy();
 			return;
@@ -356,6 +355,8 @@ public sealed partial class Titanfall2Projectile : Component
 			Titanfall2TitanCluster.Spawn( Scene, blastOrigin, Settings, _attacker, _weapon, _ignore, normal );
 		else if ( Settings.SplashRadius > 0 && Settings.SplashDamage > 0 )
 			Blast( blastOrigin, direct );
+		if ( Settings.Behavior == Titanfall2ProjectileBehavior.ThermiteBurn )
+			Titanfall2GasCanister.IgniteInRadius( Scene, blastOrigin, MathF.Max( Settings.SplashRadius, Titanfall2GasCanister.IgniteTriggerRadius ), _attacker );
 		PlayImpact( new BaseCombatWeapon.ShotEffect( point, true, normal, hitObject, surface ), Settings.Tint, Settings.SplashRadius );
 		GameObject.Destroy();
 	}
@@ -450,6 +451,8 @@ public sealed class Titanfall2AreaHazard : Component
 	GameObject _ignore;
 	TimeUntil _expires;
 	TimeUntil _nextTick;
+	bool _smokeVisualTailStarted;
+	TimeUntil _smokeVisualCleanup;
 
 	internal static void Spawn( Scene scene, Vector3 origin, Titanfall2ProjectileSettings settings,
 		float damage, float heavyDamage, GameObject attacker, GameObject weapon, GameObject ignore,
@@ -470,7 +473,7 @@ public sealed class Titanfall2AreaHazard : Component
 		hazard._weapon = weapon;
 		hazard._ignore = ignore;
 		hazard._expires = settings.HazardSeconds > 0 ? settings.HazardSeconds : settings.Behavior == Titanfall2ProjectileBehavior.GravityPull ? 2.9f
-			: settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 5f : 3.5f;
+			: settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 6.5f : 3.5f;
 		hazard._nextTick = settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 1f : 0.05f;
 		if ( settings.Behavior == Titanfall2ProjectileBehavior.ThermiteBurn && attachedTo.IsValid() )
 		{
@@ -499,6 +502,14 @@ public sealed class Titanfall2AreaHazard : Component
 		}
 		var visual = new GameObject( GameObject, false, effect );
 		visual.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+		if ( Settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke )
+		{
+			// Retail P_wpn_smk_electric_pilot reads CP1.x as the smokescreen duration (seconds)
+			// to scale cloud lifetimes (1.25x..1.5x) and stop arc emitters when smoke ends.
+			var smokeDuration = Settings.HazardSeconds > 0 ? Settings.HazardSeconds : 6.5f;
+			var cp = visual.AddComponent<Titanfall2ParticleControlPoints>();
+			cp.SetControlPoint( 1, new Vector3( smokeDuration, 0f, 0f ) );
+		}
 		var retail = visual.AddComponent<Titanfall2PlasmaFlight>();
 		retail.MountIdent = Settings.MountIdent;
 		retail.EffectName = effect;
@@ -551,7 +562,22 @@ public sealed class Titanfall2AreaHazard : Component
 			return;
 		}
 
-		if ( _expires <= 0 ) { GameObject.Destroy(); return; }
+		if ( _expires <= 0 )
+		{
+			if ( Settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke )
+			{
+				// Let the CP1-scaled smoke puffs dissipate smoothly instead of popping out when damage ends.
+				if ( !_smokeVisualTailStarted )
+				{
+					_smokeVisualTailStarted = true;
+					_smokeVisualCleanup = 4f;
+				}
+				if ( _smokeVisualCleanup <= 0 ) GameObject.Destroy();
+				return;
+			}
+			GameObject.Destroy();
+			return;
+		}
 		if ( _nextTick > 0 ) return;
 		_nextTick = 0.25f;
 		var smoke = Settings.Behavior == Titanfall2ProjectileBehavior.ElectricSmoke;

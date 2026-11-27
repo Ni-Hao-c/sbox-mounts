@@ -453,7 +453,7 @@ static class Titanfall2ParticleFactory
 	internal const float AtmosphereMaximumRadius = 8192f;
 	internal const float MaximumEmitterExtent = 2048f;
 	internal const int MaxParticlesPerSystem = 256;
-	internal const float MaximumVelocity = 2048f;
+	internal const float MaximumVelocity = 12000f;
 	const int MaximumChildDepth = 8;
 
 	internal static float GetRadiusLimit( Titanfall2ParticleDefinition definition ) =>
@@ -492,7 +492,7 @@ static class Titanfall2ParticleFactory
 	}
 
 	static bool CreateDefinition( GameObject parent, Titanfall2Mount mount, Titanfall2ParticleDefinition definition,
-		HashSet<string> stack, int depth, ref int createdSystems, out string error, List<CreatedSystem> systems )
+		HashSet<string> stack, int depth, ref int createdSystems, out string error, List<CreatedSystem> systems, float inheritedDelay = 0f )
 	{
 		error = null;
 		if ( depth > MaximumChildDepth )
@@ -510,7 +510,7 @@ static class Titanfall2ParticleFactory
 		gameObject.LocalTransform = Transform.Zero;
 		var controlPoints = gameObject.AddComponent<Titanfall2ParticleControlPoints>();
 		controlPoints.Configure( parent.GetComponentInParent<Titanfall2ParticleControlPoints>( true ), definition.ControlPoints );
-		var geometry = ConfigureSimulation( gameObject, definition, controlPoints );
+		var geometry = ConfigureSimulation( gameObject, definition, controlPoints, inheritedDelay );
 		var effect = gameObject.GetComponent<ParticleEffect>( true );
 		var hasRenderer = ConfigureRenderer( gameObject, mount, definition, geometry );
 		var hasChildren = false;
@@ -518,7 +518,8 @@ static class Titanfall2ParticleFactory
 		foreach ( var childName in definition.Children.Distinct( StringComparer.OrdinalIgnoreCase ) )
 		{
 			if ( !mount.TryGetParticleDefinition( childName, out var childDefinition ) ) continue;
-			hasChildren |= CreateDefinition( gameObject, mount, childDefinition, stack, depth + 1, ref createdSystems, out _, systems );
+			var childDelay = inheritedDelay + definition.ChildDelays.GetValueOrDefault( childName, 0f );
+			hasChildren |= CreateDefinition( gameObject, mount, childDefinition, stack, depth + 1, ref createdSystems, out _, systems, childDelay );
 		}
 
 		stack.Remove( definition.Name );
@@ -542,12 +543,12 @@ static class Titanfall2ParticleFactory
 		&& (definition.PositionMinimum != Vector3.Zero || definition.PositionMaximum != Vector3.Zero);
 
 	internal static Titanfall2ParticleGeometry ConfigureSimulation( GameObject gameObject, Titanfall2ParticleDefinition definition,
-		Titanfall2ParticleControlPoints controlPoints )
+		Titanfall2ParticleControlPoints controlPoints, float startDelay = 0f )
 	{
 		var effect = gameObject.AddComponent<ParticleEffect>();
-		ConfigureEffect( effect, definition );
+		ConfigureEffect( effect, definition, controlPoints );
 		Titanfall2ParticleGeometry geometry = null;
-		if ( definition.OrientationType == 2 || definition.Path.HasValue || definition.Visibility.HasValue || definition.EndCapLifetime || definition.DistanceRemaps.Count > 0
+		if ( definition.OrientationType == 2 || definition.Path.HasValue || definition.MoveBetweenPoints.HasValue || definition.Visibility.HasValue || definition.EndCapLifetime || definition.DistanceRemaps.Count > 0
 			|| definition.ColorRemaps.Count > 0 || definition.ScalarRemaps.Count > 0 || definition.RandomFadeIn.HasValue || definition.RandomFadeOut.HasValue || definition.PositionWarpMinimum != Vector3.One
 			|| definition.PositionWarpMaximum != Vector3.One || (definition.Renderer & Titanfall2ParticleRenderer.Trail) != 0
 			|| definition.Oscillations.Count > 0 || HasShapePositionOffset( definition ) || definition.LocalVelocity || definition.LockControlPoint >= 0
@@ -556,14 +557,35 @@ static class Titanfall2ParticleFactory
 			geometry = gameObject.AddComponent<Titanfall2ParticleGeometry>();
 			geometry.Configure( definition, controlPoints, CreateStretch( definition ) );
 		}
-		ConfigureEmitter( gameObject, definition, controlPoints );
+		ConfigureEmitter( gameObject, definition, controlPoints, startDelay );
 		return geometry;
 	}
 
-	static void ConfigureEffect( ParticleEffect effect, Titanfall2ParticleDefinition definition )
+	internal static (float Min, float Max) EffectiveLifetimeRange( Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints controlPoints )
+	{
+		var minLife = definition.LifetimeMinimum;
+		var maxLife = definition.LifetimeMaximum;
+		if ( !controlPoints.IsValid() || definition.ScalarRemaps.Count == 0 ) return (minLife, maxLife);
+		foreach ( var remap in definition.ScalarRemaps )
+		{
+			if ( remap.Field != 1 || remap.InputAttribute >= 0 || remap.EndPoint >= 0 ) continue;
+			if ( !controlPoints.TryGetControlPoint( remap.ControlPoint, out var point ) ) continue;
+			var input = remap.Component switch { 0 => point.x, 1 => point.y, _ => point.z };
+			var t = MathF.Abs( remap.InputMax - remap.InputMin ) < 0.00001f
+				? 0f : Math.Clamp( (input - remap.InputMin) / (remap.InputMax - remap.InputMin), 0f, 1f );
+			var value = MathX.Lerp( remap.OutputMin, remap.OutputMax, t );
+			if ( !float.IsFinite( value ) || value <= 0f ) continue;
+			minLife = Math.Clamp( remap.ScaleInitial ? minLife * value : value, 0.05f, 120f );
+			maxLife = Math.Clamp( remap.ScaleInitial ? maxLife * value : value, 0.05f, 120f );
+		}
+		return (MathF.Min( minLife, maxLife ), MathF.Max( minLife, maxLife ));
+	}
+
+	static void ConfigureEffect( ParticleEffect effect, Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints controlPoints )
 	{
 		effect.MaxParticles = Math.Clamp( definition.MaxParticles, 1, Titanfall2ParticleFactory.MaxParticlesPerSystem );
-		effect.Lifetime = definition.EndCapLifetime ? float.MaxValue : ExponentRange( definition.LifetimeMinimum, definition.LifetimeMaximum, definition.LifetimeExponent );
+		var (minLife, maxLife) = EffectiveLifetimeRange( definition, controlPoints );
+		effect.Lifetime = definition.EndCapLifetime ? float.MaxValue : ExponentRange( minLife, maxLife, definition.LifetimeExponent );
 		// PCF local velocity is a birth transform, not a simulation-space flag.
 		// The controller rotates it once and handles only explicitly authored CP locks.
 		effect.LocalSpace = 0f;
@@ -649,7 +671,7 @@ static class Titanfall2ParticleFactory
 		return (int)Math.Clamp( MathF.Max( count, definition.BurstMinimum ), 0f, maximum );
 	}
 
-	static void ConfigureEmitter( GameObject effectObject, Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints points )
+	static void ConfigureEmitter( GameObject effectObject, Titanfall2ParticleDefinition definition, Titanfall2ParticleControlPoints points, float startDelay = 0f )
 	{
 		var emitterObject = new GameObject( effectObject, true, "emitter" );
 		var maximumExtent = Titanfall2ParticleFactory.MaximumEmitterExtent;
@@ -691,11 +713,20 @@ static class Titanfall2ParticleFactory
 
 		// Continuous PCF emission does not restart at every particle lifetime.
 		// Bursts occur once; zero-duration continuous emitters run until stopped.
+		var stopDuration = 0f;
+		if ( definition.StopDuration > 0f )
+		{
+			var cpScale = definition.StopDurationControlPoint >= 0 && points.IsValid()
+				&& points.TryGetControlPoint( definition.StopDurationControlPoint, out var stopCp ) && stopCp.x > 0f
+				? stopCp.x : 1f;
+			stopDuration = MathF.Max( 0.05f, definition.StopDuration * cpScale );
+		}
 		emitter.Loop = false;
 		emitter.DestroyOnEnd = false;
 		emitter.Duration = definition.EmissionDuration > 0f ? definition.EmissionDuration
+			: stopDuration > 0f ? stopDuration
 			: definition.Looping ? float.MaxValue : MathF.Max( 0.05f, definition.Duration );
-		emitter.Delay = definition.EmissionStartTime;
+		emitter.Delay = definition.EmissionStartTime + MathF.Max( 0f, startDelay );
 		emitter.Burst = GetBurstCount( definition, points );
 		emitter.Rate = MathF.Max( 0f, definition.EmissionRate );
 		emitter.RateOverDistance = definition.EmissionRateOverDistance;
@@ -785,6 +816,12 @@ static class Titanfall2ParticleFactory
 				renderer.FaceVelocity = trail;
 				renderer.MotionBlur = false;
 				renderer.PlaybackSpeed = 1f;
+				if ( definition.AnimationFitLifetime && definition.LifetimeMaximum > 0.01f
+					&& sprite.Animations.FirstOrDefault() is { Frames.Count: > 1, FrameRate: > 0f } fitted )
+				{
+					var averageLife = MathF.Max( 0.01f, (definition.LifetimeMinimum + definition.LifetimeMaximum) * 0.5f );
+					renderer.PlaybackSpeed = Math.Clamp( fitted.Frames.Count / (averageLife * fitted.FrameRate), 0.1f, 64f );
+				}
 				// Source PCF size is a radius; the native sprite scale is a diameter.
 				// Trails already construct their full width/length in the controller.
 				renderer.Scale = trail ? 1f : 2f;

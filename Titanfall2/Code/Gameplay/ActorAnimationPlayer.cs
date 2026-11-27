@@ -1,7 +1,49 @@
 using Sandbox.Animation;
 
+/// <summary>Pure deterministic rules for 3x3 aim smoothing and locomotion phase continuity.</summary>
+internal static class Titanfall2ActorPhaseRules
+{
+	internal const float MinLocomotionBlendSeconds = 0.16f;
+	internal const float MinBodyBlendSeconds = 0.10f;
+	internal const float DefaultAimTrackDegreesPerSecond = 440f;
+
+	internal static double NormalizePhase( double cycle )
+	{
+		if ( !double.IsFinite( cycle ) ) return 0;
+		var wrapped = cycle % 1.0;
+		return wrapped < 0 ? wrapped + 1.0 : wrapped;
+	}
+
+	internal static float ComputeTransitionDuration( float fadeIn, float fadeOut, bool locomotionToLocomotion, bool overlay )
+	{
+		var authored = MathF.Max( float.IsFinite( fadeIn ) ? MathF.Max( 0, fadeIn ) : 0,
+			float.IsFinite( fadeOut ) ? MathF.Max( 0, fadeOut ) : 0 );
+		if ( overlay ) return MathF.Max( 0.05f, authored > 0 ? authored : 0.1f );
+		var floor = locomotionToLocomotion ? MinLocomotionBlendSeconds : MinBodyBlendSeconds;
+		return MathF.Max( floor, authored );
+	}
+
+	internal static Vector2 StepAim( Vector2 current, Vector2 target, float maxDegreesPerSecond, float dt )
+	{
+		if ( !float.IsFinite( target.x ) || !float.IsFinite( target.y ) ) target = Vector2.Zero;
+		if ( !float.IsFinite( current.x ) || !float.IsFinite( current.y ) ) return target;
+		if ( dt <= 0 || !float.IsFinite( dt ) ) return current;
+		var rate = float.IsFinite( maxDegreesPerSecond ) && maxDegreesPerSecond > 1f
+			? maxDegreesPerSecond
+			: DefaultAimTrackDegreesPerSecond;
+		var maxStep = rate * dt;
+		var delta = target - current;
+		var dist = delta.Length;
+		if ( dist <= maxStep || dist < 0.001f ) return target;
+		// Smooth exponential approach bounded by maximum angular velocity.
+		var lerpStep = dist * Math.Clamp( dt * 14f, 0f, 1f );
+		var step = MathF.Min( maxStep, MathF.Max( lerpStep, MathF.Min( dist, maxStep * 0.45f ) ) );
+		return current + delta * (step / dist);
+	}
+}
+
 /// <summary>
-/// MDL53 role sequences with original aim grids, authored masks and phase-preserving
+/// MDL53 role sequences with original 3x3 aim grids, authored masks, and phase-locked
 /// two-slot selectors. Source 1 acttables and IK descriptors are not interchangeable.
 /// </summary>
 internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
@@ -10,7 +52,10 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 	readonly Dictionary<string, Clip> _clips = new( StringComparer.OrdinalIgnoreCase );
 	readonly Dictionary<string, Titanfall2ActorAnimationData.Clip> _metadata = new( StringComparer.OrdinalIgnoreCase );
 	readonly Dictionary<string, Titanfall2ActorAnimationData.AimLayer> _aims = new( StringComparer.OrdinalIgnoreCase );
-	Vector2 _aim;
+	Vector2 _aimTarget;
+	Vector2 _aimCurrent;
+	float _aimTurnRate = Titanfall2ActorPhaseRules.DefaultAimTrackDegreesPerSecond;
+	bool _aimInitialized;
 	double _lastTick = double.NaN;
 	readonly Graph _graph;
 	readonly Channel _body = new( "body" ), _upper = new( "upper" ), _reload = new( "reload" ), _flinch = new( "flinch" );
@@ -25,6 +70,8 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		public double[] Cycles = [0, 0];
 		public string[] Roles = new string[2];
 		public bool Active, Loop;
+		public bool PhaseLocked;
+		public float PhaseLockRemaining;
 	}
 	public string Current => _body.Clip;
 	public float Duration( string role ) => _clips.GetValueOrDefault( role ?? "" )?.Duration ?? 0;
@@ -32,7 +79,8 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 	public bool Finished => _body.Cycles[_body.Slot] >= 1;
 	public float Cycle => NormalizedCycle( _body.Cycles[_body.Slot], _body.Loop );
 	internal int AimGridCount => _aims.Count;
-	internal Vector2 AimAngles => _aim;
+	internal Vector2 AimAngles => _aimCurrent;
+	internal Vector2 AimTargetAngles => _aimTarget;
 	public bool HasUpperMask { get; }
 	internal float FlinchWeight => _flinch.Weight;
 	internal float FlinchCycle => NormalizedCycle( _flinch.Cycles[_flinch.Slot], false );
@@ -116,7 +164,7 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 				}
 			}
 			if ( rows.Length == 1 ) return rows[0];
-			// Preserve the authored rectangular interpolation: blend across X, then Y.
+			// Preserve the authored rectangular 3x3 interpolation: blend across X, then Y.
 			// A triangulated 2D space gives different poses between the same corners.
 			var grid = builder.BlendSpace( aimParameters[aim.Id][1], looping: false );
 			for ( var y = 0; y < rows.Length; ++y ) grid.Add( sequence.Keys[1][y], rows[y] );
@@ -150,10 +198,14 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 				for ( var from = 0; from < states.Length; from++ )
 					if ( from != to )
 					{
-						var fadeIn = keys[to] == "none" ? 0 : _metadata[choices[to - (overlay ? 1 : 0)].Role].Sequence?.FadeIn ?? 0.1f;
-						var fadeOut = keys[from] == "none" ? 0 : _metadata[choices[from - (overlay ? 1 : 0)].Role].Sequence?.FadeOut ?? 0.1f;
+						var toRole = keys[to] == "none" ? null : choices[to - (overlay ? 1 : 0)].Role;
+						var fromRole = keys[from] == "none" ? null : choices[from - (overlay ? 1 : 0)].Role;
+						var fadeIn = toRole is null ? 0 : _metadata[toRole].Sequence?.FadeIn ?? 0.12f;
+						var fadeOut = fromRole is null ? 0 : _metadata[fromRole].Sequence?.FadeOut ?? 0.12f;
+						var locoTransition = !overlay && ModelLoader.IsLocomotionRole( fromRole ) && ModelLoader.IsLocomotionRole( toRole );
+						var duration = Titanfall2ActorPhaseRules.ComputeTransitionDuration( fadeIn, fadeOut, locoTransition, overlay );
 						machine.AddTransition( states[from], states[to], builder.IdCompare( id, keys[to] ),
-							new GraphBuilder.TransitionSettings { Duration = MathF.Max( fadeIn, fadeOut ), ClampDuration = false, CanBeForced = true } );
+							new GraphBuilder.TransitionSettings { Duration = duration, ClampDuration = false, CanBeForced = true } );
 					}
 			return machine;
 		}
@@ -167,10 +219,28 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		}
 	}
 
-	public void SetAim( float yaw, float pitch ) => _aim = new( float.IsFinite( yaw ) ? yaw : 0, float.IsFinite( pitch ) ? pitch : 0 );
+	public void SetAim( float yaw, float pitch, float maxDegreesPerSecond = Titanfall2ActorPhaseRules.DefaultAimTrackDegreesPerSecond )
+	{
+		_aimTarget = new( float.IsFinite( yaw ) ? yaw : 0, float.IsFinite( pitch ) ? pitch : 0 );
+		if ( float.IsFinite( maxDegreesPerSecond ) && maxDegreesPerSecond > 1f ) _aimTurnRate = maxDegreesPerSecond;
+		if ( !_aimInitialized )
+		{
+			_aimCurrent = _aimTarget;
+			_aimInitialized = true;
+		}
+	}
+
+	public void SnapAim( float yaw, float pitch )
+	{
+		_aimTarget = new( float.IsFinite( yaw ) ? yaw : 0, float.IsFinite( pitch ) ? pitch : 0 );
+		_aimCurrent = _aimTarget;
+		_aimInitialized = true;
+	}
+
 	public void SetCycle( float cycle )
 	{
 		_body.Cycles[_body.Slot] = float.IsFinite( cycle ) ? Math.Max( 0, cycle ) : 0;
+		_body.PhaseLocked = false;
 		if ( _renderer.IsValid() && _renderer.Animation.IsValid )
 			_renderer.Animation.Parameters.TrySet( $"body_cycle{_body.Slot}", NormalizedCycle( _body.Cycles[_body.Slot], _body.Loop ) );
 	}
@@ -195,12 +265,20 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		if ( !Has( role ) ) return;
 		if ( channel.Clip != role || restart || !channel.Active )
 		{
-			var phase = !restart && channel == _body && ModelLoader.IsLocomotionRole( channel.Clip ) && ModelLoader.IsLocomotionRole( role )
-				? channel.Cycles[channel.Slot] % 1 : 0;
+			var preservePhase = !restart && channel == _body
+				&& ModelLoader.IsLocomotionRole( channel.Clip )
+				&& ModelLoader.IsLocomotionRole( role );
+			var phase = preservePhase ? Titanfall2ActorPhaseRules.NormalizePhase( channel.Cycles[channel.Slot] ) : 0;
+			var oldFadeOut = channel.Clip is not null ? _metadata.GetValueOrDefault( channel.Clip )?.Sequence?.FadeOut ?? 0.12f : 0.12f;
+			var newFadeIn = _metadata.GetValueOrDefault( role )?.Sequence?.FadeIn ?? 0.12f;
 			channel.Clip = role;
 			channel.Slot = 1 - channel.Slot;
 			channel.Roles[channel.Slot] = role;
 			channel.Cycles[channel.Slot] = phase;
+			channel.PhaseLocked = preservePhase;
+			channel.PhaseLockRemaining = preservePhase
+				? Titanfall2ActorPhaseRules.ComputeTransitionDuration( newFadeIn, oldFadeOut, locomotionToLocomotion: true, overlay: false )
+				: 0;
 		}
 		channel.Active = true;
 		channel.Loop = loop;
@@ -211,12 +289,13 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		if ( !_renderer.IsValid() || !_renderer.Animation.IsValid ) return;
 		var dt = _lastTick == Time.NowDouble ? 0 : MathF.Max( 0, Time.Delta );
 		_lastTick = Time.NowDouble;
+		_aimCurrent = Titanfall2ActorPhaseRules.StepAim( _aimCurrent, _aimTarget, _aimTurnRate, dt );
 		var parameters = _renderer.Animation.Parameters;
 		foreach ( var aim in _aims.Values )
 			for ( var axis = 0; axis < 2; ++axis )
 			{
 				var descriptor = aim.Sequence.Axes[axis];
-				var value = descriptor?.Name == "aim_pitch" ? _aim.y : _aim.x;
+				var value = descriptor?.Name == "aim_pitch" ? _aimCurrent.y : _aimCurrent.x;
 				value = descriptor?.ClampValue( value ) ?? 0;
 				var keys = aim.Sequence.Keys[axis];
 				parameters.TrySet( $"aim_{aim.Id}_{axis}", Math.Clamp( value, keys[0], keys[^1] ) );
@@ -234,16 +313,28 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 			channel.Weight = Math.Clamp( channel.Weight + Math.Clamp( target - channel.Weight, -step, step ), 0, 1 );
 			parameters.TrySet( channel.Name, overlay && channel.Weight <= 0 ? "none" : $"{channel.Clip}:{channel.Slot}" );
 			if ( overlay ) parameters.TrySet( channel.Name + "_weight", channel.Weight );
+
+			// During locomotion-to-locomotion crossfades, keep the outgoing slot locked to
+			// the incoming active slot's normalized cycle so feet stay synchronized mid-blend.
+			if ( channel.PhaseLocked )
+			{
+				var outgoingSlot = 1 - channel.Slot;
+				channel.Cycles[outgoingSlot] = Titanfall2ActorPhaseRules.NormalizePhase( channel.Cycles[channel.Slot] );
+				channel.PhaseLockRemaining -= dt;
+				if ( channel.PhaseLockRemaining <= 0 ) channel.PhaseLocked = false;
+			}
+
 			for ( var slot = 0; slot < 2; ++slot )
 			{
 				var role = channel.Roles[slot];
 				var loop = slot == channel.Slot ? channel.Loop : _metadata.GetValueOrDefault( role ?? "" )?.Looping == true;
 				parameters.TrySet( $"{channel.Name}_cycle{slot}", NormalizedCycle( channel.Cycles[slot], loop ) );
+				if ( slot != channel.Slot && channel.PhaseLocked ) continue;
 				if ( Duration( role ) > 0 ) channel.Cycles[slot] += dt * channel.Rates[slot] / Duration( role );
 			}
 		}
 	}
-	static float NormalizedCycle( double cycle, bool loop ) => (float)(loop ? cycle % 1 : Math.Clamp( cycle, 0, 1 ));
+	static float NormalizedCycle( double cycle, bool loop ) => (float)(loop ? Titanfall2ActorPhaseRules.NormalizePhase( cycle ) : Math.Clamp( cycle, 0, 1 ));
 	public void Dispose()
 	{
 		if ( _renderer.IsValid() && _renderer.Animation.Graph == _graph ) { _renderer.Animation.Graph = null; _renderer.UseAnimGraph = false; }

@@ -44,11 +44,26 @@ public sealed partial class Titanfall2Weapon
 	int _chargeVisualState = -1;
 	bool _chargeVisualFirstPerson;
 	BaseWeaponModel _chargeVisualModel;
+	SkinnedModelRenderer _chargeMaterialRenderer;
+	int _chargeMaterialSlot = -1;
+	Material _chargeMaterialOverride;
+	float _lastChargeMaterialAlpha = -1f;
 	internal int ChargeVisualState => _chargeVisualState;
 	internal float ChargeSoundSeek { get; private set; }
 	internal int ChargeSoundStarts { get; private set; }
 	internal int ChargeParticleCount => _chargeParticles.Count( x => x.IsValid() );
 	bool StateEffectsFirstPerson => !IsProxy && ViewModel.IsValid() && WeaponModel == ViewModel.GetComponent<BaseWeaponModel>();
+
+	internal static bool IsChargeGlowMaterial( string name )
+	{
+		if ( string.IsNullOrWhiteSpace( name ) ) return false;
+		var normalized = name.Replace( '\\', '/' );
+		while ( normalized.EndsWith( ".vmat", StringComparison.OrdinalIgnoreCase )
+			|| normalized.EndsWith( ".vmt", StringComparison.OrdinalIgnoreCase ) )
+			normalized = normalized[..normalized.LastIndexOf( '.' )];
+		return normalized.EndsWith( "defender_charge", StringComparison.OrdinalIgnoreCase )
+			|| normalized.EndsWith( "titan_sniper_charge_fx", StringComparison.OrdinalIgnoreCase );
+	}
 
 	void UpdateChargePresentation()
 	{
@@ -61,6 +76,7 @@ public sealed partial class Titanfall2Weapon
 		var state = fraction <= 0 ? 0 : fraction >= 1 ? 3 : ChargePhase == Titanfall2ChargePhase.Charging ? 1 : 2;
 		if ( model != _chargeVisualModel || firstPerson != _chargeVisualFirstPerson ) StopChargePresentation();
 		_chargeVisualModel = model; _chargeVisualFirstPerson = firstPerson;
+		UpdateChargeMaterial( model, fraction );
 		if ( _chargeVisualRoot.IsValid() ) _chargeSound?.SetSource( model.WorldPosition );
 		if ( state == _chargeVisualState ) return;
 		_chargeVisualState = state;
@@ -90,12 +106,54 @@ public sealed partial class Titanfall2Weapon
 			if ( particle.IsValid() ) _chargeParticles.Add( particle );
 		}
 	}
+	void UpdateChargeMaterial( BaseWeaponModel model, float fraction )
+	{
+		var renderer = model.Renderer;
+		if ( !renderer.IsValid() ) { ClearChargeMaterial(); return; }
+		if ( renderer != _chargeMaterialRenderer ) ClearChargeMaterial();
+
+		var alpha = Math.Clamp( fraction, 0f, 1f );
+		if ( _chargeMaterialSlot < 0 )
+		{
+			if ( alpha <= 0.0001f ) return;
+			for ( var slot = 0; slot < renderer.Materials.Count; slot++ )
+			{
+				var original = renderer.Materials.GetOriginal( slot );
+				if ( !IsChargeGlowMaterial( original?.Name ) ) continue;
+				_chargeMaterialRenderer = renderer;
+				_chargeMaterialSlot = slot;
+				_chargeMaterialOverride = original.CreateCopy( $"titanfall2/charge_glow/{GameObject.Id:N}_{slot}" );
+				// Retain the VMT's TextureScroll velocity (rate -0.05 at 180 deg = +0.05 U/s) on the per-weapon copy.
+				_chargeMaterialOverride.Set( "g_vVmtTexture2Scroll", new Vector4( 0.05f, 0f, 0f, 0f ) );
+				renderer.Materials.SetOverride( slot, _chargeMaterialOverride );
+				_lastChargeMaterialAlpha = -1f;
+				break;
+			}
+		}
+
+		if ( _chargeMaterialOverride is null || MathF.Abs( alpha - _lastChargeMaterialAlpha ) < 0.002f ) return;
+		_lastChargeMaterialAlpha = alpha;
+		_chargeMaterialOverride.Set( "g_flVmtMaterialAlpha", alpha );
+	}
+
+	void ClearChargeMaterial()
+	{
+		if ( _chargeMaterialOverride is not null ) _chargeMaterialOverride.Set( "g_flVmtMaterialAlpha", 0f );
+		if ( _chargeMaterialRenderer.IsValid() && _chargeMaterialSlot >= 0 )
+			_chargeMaterialRenderer.Materials.SetOverride( _chargeMaterialSlot, null );
+		_chargeMaterialRenderer = null;
+		_chargeMaterialSlot = -1;
+		_chargeMaterialOverride = null;
+		_lastChargeMaterialAlpha = -1f;
+	}
+
 	void DestroyChargeParticles() { foreach ( var particle in _chargeParticles ) if ( particle.IsValid() ) particle.Destroy(); _chargeParticles.Clear(); }
 	void StopChargePresentation()
 	{
 		_chargeSound?.StopAll();
 		if ( _chargeVisualRoot.IsValid() ) _chargeVisualRoot.Destroy();
 		_chargeVisualRoot = null; _chargeSound = null; _chargeVisualModel = null; _chargeVisualState = -1;
+		ClearChargeMaterial();
 		DestroyChargeParticles();
 	}
 }

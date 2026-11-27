@@ -40,6 +40,11 @@ public sealed partial class Titanfall2Weapon
 			foreach ( var name in HeatPresentationSounds ) Sound( name );
 			foreach ( var name in HeatPresentationParticles ) Particle( name );
 		}
+		if ( SmartAmmo.Enabled )
+		{
+			Sound( SmartAmmo.AcquiringSound, loop: true );
+			Sound( SmartAmmo.ConfirmedSound );
+		}
 		Sound( FireSound1P ); Sound( FireSound ); Sound( Presentation.ShellSound );
 		foreach ( var name in new[] { Presentation.MuzzleView, Presentation.MuzzleWorld, Presentation.ShellView,
 			Presentation.ShellWorld, Presentation.Shell2View, Presentation.Shell2World, Presentation.TracerView,

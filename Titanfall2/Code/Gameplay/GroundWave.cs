@@ -48,6 +48,7 @@ public sealed class Titanfall2GroundWave : Component
 		_distance += travel;
 		if ( Flame )
 		{
+			Titanfall2GasCanister.IgniteInRadius( Scene, WorldPosition, 200f, _attacker );
 			if ( _distance < _patchDistance ) return;
 			_patchDistance = _distance + 120;
 			var settings = new Titanfall2ProjectileSettings { Behavior = Titanfall2ProjectileBehavior.ThermiteBurn, SplashRadius = 85, SplashDamage = 30, Tint = new Color( 1, 0.3f, 0.06f ) };

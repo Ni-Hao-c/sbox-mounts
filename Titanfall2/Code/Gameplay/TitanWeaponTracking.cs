@@ -57,6 +57,13 @@ public sealed partial class Titanfall2TitanKit
 		TrackerRemaining = marks.Remaining( Time.Now );
 	}
 
+	internal void ClearTrackerOnTarget( Titanfall2Npc victim )
+	{
+		if ( !victim.IsValid() || !_trackers.Remove( victim ) ) return;
+		if ( TrackedTarget == victim.GameObject )
+			ShowTrackedTarget( _trackers.Keys.FirstOrDefault() );
+	}
+
 	Titanfall2Npc FindTrackerLock( Ray aim )
 	{
 		Titanfall2Npc best = null;

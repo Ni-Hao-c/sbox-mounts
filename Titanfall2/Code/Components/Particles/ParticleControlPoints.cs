@@ -132,6 +132,22 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 		}
 		if ( _definition?.ScalarRemaps.Any( remap => remap.InitialOnly ) == true )
 			_scalarInitialValues[particle] = _definition.ScalarRemaps.Select( remap => remap.InitialOnly ? EvaluateScalarRemap( remap, particle ) : float.NaN ).ToArray();
+		if ( _definition?.ScalarRemaps.Count > 0 )
+		{
+			// Field 1 is particle lifespan. Electric smoke and other CP-driven clouds
+			// scale/override lifetime via CP1 so smoke clouds persist for the full duration.
+			var lifespan = MathF.Max( 0.01f, particle.DeathTime - particle.BornTime );
+			var changed = false;
+			foreach ( var remap in _definition.ScalarRemaps )
+			{
+				if ( remap.Field != 1 ) continue;
+				var value = EvaluateScalarRemap( remap, particle );
+				if ( !float.IsFinite( value ) || value <= 0f ) continue;
+				lifespan = Math.Clamp( remap.ScaleInitial ? lifespan * value : value, 0.05f, 120f );
+				changed = true;
+			}
+			if ( changed ) particle.DeathTime = particle.BornTime + lifespan;
+		}
 		if ( _definition is { Oscillations.Count: > 0 } oscillating )
 		{
 			// End-cap-only decay keeps particles past their PCF lifespan, so keep
@@ -176,6 +192,26 @@ public sealed class Titanfall2ParticleGeometry : ParticleController
 				? WorldRotation * (offset - centre)
 				: offset - WorldRotation * centre;
 			particle.StartPosition = particle.Position;
+		}
+		if ( _definition?.MoveBetweenPoints is { } move && _points.IsValid() )
+		{
+			var start = _points.GetControlPoint( 0 );
+			var end = _points.GetControlPoint( move.EndControlPoint );
+			var delta = end - start;
+			var distance = delta.Length;
+			if ( distance > 0.01f )
+			{
+				var direction = delta / distance;
+				var travelDistance = MathF.Max( 0.01f, distance - move.StartOffset - move.EndOffset );
+				var speed = RandomRange( move.MinSpeed, move.MaxSpeed );
+				particle.Position = start + direction * move.StartOffset;
+				particle.StartPosition = particle.Position;
+				particle.Velocity = direction * speed;
+				var travelTime = travelDistance / MathF.Max( 1f, speed );
+				if ( move.BiasLifetimeByTrailLength ) travelTime += _definition.TrailMaximum;
+				var clampedLifetime = MathF.Max( 0.01f, MathF.Min( particle.DeathTime - particle.BornTime, travelTime ) );
+				particle.DeathTime = particle.BornTime + clampedLifetime;
+			}
 		}
 		if ( _definition?.Path is not { } path || !_points.IsValid() ) return;
 		var fraction = path.Sequential ? (index % _pathCount) / (float)(_pathCount - 1) : Random.Shared.Float();

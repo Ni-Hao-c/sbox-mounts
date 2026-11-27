@@ -82,39 +82,44 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 		if ( _bindings is not { Length: > 0 } || _model.GetData<Titanfall2WeaponScreenData>()?.Screens is not { } screens ) return;
 		foreach ( var binding in _bindings )
 		{
-			var layout = _uiMount?.GetWeaponUiLayout( binding.UiPath ); // cached metadata only
+			var layout = _uiMount?.GetWeaponUiLayout( binding.UiPath );
 			if ( layout is null ) continue;
-			var mesh = screens.FirstOrDefault( screen => string.Equals( screen.MeshName, binding.MeshName, StringComparison.OrdinalIgnoreCase ) );
-			if ( mesh is null || !mesh.Origin.IsFinite || !mesh.Right.IsFinite || !mesh.Down.IsFinite
-				|| !float.IsFinite( mesh.Width ) || !float.IsFinite( mesh.Height ) || mesh.Width <= 0 || mesh.Height <= 0 ) continue;
-			var bone = _model.Bones.GetBone( mesh.BoneName );
-			// Missing geometry/bones are not substituted with approximate gun offsets or a HUD label.
-			if ( bone is null ) continue;
-			var chain = new Stack<int>();
-			for ( var current = bone; current is not null && chain.Count < _model.BoneCount; current = current.Parent ) chain.Push( current.Index );
-			if ( chain.Count == 0 ) continue;
-			var go = new GameObject( _renderer.GameObject, false, $"TF2 ammo screen {binding.Slot}" );
-			go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-			var panel = go.AddComponent<WorldPanel>();
-			panel.LookAtCamera = false;
-			panel.Lighting = false;
-			panel.InteractionRange = 0;
-			// A physical gun screen is a window into the original RUI canvas,
-			// not the entire canvas stretched to the surface's aspect ratio.
-			panel.PanelSize = layout.CanvasSize * (mesh.UvEnd - mesh.UvStart);
-			panel.RenderOptions.Game = false;
-			panel.RenderOptions.Overlay = true;
-			var counter = go.AddComponent<Titanfall2WeaponAmmoPanel>();
-			counter.Weapon = Weapon;
-			counter.CanvasSize = layout.CanvasSize;
-			counter.CanvasOffset = -mesh.UvStart * layout.CanvasSize;
-			counter.CounterFontSize = layout.FontSize;
-			counter.NativeFontId = layout.FontId;
-			counter.TextAnchor = layout.TextAnchor;
-			counter.TextPivot = layout.TextPivot;
-			_surfaces.Add( new() { Object = go, Panel = panel, Counter = counter, Bone = bone, BoneChain = chain.ToArray(), Slot = binding.Slot, MeshName = binding.MeshName,
-				Origin = mesh.Origin, Right = mesh.Right, Down = mesh.Down, Width = mesh.Width, Height = mesh.Height,
-				WindowPixels = panel.PanelSize } );
+			var matching = screens.Where( screen => string.Equals( screen.MeshName, binding.MeshName, StringComparison.OrdinalIgnoreCase )
+				&& OverlapsRenderedContent( layout, screen.UvStart, screen.UvEnd ) ).Take( 8 ).ToArray();
+			for ( var panelIndex = 0; panelIndex < matching.Length; ++panelIndex )
+			{
+				var mesh = matching[panelIndex];
+				if ( !mesh.Origin.IsFinite || !mesh.Right.IsFinite || !mesh.Down.IsFinite
+					|| !float.IsFinite( mesh.Width ) || !float.IsFinite( mesh.Height ) || mesh.Width <= 0 || mesh.Height <= 0 ) continue;
+				var bone = _model.Bones.GetBone( mesh.BoneName );
+				if ( bone is null ) continue;
+				var chain = new Stack<int>();
+				for ( var current = bone; current is not null && chain.Count < _model.BoneCount; current = current.Parent ) chain.Push( current.Index );
+				if ( chain.Count == 0 ) continue;
+				var go = new GameObject( _renderer.GameObject, false, $"TF2 ammo screen {binding.Slot}_{panelIndex}" );
+				go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+				var panel = go.AddComponent<WorldPanel>();
+				panel.LookAtCamera = false;
+				panel.Lighting = false;
+				panel.InteractionRange = 0;
+				// A physical gun screen is a window into the original RUI canvas,
+				// not the entire canvas stretched to the surface's aspect ratio.
+				panel.PanelSize = layout.CanvasSize * (mesh.UvEnd - mesh.UvStart);
+				panel.RenderOptions.Game = false;
+				panel.RenderOptions.Overlay = true;
+				var counter = go.AddComponent<Titanfall2WeaponAmmoPanel>();
+				counter.Weapon = Weapon;
+				counter.CanvasSize = layout.CanvasSize;
+				counter.CanvasOffset = -mesh.UvStart * layout.CanvasSize;
+				counter.CounterFontSize = layout.FontSize;
+				counter.NativeFontId = layout.FontId;
+				counter.TextAnchor = layout.TextAnchor;
+				counter.TextPivot = layout.TextPivot;
+				counter.DisplayLayout = layout;
+				_surfaces.Add( new() { Object = go, Panel = panel, Counter = counter, Bone = bone, BoneChain = chain.ToArray(), Slot = binding.Slot, MeshName = binding.MeshName,
+					Origin = mesh.Origin, Right = mesh.Right, Down = mesh.Down, Width = mesh.Width, Height = mesh.Height,
+					WindowPixels = panel.PanelSize } );
+			}
 		}
 		UpdatePoses();
 	}
@@ -201,6 +206,27 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 	{
 		foreach ( var surface in _surfaces ) if ( surface.Object.IsValid() ) surface.Object.Destroy();
 		_surfaces.Clear();
+	}
+
+	static bool OverlapsRenderedContent( Titanfall2WeaponUiLayout layout, Vector2 uvStart, Vector2 uvEnd )
+	{
+		var window = new Rect( uvStart * layout.CanvasSize, (uvEnd - uvStart) * layout.CanvasSize );
+		static bool Intersects( Rect a, Rect b ) => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
+		if ( layout.PrimaryBar is { } primary && Intersects( window, primary.Rect ) ) return true;
+		if ( layout.SecondaryBar is { } secondary && Intersects( window, secondary.Rect ) ) return true;
+		if ( layout.FontSize > 0 )
+		{
+			var textBox = new Rect( layout.TextAnchor - new Vector2( layout.FontSize, layout.FontSize ) * layout.TextPivot,
+				new Vector2( layout.FontSize * 1.5f, layout.FontSize ) );
+			if ( Intersects( window, textBox ) ) return true;
+			if ( layout.SecondaryTextAnchor is { } second )
+			{
+				var secondBox = new Rect( second - new Vector2( layout.FontSize, layout.FontSize ) * layout.TextPivot,
+					new Vector2( layout.FontSize * 1.5f, layout.FontSize ) );
+				if ( Intersects( window, secondBox ) ) return true;
+			}
+		}
+		return false;
 	}
 	protected override void OnDisabled() { ClearSurfaces(); _uiRequest = null; _uiMount = null; _pendingSurfaces = false; }
 	protected override void OnEnabled() { _model = null; _bindings = null; _uiRequest = null; }

@@ -20,6 +20,8 @@ public record struct Titanfall2SmartAmmoProfile
 	public bool SearchNpcs { get; set; }
 	public bool StickToLocked { get; set; }
 	public bool DelayFirstTarget { get; set; }
+	public string AcquiringSound { get; set; }
+	public string ConfirmedSound { get; set; }
 
 	// client!5747E0 acquires faster at close range. 573A60 reverses that
 	// interpolation for decay; neither function uses a random lock duration.
@@ -90,7 +92,9 @@ internal sealed partial record Titanfall2WeaponData
 			UnlockDebounce = Math.Clamp( number( "smart_ammo_unlock_debounce_time", 0.15f ), 0, 30 ),
 			AllowAds = get( "smart_ammo_allow_ads_lock" ) == "1", AllowHip = get( "smart_ammo_allow_hip_fire_lock" ) == "1",
 			SearchNpcs = get( "smart_ammo_search_npcs" ) != "0", StickToLocked = get( "smart_ammo_stick_to_fully_locked_targets" ) != "0",
-			DelayFirstTarget = get( "smart_ammo_apply_new_target_delay_to_first_target" ) == "1"
+			DelayFirstTarget = get( "smart_ammo_apply_new_target_delay_to_first_target" ) == "1",
+			AcquiringSound = get( "smart_ammo_looping_sound_acquiring" ),
+			ConfirmedSound = get( "smart_ammo_target_confirmed_sound" )
 		};
 	}
 }

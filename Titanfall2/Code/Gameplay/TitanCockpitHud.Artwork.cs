@@ -12,6 +12,8 @@ public sealed partial class Titanfall2TitanCockpitHud
 			SetRetailImage( _chassisArt, $"r2_ui/menus/loadout_icons/titans/{id}_icon" );
 			SetRetailImage( _abilityArt[0], OffenseArt( chassis ) );
 			SetRetailImage( _abilityArt[1], DefenseArt( chassis ) );
+			if ( _abilityArt.Count > 2 ) SetRetailImage( _abilityArt[2], UtilityArt( chassis ) );
+			if ( _abilityArt.Count > 3 ) SetRetailImage( _abilityArt[3], "rui/titan_loadout/ordnance/electric_smoke" );
 			SetRetailImage( _coreArt, CoreArt( chassis ) );
 			SetRetailImage( _damageArt, "vgui/hud/damage/damage_overlay_orangebloom_col" );
 			const string cockpit = "models/titans_r2/titan_cockpit/titan_cockpit_rui_";
@@ -98,6 +100,17 @@ public sealed partial class Titanfall2TitanCockpitHud
 		Titanfall2TitanKit.Chassis.Scorch => "rui/titan_loadout/defensive/titan_defensive_heat_shield",
 		Titanfall2TitanKit.Chassis.Northstar => "rui/titan_loadout/ordnance/tether",
 		Titanfall2TitanKit.Chassis.Ronin => "rui/titan_loadout/defensive/titan_defensive_sword_block",
+		_ => null
+	};
+	static string UtilityArt( Titanfall2TitanKit.Chassis chassis ) => chassis switch
+	{
+		Titanfall2TitanKit.Chassis.Monarch => "rui/titan_loadout/tactical/titan_tactical_rearm",
+		Titanfall2TitanKit.Chassis.Ion => "rui/titan_loadout/tactical/titan_tactical_laser_trip",
+		Titanfall2TitanKit.Chassis.Legion => "rui/titan_loadout/tactical/titan_tactical_ammo_swap",
+		Titanfall2TitanKit.Chassis.Tone => "rui/titan_loadout/tactical/titan_tactical_sonar_pulse",
+		Titanfall2TitanKit.Chassis.Scorch => "rui/titan_loadout/tactical/titan_tactical_gas_canister",
+		Titanfall2TitanKit.Chassis.Northstar => "rui/titan_loadout/tactical/titan_tactical_hover",
+		Titanfall2TitanKit.Chassis.Ronin => "rui/titan_loadout/tactical/titan_tactical_phase_dash",
 		_ => null
 	};
 	static string CoreArt( Titanfall2TitanKit.Chassis chassis ) => chassis switch

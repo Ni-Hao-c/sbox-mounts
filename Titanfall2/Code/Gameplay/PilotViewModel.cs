@@ -8,6 +8,9 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	internal const string Fire = "pilot_fp_fire";
 	internal const string Reload = "pilot_fp_reload";
 	internal const string EmptyReload = "pilot_fp_reload_empty";
+	internal const string ReloadSegLoop = "pilot_fp_reload_seg_loop";
+	internal const string ReloadSegEnd = "pilot_fp_reload_seg_end";
+	internal const string ReloadEmptySegEnd = "pilot_fp_reload_empty_seg_end";
 	internal const string AdsIn = "pilot_fp_ads_in";
 	internal const string AdsIdle = "pilot_fp_ads_idle";
 	internal const string AdsFire = "pilot_fp_ads_fire";
@@ -35,6 +38,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	bool _aiming;
 	bool _sprinting;
 	bool _oneHanded;
+	bool _reloadCancelled;
 	Titanfall2PilotAnimationPlayer _animation;
 	readonly Titanfall2PilotCameraAnchor _cameraAnchor = new();
 	float _zoom;
@@ -50,6 +54,9 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	Angles _lastCameraAngles;
 	Vector2 _swayOffset;
 	Vector2 _swayVelocity;
+	float _wallrunBlend;
+	float _slidePoseBlend;
+	float _mantlePoseBlend;
 	bool _inertiaReady;
 	double _inertiaTime;
 
@@ -117,7 +124,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	{
 		if ( !Renderer.IsValid() ) return;
 		SetZoom( zoom );
-		var locked = _action is Reload or EmptyReload or Draw or Charge or Cooldown || _action?.StartsWith( EmptyReload + "_late", StringComparison.Ordinal ) == true;
+		var locked = _action is Reload or EmptyReload or ReloadSegLoop or Draw or Charge or Cooldown || _action?.StartsWith( EmptyReload + "_late", StringComparison.Ordinal ) == true;
 		if ( locked )
 		{
 			_aiming = false;
@@ -138,10 +145,11 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			{
 				_sprinting = sprinting;
 				if ( sprinting ) Play( Sprint );
+				else if ( oneHanded ) Play( OneHandedIdle );
 				else if ( _clips.Contains( SprintRaise ) ) Play( SprintRaise );
 				else Play( Idle );
 			}
-			if ( oneHanded != _oneHanded && _action is Idle or AdsIdle or OneHandedIdle )
+			if ( oneHanded != _oneHanded && _action is Idle or AdsIdle or OneHandedIdle or SprintRaise )
 				Play( oneHanded ? OneHandedIdle : Idle );
 			_oneHanded = oneHanded;
 			return;
@@ -166,6 +174,8 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			_sprinting = sprinting;
 			if ( sprinting )
 				Play( Sprint );
+			else if ( oneHanded )
+				Play( OneHandedIdle );
 			else if ( _clips.Contains( SprintRaise ) )
 				Play( SprintRaise );
 			else
@@ -182,10 +192,14 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		}
 	}
 
-	internal void Place( Transform camera, float adsBlend, float wallrunSide = 0f, float mantleProgress = 0f )
+	internal void Place( Transform camera, float adsBlend, float wallrunSide = 0f, float mantleProgress = 0f ) =>
+		Place( camera, adsBlend, new Titanfall2PilotViewPoseState( wallrunSide, 0f, mantleProgress, 0f, 0f, 0f,
+			MathF.Abs( wallrunSide ) > 0.1f, false, mantleProgress > 0.01f, false ) );
+
+	internal void Place( Transform camera, float adsBlend, in Titanfall2PilotViewPoseState pose )
 	{
 		SetZoom( adsBlend );
-		var posedCamera = ApplyInertia( camera, _zoom, wallrunSide, mantleProgress );
+		var posedCamera = ApplyInertia( camera, _zoom, pose );
 		if ( _owner.IsValid() )
 		{
 			// Apply authored optic translation in view space before resolving the
@@ -205,7 +219,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		WorldTransform = posedCamera.ToWorld( localCamera.ToLocal( global::Transform.Zero ) );
 	}
 
-	Transform ApplyInertia( Transform camera, float adsBlend, float wallrunSide, float mantleProgress )
+	Transform ApplyInertia( Transform camera, float adsBlend, in Titanfall2PilotViewPoseState pose )
 	{
 		var currentAngles = camera.Rotation.Angles();
 		if ( !_inertiaReady )
@@ -232,14 +246,52 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			var accel = -InertiaStiffness * _swayOffset - InertiaDamping * _swayVelocity;
 			_swayVelocity += accel * dt;
 			_swayOffset += _swayVelocity * dt;
+
+			var targetWall = Math.Clamp( pose.WallrunSide, -1f, 1f );
+			var targetSlide = Math.Clamp( pose.SlideBlend, 0f, 1f );
+			var targetMantle = Math.Clamp( pose.MantleProgress, 0f, 1f );
+			_wallrunBlend = MathX.Lerp( _wallrunBlend, targetWall, Math.Clamp( dt * 12f, 0f, 1f ), true );
+			_slidePoseBlend = MathX.Lerp( _slidePoseBlend, targetSlide, Math.Clamp( dt * 14f, 0f, 1f ), true );
+			_mantlePoseBlend = MathX.Lerp( _mantlePoseBlend, targetMantle, Math.Clamp( dt * 18f, 0f, 1f ), true );
 		}
 
 		var scale = float.Lerp( 1f, 0.18f, adsBlend );
-		var wallRoll = -Math.Clamp( wallrunSide, -1f, 1f ) * 6.5f * scale;
-		var mantlePitch = Math.Clamp( mantleProgress, 0f, 1f ) * 22f;
-		var mantleDrop = camera.Rotation * new Vector3( 0, 0, -Math.Clamp( mantleProgress, 0f, 1f ) * 5.5f );
-		var swayRot = Rotation.From( new Angles( _swayOffset.y * scale + mantlePitch, _swayOffset.x * scale, _swayOffset.x * 0.35f * scale + wallRoll ) );
-		return new Transform( camera.Position + mantleDrop, camera.Rotation * swayRot );
+		// Suppress procedural hipfire cant almost completely while ADSing so optics stay aligned.
+		var hipScale = float.Lerp( 1f, 0.06f, adsBlend );
+
+		var absWall = MathF.Abs( _wallrunBlend );
+		var wallRoll = -_wallrunBlend * 10.5f * hipScale;
+		var wallYaw = _wallrunBlend * 3.5f * hipScale;
+		var wallLocalOffset = new Vector3( -0.6f * absWall, _wallrunBlend * 1.15f, -0.75f * absWall ) * hipScale;
+
+		// Iconic Titanfall 2 tactical canted slide hipfire stance.
+		var slideRoll = -26f * _slidePoseBlend * hipScale;
+		var slidePitch = 3.5f * _slidePoseBlend * hipScale;
+		var slideYaw = 4.5f * _slidePoseBlend * hipScale;
+		var slideLocalOffset = new Vector3( -1.2f, 1.85f, -1.9f ) * (_slidePoseBlend * hipScale);
+
+		// Smooth arch dip while mantling over a ledge.
+		var mantleArc = MathF.Sin( _mantlePoseBlend * MathF.PI );
+		var mantlePitch = mantleArc * 28f;
+		var mantleRoll = -mantleArc * 8f;
+		var mantleLocalOffset = new Vector3( -1.5f, 0.6f, -6.2f ) * mantleArc;
+
+		// Landing spring follow & subtle airborne float.
+		var landingPitch = -pose.LandingDip * 0.8f * hipScale;
+		var airLocalOffset = new Vector3( 0f, 0f, pose.LandingDip * 0.45f - pose.AirborneBlend * 0.45f ) * hipScale;
+
+		// Offhand [G] ordnance tuck and [F] melee strike sweep.
+		var offhandDip = Math.Clamp( pose.OffhandDip, 0f, 1f );
+		var offhandOffset = new Vector3( -2.2f, 2.6f, -7.8f ) * offhandDip;
+		var offhandAngles = new Angles( 26f * offhandDip, -14f * offhandDip, -16f * offhandDip );
+		var (meleeOffset, meleeAngles) = Titanfall2PilotCombatRules.ComputeMeleeViewModelPose( pose.MeleeStrikeKind, pose.MeleeProgress );
+
+		var totalOffset = camera.Rotation * (wallLocalOffset + slideLocalOffset + mantleLocalOffset + airLocalOffset + offhandOffset + meleeOffset);
+		var swayRot = Rotation.From( new Angles(
+			_swayOffset.y * scale + slidePitch + mantlePitch + landingPitch + offhandAngles.pitch + meleeAngles.pitch,
+			_swayOffset.x * scale + wallYaw + slideYaw + offhandAngles.yaw + meleeAngles.yaw,
+			_swayOffset.x * 0.35f * scale + wallRoll + slideRoll + mantleRoll + offhandAngles.roll + meleeAngles.roll ) );
+		return new Transform( camera.Position + totalOffset, camera.Rotation * swayRot );
 	}
 
 	protected override void OnUpdate()
@@ -289,6 +341,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnReloadStart();
 		_aiming = false;
 		_sprinting = false;
+		_reloadCancelled = false;
 		var isEmpty = _owner.IsValid() && _owner.ReloadStartedEmpty;
 		var reloadTime = _owner.IsValid() ? _owner.ReloadDuration : (float?)null;
 		var elapsed = _owner.IsValid() ? _owner.ReloadElapsed : 0;
@@ -297,9 +350,30 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		Play( role, reloadTime, elapsed );
 	}
 
+	public override void OnIncrementalReload()
+	{
+		base.OnIncrementalReload();
+		if ( !_owner.IsValid() || !_owner.IsReloading || !_owner.ReloadIsSegmented ) return;
+		if ( _owner.Clip1 >= _owner.ClipMaxSize || _owner.Ammo1 <= 0 ) return;
+		if ( !_clips.Contains( ReloadSegLoop ) ) return;
+		Play( ReloadSegLoop, _owner.ReloadLoopDuration );
+	}
+
+	public override void OnReloadFinish()
+	{
+		base.OnReloadFinish();
+		if ( _reloadCancelled || !_owner.IsValid() || !_owner.ReloadIsSegmented ) return;
+		var endClip = _owner.ReloadStartedEmpty && _clips.Contains( ReloadEmptySegEnd )
+			? ReloadEmptySegEnd
+			: ReloadSegEnd;
+		if ( !_clips.Contains( endClip ) ) return;
+		Play( endClip, _owner.ReloadEndDuration );
+	}
+
 	public override void OnReloadCancel()
 	{
 		base.OnReloadCancel();
+		_reloadCancelled = true;
 		SetClipVisible( true );
 		StopStateParticles();
 		Play( Idle );

@@ -2,7 +2,45 @@ using Titanfall2.Formats;
 
 partial class ModelLoader
 {
+	// Retail MDL53 autolayers frequently tag same-file aim grids with STUDIO_AL_LOCAL (0x1000).
+	internal const int StudioAutoLayerLocalFlag = 0x1000;
 	readonly Dictionary<string, Dictionary<string, float>> _actorBoneMasks = new( StringComparer.OrdinalIgnoreCase );
+
+	internal static bool RoleSupportsFallbackAimGrid( string role ) =>
+		role == IdleRole || role == FireRole || role == ReloadRole || IsLocomotionRole( role );
+
+	internal static int RankFallbackAimGrid( string label, bool forLocomotion )
+	{
+		var name = label?.TrimStart( '@' ).ToLowerInvariant() ?? "";
+		if ( name.Contains( "crouch", StringComparison.Ordinal ) || name.Contains( "ads", StringComparison.Ordinal )
+			|| name.Contains( "pistol", StringComparison.Ordinal ) || name.Contains( "rocket", StringComparison.Ordinal )
+			|| name.Contains( "satchel", StringComparison.Ordinal ) || name.Contains( "sword", StringComparison.Ordinal )
+			|| name.Contains( "laser", StringComparison.Ordinal ) || name.Contains( "pain", StringComparison.Ordinal )
+			|| name.Contains( "sprint", StringComparison.Ordinal ) || name.Contains( "s2s", StringComparison.Ordinal ) )
+			return 0;
+
+		if ( forLocomotion )
+		{
+			return name switch
+			{
+				"combat_aim_run" or "aim_combat_run_mp" or "aim_combat_walk_mp" or "aim_run_mp" => 150,
+				"aim_move_mp" or "aim_ai_run" or "aim_combat_walk_f" or "aim_robo" => 140,
+				"aim_static_sp" or "combat_aim_all" or "stand_aim_all" or "combat_aim_stand" => 110,
+				"mp_stand_aim_all" or "aim_stand_mp" or "aim_static" or "aim_robo_stand" => 100,
+				_ when name.Contains( "aim", StringComparison.Ordinal ) => 50,
+				_ => 0
+			};
+		}
+
+		return name switch
+		{
+			"aim_static_sp" or "combat_aim_all" or "combat_aim_stand" or "stand_aim_all" or "aim_robo_stand" => 150,
+			"mp_stand_aim_all" or "aim_stand_mp" or "aim_static" => 135,
+			"combat_aim_stand_no_ik" or "aim_robo" => 115,
+			_ when name.Contains( "aim", StringComparison.Ordinal ) => 50,
+			_ => 0
+		};
+	}
 
 	void AddActorSequenceData( Titanfall2ActorAnimationData.Clip clip, InfantryCandidate candidate, SkeletonData skeleton,
 		List<AnimationSourceData> sources, Titanfall2Mdl53AnimationReader.DecodedAnimation decoded )
@@ -16,7 +54,7 @@ partial class ModelLoader
 			clip.Sequence = sequence;
 			if ( candidate.Role == MortarAttackRole && !decoded.Delta )
 				clip.EventBonePoses = SampleActorEventBones( sequence, decoded, candidate.Remap, skeleton, sources[0].Model );
-			var mask = RegisterMask( sequence );
+			var mask = RegisterMask( source, sourceNumber, candidate.Remap, sequence );
 			// An absolute full-body sequence's all-ones weightlist does not define an
 			// upper-body gesture. Keep the existing adaptation for that case, while
 			// authored partial/fractional masks and additive poses retain exact weights.
@@ -24,30 +62,21 @@ partial class ModelLoader
 			var layers = new List<Titanfall2ActorAnimationData.AimLayer>();
 			foreach ( var layer in sequence.AutoLayers )
 			{
-				// These unconditional local aim layers are verified in both BT and
-				// pete_core. Preserve other flags/envelopes in Sequence, do not pretend
-				// Source 1's similarly named flags establish Respawn's runtime behavior.
-				if ( layer.Flags != 0 || layer.Start != 0 || layer.End != 0
+				// Unconditional local aim layers (flags 0 or STUDIO_AL_LOCAL 0x1000).
+				if ( (layer.Flags & ~StudioAutoLayerLocalFlag) != 0 || layer.Start != 0 || layer.End != 0
 					|| layer.SequenceIndex < 0 || layer.SequenceIndex >= source.Model.Sequences.Length ) continue;
-				var aim = Titanfall2SequenceRuntimeData.Read( source.Data, source.Model, source.Model.Sequences[layer.SequenceIndex] );
-				if ( aim.AutoLayers.Length != 0 || aim.Width * aim.Height <= 1 || aim.AnimationIndices.Length != aim.Width * aim.Height
-					|| !ValidAxis( aim, 0 ) || !ValidAxis( aim, 1 ) ) continue;
-				if ( aim.AnimationIndices.Any( index => index < 0 || index >= source.Model.Animations.Length
-					|| source.Model.Animations[index].Animation.FrameCount != 1
-					|| (source.Model.Animations[index].Animation.Flags & 4) == 0 ) ) continue;
-				var id = $"s{sourceNumber}_q{aim.Index}";
-				var paths = new string[aim.AnimationIndices.Length];
-				for ( var i = 0; i < paths.Length; ++i )
-				{
-					var key = $"aim_{id}_{i}";
-					var index = aim.AnimationIndices[i];
-					var desc = source.Model.Animations[index].Animation;
-					_actorAnimationEntries[key] = new( key, sourceNumber == 0 ? null : source.Description, index,
-						aim.Flags, desc.Flags, desc.FrameCount, desc.FramesPerSecond );
-					paths[i] = $"{Path}/actor/{key}.anim";
-				}
-				layers.Add( new() { Id = id, Source = source.Description, Sequence = aim, Cells = paths, BoneMask = RegisterMask( aim ) } );
+				if ( TryBuildAimLayer( source, sourceNumber, candidate.Remap, layer.SequenceIndex, out var aimLayer ) )
+					layers.Add( aimLayer );
 			}
+
+			// Recover authored 3x3 aim grids for combat/locomotion roles whose retail sequence
+			// omitted an explicit autolayer (e.g. Grunt/Spectre CQB_Idle, Reaper stand_Aim_all, Titan reload).
+			if ( layers.Count == 0 && RoleSupportsFallbackAimGrid( candidate.Role )
+				&& TryFindFallbackAimLayer( sources, skeleton, candidate.Role, out var fallbackAim ) )
+			{
+				layers.Add( fallbackAim );
+			}
+
 			clip.AimLayers = layers.ToArray();
 		}
 		catch ( Exception error )
@@ -55,15 +84,81 @@ partial class ModelLoader
 			Titanfall2Log.Warning( $"TF2 sequence metadata '{source.Description}:{candidate.SequenceIndex}' unavailable: {error.Message}" );
 		}
 
-		string RegisterMask( Titanfall2SequenceRuntimeData sequence )
+		bool TryBuildAimLayer( AnimationSourceData aimSource, int aimSourceNumber, int[] remap, int sequenceIndex, out Titanfall2ActorAnimationData.AimLayer result )
 		{
-			if ( sequence.BoneWeights.Length != source.Model.Bones.Length ) return null;
-			var name = $"tf2_s{sourceNumber}_q{sequence.Index}";
+			result = null;
+			var aim = Titanfall2SequenceRuntimeData.Read( aimSource.Data, aimSource.Model, aimSource.Model.Sequences[sequenceIndex] );
+			if ( aim.AutoLayers.Length != 0 || aim.Width * aim.Height <= 1 || aim.AnimationIndices.Length != aim.Width * aim.Height
+				|| !ValidAxis( aim, 0 ) || !ValidAxis( aim, 1 ) ) return false;
+			if ( aim.AnimationIndices.Any( index => index < 0 || index >= aimSource.Model.Animations.Length
+				|| aimSource.Model.Animations[index].Animation.FrameCount != 1
+				|| (aimSource.Model.Animations[index].Animation.Flags & 4) == 0 ) ) return false;
+
+			var id = $"s{aimSourceNumber}_q{aim.Index}";
+			var paths = new string[aim.AnimationIndices.Length];
+			for ( var i = 0; i < paths.Length; ++i )
+			{
+				var key = $"aim_{id}_{i}";
+				var index = aim.AnimationIndices[i];
+				var desc = aimSource.Model.Animations[index].Animation;
+				_actorAnimationEntries[key] = new( key, aimSourceNumber == 0 ? null : aimSource.Description, index,
+					aim.Flags, desc.Flags, desc.FrameCount, desc.FramesPerSecond );
+				paths[i] = $"{Path}/actor/{key}.anim";
+			}
+			result = new() { Id = id, Source = aimSource.Description, Sequence = aim, Cells = paths, BoneMask = RegisterMask( aimSource, aimSourceNumber, remap, aim ) };
+			return true;
+		}
+
+		bool TryFindFallbackAimLayer( List<AnimationSourceData> allSources, SkeletonData targetSkeleton, string role, out Titanfall2ActorAnimationData.AimLayer result )
+		{
+			result = null;
+			var forLocomotion = IsLocomotionRole( role );
+			var bestScore = 0;
+			var bestSourceIndex = -1;
+			var bestSeqIndex = -1;
+			int[] bestRemap = null;
+			var targetBones = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
+			for ( var i = 0; i < targetSkeleton.Names.Length; i++ ) targetBones[targetSkeleton.Names[i]] = i;
+
+			for ( var sIdx = 0; sIdx < allSources.Count; sIdx++ )
+			{
+				var src = allSources[sIdx];
+				int[] remap = null;
+				for ( var qIdx = 0; qIdx < src.Model.Sequences.Length; qIdx++ )
+				{
+					var seq = src.Model.Sequences[qIdx];
+					if ( seq.Sequence.GroupSize[0] * seq.Sequence.GroupSize[1] < 4 ) continue;
+					var score = RankFallbackAimGrid( seq.Label, forLocomotion );
+					if ( score <= bestScore ) continue;
+					if ( seq.Sequence.AutoLayerCount != 0 ) continue;
+					if ( seq.AnimationIndices.Length != seq.Sequence.GroupSize[0] * seq.Sequence.GroupSize[1] ) continue;
+					if ( seq.AnimationIndices.Any( idx => idx < 0 || idx >= src.Model.Animations.Length
+						|| src.Model.Animations[idx].Animation.FrameCount != 1
+						|| (src.Model.Animations[idx].Animation.Flags & 4) == 0 ) ) continue;
+					var runtime = Titanfall2SequenceRuntimeData.Read( src.Data, src.Model, seq );
+					if ( !ValidAxis( runtime, 0 ) || !ValidAxis( runtime, 1 ) ) continue;
+					if ( runtime.Width < 2 || runtime.Height < 2 ) continue;
+					remap ??= src.Model.Bones.Select( bone => string.IsNullOrEmpty( bone.Name ) ? -1 : targetBones.GetValueOrDefault( bone.Name, -1 ) ).ToArray();
+					if ( remap.Count( x => x >= 0 ) < Math.Min( targetSkeleton.Names.Length, 6 ) ) break;
+					bestScore = score;
+					bestSourceIndex = sIdx;
+					bestSeqIndex = qIdx;
+					bestRemap = remap;
+				}
+			}
+
+			return bestSourceIndex >= 0 && TryBuildAimLayer( allSources[bestSourceIndex], bestSourceIndex, bestRemap, bestSeqIndex, out result );
+		}
+
+		string RegisterMask( AnimationSourceData maskSource, int maskSourceNumber, int[] remap, Titanfall2SequenceRuntimeData sequence )
+		{
+			if ( sequence.BoneWeights.Length != maskSource.Model.Bones.Length ) return null;
+			var name = $"tf2_s{maskSourceNumber}_q{sequence.Index}";
 			if ( !_actorBoneMasks.ContainsKey( name ) )
 			{
 				var weights = skeleton.Names.ToDictionary( bone => bone, _ => 0f, StringComparer.OrdinalIgnoreCase );
-				for ( var i = 0; i < source.Model.Bones.Length; ++i )
-					if ( candidate.Remap[i] >= 0 ) weights[skeleton.Names[candidate.Remap[i]]] = sequence.BoneWeights[i];
+				for ( var i = 0; i < maskSource.Model.Bones.Length; ++i )
+					if ( remap[i] >= 0 ) weights[skeleton.Names[remap[i]]] = sequence.BoneWeights[i];
 				_actorBoneMasks[name] = weights;
 			}
 			return name;

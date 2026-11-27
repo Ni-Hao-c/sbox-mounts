@@ -47,9 +47,15 @@ public sealed partial class Titanfall2Npc
 		}
 		if ( !CanFight || !TitanCanAct ) { StopForAbility(); return true; }
 		var now = Time.NowDouble;
-		if ( !_mortarTarget.IsValid() || _mortarTarget.GetComponent<Titanfall2Harvester>() is not { Destroyed: false } )
+		var harvester = FindHarvester();
+		if ( harvester.IsValid() )
 		{
-			_mortarTarget = FindHarvester();
+			_mortarTarget = harvester;
+		}
+		else if ( !CanTarget( _mortarTarget ) )
+		{
+			// In Sandbox maps without a Harvester, fall back to bombarding long-range hostile targets.
+			_mortarTarget = FindTarget();
 			if ( !_mortarTarget.IsValid() )
 			{
 				StopForAbility();
@@ -57,6 +63,15 @@ public sealed partial class Titanfall2Npc
 				else if ( Mortar.State == Titanfall2MortarState.Recovering && now - Mortar.StartedAt >= Mortar.Duration ) SetMortarState( Titanfall2MortarState.Idle );
 				return true;
 			}
+		}
+		var targetIsHarvester = _mortarTarget.GetComponent<Titanfall2Harvester>() is { Destroyed: false };
+		if ( !targetIsHarvester && Mortar.State is Titanfall2MortarState.Idle or Titanfall2MortarState.Moving
+			&& _mortarTarget.WorldPosition.Distance( WorldPosition ) < 520f )
+		{
+			var deltaClose = (_mortarTarget.WorldPosition - WorldPosition).WithZ( 0 );
+			if ( deltaClose.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( deltaClose ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
+			if ( HasLineOfSight( _mortarTarget ) && _nextShot <= 0 ) Fire( new Ray( Eye, (AimAt( _mortarTarget ) - Eye).Normal ), GameObject, false );
+			return true;
 		}
 		if ( Mortar.State == Titanfall2MortarState.Idle )
 		{
@@ -86,7 +101,12 @@ public sealed partial class Titanfall2Npc
 			}
 			// The original falls back to ordinary combat while waiting to reengage.
 			var threat = FindTarget();
-			if ( threat.IsValid() && HasLineOfSight( threat ) && _nextShot <= 0 ) Fire( new Ray( Eye, (AimAt( threat ) - Eye).Normal ), GameObject, false );
+			if ( threat.IsValid() )
+			{
+				var toThreat = (threat.WorldPosition - WorldPosition).WithZ( 0 );
+				if ( toThreat.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( toThreat ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
+				if ( HasLineOfSight( threat ) && _nextShot <= 0 ) Fire( new Ray( Eye, (AimAt( threat ) - Eye).Normal ), GameObject, false );
+			}
 			if ( now >= _mortarWaitUntil ) { _mortarMoveHealth = Health + Shield; SetMortarState( Titanfall2MortarState.Moving ); }
 		}
 		if ( Mortar.State == Titanfall2MortarState.Deploying && now - Mortar.StartedAt >= Mortar.Duration )

@@ -261,7 +261,7 @@ sealed class Titanfall2MaterialDescriptor
 		var tint = NormalizeColor( definition.GetVector( "$color", definition.GetVector( "$color2", WhiteVector ) ) );
 		descriptor.Constants.Add( new Titanfall2MaterialConstant( "g_vT2AlbedoTint", tint, 4 ) );
 		descriptor.Constants.Add( new Titanfall2MaterialConstant( "g_flT2MaterialOpacity",
-			new Vector4( definition.GetFloat( "$alpha", 1f ), 0f, 0f, 0f ), 1 ) );
+			new Vector4( definition.GetInitialAlpha(), 0f, 0f, 0f ), 1 ) );
 		descriptor.Constants.Add( new Titanfall2MaterialConstant( "g_flT2AlphaTestReference",
 			new Vector4( definition.GetFloat( "$alphatestreference", 0.5f ), 0f, 0f, 0f ), 1 ) );
 		if ( definition.TryGetTextureScroll( false, out var scroll ) )

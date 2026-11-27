@@ -111,7 +111,7 @@ public sealed partial class Titanfall2Weapon
 		var grounded = !owner.IsValid() || owner.IsOnGround;
 		var crouched = owner.IsValid() && owner.IsDucking;
 		var movement = owner.IsValid() ? owner.Velocity.WithZ( 0 ).Length / MathF.Max( owner.WalkSpeed, 1 ) : 0;
-		var cone = SpreadProfile.BaseCone( grounded, crouched, movement, IsSprinting, zoom, MathF.Abs( _wallrunSide ) > 0.1f );
+		var cone = SpreadProfile.BaseCone( grounded, crouched, movement, IsSprinting, zoom, _parkourPose.IsWallrunning || MathF.Abs( _parkourPose.WallrunSide ) > 0.1f );
 		var kick = RetailKick;
 		return Vector2.One * ((cone + float.Lerp( kick.x, kick.y, zoom )) * SpreadScale);
 	}

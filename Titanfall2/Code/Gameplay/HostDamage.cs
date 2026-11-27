@@ -72,9 +72,13 @@ internal static class Titanfall2HostDamage
 		return true;
 	}
 
+	static bool IsPhasedPilot( Component.IDamageable victim ) =>
+		victim is Component c && c.IsValid()
+		&& c.GameObject.GetComponentInParent<Titanfall2PilotTactical>() is { IsValid: true, IsPhaseActive: true };
+
 	internal static void Deal( Component.IDamageable victim, DamageInfo damage )
 	{
-		if ( !Networking.IsHost || victim is null || damage is null ) return;
+		if ( !Networking.IsHost || victim is null || damage is null || IsPhasedPilot( victim ) ) return;
 		var previous = _current;
 		_current = Create( victim, damage.Attacker, damage.Weapon );
 		try { victim.OnDamage( damage ); Complete(); }
@@ -85,8 +89,10 @@ internal static class Titanfall2HostDamage
 		GameObject attacker, GameObject weapon, TagSet tags )
 	{
 		if ( !Networking.IsHost ) return hit;
+		var victim = hit.GameObject?.GetComponentInParent<Component.IDamageable>();
+		if ( IsPhasedPilot( victim ) ) return hit;
 		var previous = _current;
-		_current = Create( hit.GameObject?.GetComponentInParent<Component.IDamageable>(), attacker, weapon );
+		_current = Create( victim, attacker, weapon );
 		try
 		{
 			var result = BaseCombatWeapon.ShootBullet( hit, damage, force, attacker, weapon, tags );

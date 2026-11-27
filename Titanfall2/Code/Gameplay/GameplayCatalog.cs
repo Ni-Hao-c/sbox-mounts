@@ -127,6 +127,13 @@ public partial class Titanfall2Mount
 		foreach ( var (id, title, proj, speed, tint, behavior) in AntiTitanWeapons ) RegisterWeapon( id, "mp_weapon_" + id, title, null, false, projectile: proj, fallbackSpeed: speed, tint: tint, antiTitan: true, behavior: behavior );
 		foreach ( var (id, title, tint, behavior) in PilotOrdnance ) RegisterWeapon( id, "mp_weapon_" + id, title, null, false, projectile: true, fallbackSpeed: 1100, tint: tint, ordnance: true, behavior: behavior );
 		foreach ( var (id, speed, tint) in IntegratedWeapons ) RegisterWeapon( "integrated:" + id, "mp_weapon_" + id, null, null, false, projectile: true, integrated: true, fallbackSpeed: speed, tint: tint );
+		const string TitanSwordViewModel = "models/weapons/titan_sword/atpov_titan_sword.mdl";
+		if ( models.Contains( TitanSwordViewModel ) && snapshot.GetSource( TitanSwordViewModel ) is { } swordViewSource
+			&& models.Add( TitanSwordViewModel + ".titanpov" ) )
+		{
+			catalog.Add( new( ResourceType.Model, TitanSwordViewModel + ".titanpov",
+				new ModelLoader( swordViewSource, separateResources: true, pilotViewAnimations: true ) ) );
+		}
 		foreach ( var npc in Npcs )
 		{
 			if ( !models.Contains( npc.Model ) || (npc.Role == Titanfall2Npc.FrontierRole.ArcTitan && !models.Contains( ArcCannonWorldModel )) ) continue;
@@ -144,6 +151,19 @@ public partial class Titanfall2Mount
 			if ( npc.Titan ) loader.Tags.Add( "titan" );
 			else if ( npc.Navigation == Titanfall2Npc.Navigation.Ground && npc.Height >= 72 && npc.MeleeDamage == 0 ) loader.Tags.Add( "humanoid" );
 			catalog.Add( new( ResourceType.PrefabFile, $"entities/{(npc.Titan ? "titans" : "npcs")}/{npc.Id}", loader ) );
+		}
+
+		var jumpKitModel = models.Contains( Titanfall2JumpKitItem.DefaultWorldModel ) ? Titanfall2JumpKitItem.DefaultWorldModel
+			: models.Contains( Titanfall2JumpKitItem.FallbackWorldModel ) ? Titanfall2JumpKitItem.FallbackWorldModel : null;
+		var packModel = models.Contains( Titanfall2PilotParkour.DefaultPackModel ) ? Titanfall2PilotParkour.DefaultPackModel : jumpKitModel;
+		if ( jumpKitModel is not null )
+		{
+			var pilotSettings = Titanfall2PilotSettings.Read( ReadScript );
+			var kitLoader = new PilotJumpKitPrefabLoader( "Pilot Jump Kit", jumpKitModel, packModel, pilotSettings );
+			kitLoader.Tags.Add( "item" );
+			kitLoader.Tags.Add( "equipment" );
+			kitLoader.Tags.Add( "pilot" );
+			catalog.Add( new( ResourceType.PrefabFile, "entities/items/pilot_jump_kit", kitLoader ) );
 		}
 
 		void RegisterWeapon( string key, string name, string title, string sample, bool titan, bool projectile = false, bool integrated = false, float fallbackSpeed = 0, Color? tint = null, bool ordnance = false, bool antiTitan = false, Titanfall2ProjectileBehavior behavior = Titanfall2ProjectileBehavior.Standard )
@@ -169,6 +189,13 @@ public partial class Titanfall2Mount
 				weapons.Add( key, weapon );
 				if ( titan )
 				{
+					if ( weapon.ViewModel is { } titanViewPath
+						&& snapshot.GetSource( titanViewPath ) is { } titanViewSource
+						&& models.Add( titanViewPath + ".titanpov" ) )
+					{
+						catalog.Add( new( ResourceType.Model, titanViewPath + ".titanpov",
+							new ModelLoader( titanViewSource, separateResources: true, pilotViewAnimations: true ) ) );
+					}
 					var armament = new TitanArmamentPrefabLoader( weapon, name );
 					armament.Tags.Add( "titan-weapon" );
 					catalog.Add( new( ResourceType.PrefabFile, $"entities/titanweapons/{name}", armament ) );
@@ -221,6 +248,96 @@ public partial class Titanfall2Mount
 		}
 	}
 
+	Titanfall2PilotSettings? _pilotSettings;
+	Titanfall2PilotMeleeSettings? _pilotMeleeSettings;
+	Titanfall2OffhandOrdnanceConfig? _defaultOffhandOrdnance;
+
+	internal Titanfall2PilotSettings GetPilotSettings()
+	{
+		if ( _pilotSettings is { } cached ) return cached;
+		if ( _contentSnapshot is null ) return Titanfall2PilotSettings.RetailDefault;
+		var settings = Titanfall2PilotSettings.Read( ReadSnapshotText );
+		_pilotSettings = settings;
+		return settings;
+	}
+
+	internal Titanfall2PilotMeleeSettings GetPilotMeleeSettings()
+	{
+		if ( _pilotMeleeSettings is { } cached ) return cached;
+		if ( _contentSnapshot is null ) return Titanfall2PilotMeleeSettings.RetailDefault;
+		var settings = Titanfall2PilotMeleeSettings.Read( ReadSnapshotText );
+		_pilotMeleeSettings = settings;
+		return settings;
+	}
+
+	internal Titanfall2OffhandOrdnanceConfig GetDefaultOffhandOrdnance()
+	{
+		if ( _defaultOffhandOrdnance is { } cached ) return cached;
+		if ( _contentSnapshot is null ) return Titanfall2OffhandOrdnanceConfig.RetailFragDefault;
+
+		const string scriptPath = Titanfall2WeaponData.Folder + "mp_weapon_frag_grenade.txt";
+		var data = Titanfall2WeaponData.Read( scriptPath, ReadSnapshotText,
+			projectile: true, tint: new Color( 1f, 0.6f, 0.2f ), ordnance: true,
+			behavior: Titanfall2ProjectileBehavior.FragGrenade );
+		if ( data is { OrdnanceProfile.Enabled: true, ViewModel: not null } )
+			data = data with { OrdnanceProfile = Titanfall2OrdnanceData.WithModelTiming( _contentSnapshot, data.ViewModel, data.OrdnanceProfile ) };
+		if ( data is { Projectile: { Enabled: true, ModelPath: not null } flight } )
+			data = data with { Projectile = flight with { ModelPath = flight.ModelPath + ".visual" } };
+
+		var config = Titanfall2OffhandOrdnanceConfig.FromWeaponData( "mp_weapon_frag_grenade", "Frag Grenade", data, Ident );
+		_defaultOffhandOrdnance = config;
+		return config;
+	}
+
+	string ReadSnapshotText( string path )
+	{
+		var source = _contentSnapshot?.GetSource( path );
+		return source is not null && source.TryReadAllBytes( out var bytes, out _ ) ? Encoding.UTF8.GetString( bytes ) : null;
+	}
+
+	sealed class PilotJumpKitPrefabLoader( string title, string worldModel, string packModel, Titanfall2PilotSettings settings ) : ResourceLoader<Titanfall2Mount>
+	{
+		PrefabFile _prefab;
+
+		protected override object Load()
+		{
+			var visualPath = $"mount://{Host.Ident}/{worldModel}.visual.vmdl";
+			var packPath = packModel is null ? null : $"mount://{Host.Ident}/{packModel}.visual.vmdl";
+			var builder = new PrefabBuilder().WithName( Path )
+				.WithMetadata( "Title", title )
+				.WithMetadata( "PreviewModel", visualPath );
+			using ( builder.Scope() )
+			{
+				Game.ActiveScene.Enabled = false;
+				var root = new GameObject( true, title );
+				root.Tags.Add( "item" );
+				var item = root.AddComponent<Titanfall2JumpKitItem>();
+				item.MountIdent = Host.Ident;
+				item.WorldModelPath = visualPath;
+				item.PackModelPath = packPath;
+				item.Settings = settings;
+				var visualGo = new GameObject( root, true, "JumpKit Visual" );
+				item.Visual = visualGo.AddComponent<ModelRenderer>();
+				var glowGo = new GameObject( root, true, "JumpKit Accent Light" ) { LocalPosition = Vector3.Up * 8f };
+				var light = glowGo.AddComponent<PointLight>();
+				light.LightColor = new Color( 0.18f, 0.72f, 1f ) * 0.85f;
+				light.Radius = 48f;
+				light.Shadows = false;
+				var hull = root.AddComponent<BoxCollider>();
+				hull.Scale = new Vector3( 16f, 16f, 16f );
+				hull.Center = Vector3.Up * 8f;
+				root.AddComponent<Rigidbody>();
+			}
+			return _prefab = builder.Create();
+		}
+
+		protected override void Shutdown()
+		{
+			PrefabBuilder.Destroy( _prefab );
+			_prefab = null;
+		}
+	}
+
 	string GetGameplayFireSound( string[] sounds )
 	{
 		foreach ( var sound in sounds )
@@ -245,6 +362,7 @@ public partial class Titanfall2Mount
 				root.Tags.Add( "titan-weapon" );
 				var gun = root.AddComponent<Titanfall2TitanArmament>();
 				gun.ModelPath = model;
+				gun.ViewModelPath = data.ViewModel is null ? null : $"mount://{Host.Ident}/{data.ViewModel}.titanpov.vmdl";
 				gun.MountIdent = Host.Ident;
 				gun.FireSound = Host.GetGameplayFireSound( data.FireSounds );
 				gun.Presentation = data.Presentation;
@@ -315,7 +433,9 @@ public partial class Titanfall2Mount
 					gun.ClipMaxSize = data.Magazine;
 					gun.Firing = data.Firing;
 					gun.SpreadProfile = data.SpreadProfile;
-					gun.ReloadTime = data.ReloadSeconds;
+					gun.ReloadTime = data.ReloadProfile.Segmented ? data.ReloadProfile.LoopDurationFor( data.ReloadSeconds ) : data.ReloadSeconds;
+					gun.IncrementalReloading = data.ReloadProfile.Segmented;
+					gun.ReloadStartTime = data.ReloadProfile.Segmented ? data.ReloadProfile.DurationFor( false, data.ReloadSeconds ) : 0f;
 					gun.ViewKick = data.ViewKick;
 					gun.UiDisplays = data.UiDisplays;
 					gun.AttachmentBaseTitle = title;
@@ -406,6 +526,8 @@ public partial class Titanfall2Mount
 					if ( data is not null )
 					{
 						npc.GunModelPath = Mounted( data.WorldModel is null ? null : data.WorldModel + ".visual" );
+						if ( definition.Titan && data.ViewModel is not null )
+							npc.ViewModelPath = Mounted( data.ViewModel + ".titanpov" );
 						npc.Projectile = data.Projectile with { ModelPath = Mounted( data.Projectile.ModelPath ), MountIdent = Host.Ident };
 						if ( definition.Id == "npc_reaper" ) npc.Projectile = npc.Projectile with { TrailEffect = "P_plasma_proj_MD_DLight", MountIdent = Host.Ident };
 						npc.FireSound = Host.GetGameplayFireSound( data.FireSounds );

@@ -85,7 +85,9 @@ public sealed partial class Titanfall2Weapon
 				case Titanfall2WeaponModSlot.Reload:
 					// This immutable choice is derived from the host-owned selection on every peer.
 					if ( Networking.IsHost ) ReloadProfile = option.Reload;
-					ReloadTime = option.Reload.NormalSeconds;
+					IncrementalReloading = option.Reload.Segmented;
+					ReloadStartTime = option.Reload.Segmented ? option.Reload.DurationFor( false, option.Reload.NormalSeconds ) : 0f;
+					ReloadTime = option.Reload.Segmented ? option.Reload.LoopDurationFor( option.Reload.NormalSeconds ) : option.Reload.NormalSeconds;
 					break;
 				case Titanfall2WeaponModSlot.Ads:
 					SpreadProfile = SpreadProfile with { ZoomIn = option.ZoomIn, ZoomOut = option.ZoomOut };

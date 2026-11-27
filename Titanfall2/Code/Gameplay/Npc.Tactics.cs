@@ -15,10 +15,13 @@ public sealed partial class Titanfall2Npc
 	public CombatActions CombatAction { get; private set; }
 	public Vector3? CombatDestination => _combatDestination;
 	public Vector3? LastSeenPosition => _lastContact;
+	internal bool IsUnderFire => _underFire > 0;
 
 	Vector3? _lastContact;
 	Vector3 _lastAimPoint;
 	Vector3 _seenVelocity;
+	GameObject _lastAttacker;
+	TimeUntil _lastAttackerMemory;
 	TimeSince _contactAge = 100;
 	TimeUntil _contactScan;
 	TimeUntil _reaction;
@@ -55,9 +58,7 @@ public sealed partial class Titanfall2Npc
 			foreach ( var candidate in Senses.VisibleHostiles )
 			{
 				if ( !CanEngage( candidate ) || !HasLineOfSight( candidate ) ) continue;
-				var distance = candidate.WorldPosition.Distance( WorldPosition );
-				// Keep the current enemy unless a substantially closer threat appears.
-				var candidateScore = distance * (candidate == _target ? 0.7f : 1f);
+				var candidateScore = EvaluateTargetScore( candidate );
 				if ( candidateScore >= score ) continue;
 				score = candidateScore;
 				best = candidate;
@@ -73,7 +74,7 @@ public sealed partial class Titanfall2Npc
 				{
 					if ( ally == this || ally.Dead || !ally.CanFight || !ally.UsesEngineSchedules || ally._seesContact
 						|| ally.IsHostileToFaction( Faction ) || IsNeutralFaction( ally.Faction )
-						|| ally.WorldPosition.Distance( WorldPosition ) > 700 || !ally.CanEngage( best ) ) continue;
+						|| ally.WorldPosition.Distance( WorldPosition ) > 850 || !ally.CanEngage( best ) ) continue;
 					// A radio call is a position report, never a live hidden-target transform.
 					ally.RememberCombatContact( best, _lastContact.Value, _lastAimPoint, seen: false );
 				}
@@ -84,6 +85,28 @@ public sealed partial class Titanfall2Npc
 			if ( wasVisible ) { StopCombatMove( CombatActions.Search ); _plan = 0; }
 			if ( !HasCombatContact ) ForgetCombatContact();
 		}
+	}
+
+	internal float EvaluateTargetScore( GameObject candidate )
+	{
+		var distance = candidate.WorldPosition.Distance( WorldPosition );
+		var npc = candidate.GetComponent<Titanfall2Npc>();
+		var baseNpc = npc ?? candidate.GetComponent<BaseNpc>();
+		var targetIsTitan = npc is { IsTitan: true };
+		var highThreat = npc is { Role: FrontierRole.NukeTitan or FrontierRole.ArcTitan or FrontierRole.MortarTitan }
+			|| npc is { IsNukeHazard: true };
+		var healthFrac = baseNpc is { MaxHealth: > 0 } ? Math.Clamp( baseNpc.Health / baseNpc.MaxHealth, 0f, 1f ) : 1f;
+		var recentAttacker = _lastAttackerMemory > 0 && candidate == _lastAttacker;
+		return Titanfall2TacticsRules.ScoreTarget(
+			distance,
+			candidate == _target,
+			recentAttacker,
+			IsTitan,
+			targetIsTitan,
+			highThreat,
+			healthFrac,
+			selfPrefersShielded: Role == FrontierRole.ArcTitan,
+			targetHasShield: npc is { Shield: > 50f } );
 	}
 
 	void RememberCombatContact( GameObject target, Vector3 position, Vector3 aimPoint, bool seen )
@@ -114,11 +137,47 @@ public sealed partial class Titanfall2Npc
 
 	void ReactToCombatDamage( GameObject attacker )
 	{
-		_underFire = 2;
+		_underFire = 2.4f;
 		_plan = 0;
+		if ( attacker.IsValid() && CanEngage( attacker ) )
+		{
+			_lastAttacker = attacker;
+			_lastAttackerMemory = 4.5f;
+		}
 		if ( !UsesEngineSchedules || !CanEngage( attacker ) ) return;
 		// A hit gives one location report; future hidden movement does not update it.
 		if ( !_seesContact ) RememberCombatContact( attacker, attacker.WorldPosition, AimAt( attacker ), seen: false );
+	}
+
+	internal bool TryFindNearbyHazard( out Vector3 hazardOrigin, out float escapeDistance )
+	{
+		hazardOrigin = default;
+		escapeDistance = 0;
+
+		foreach ( var other in Scene.GetAllComponents<Titanfall2Npc>() )
+		{
+			if ( other == this || other.Dead || !other.IsNukeHazard ) continue;
+			var radius = MathF.Max( 420f, other.NukeBlastRadius + BodyRadius );
+			if ( !Titanfall2TacticsRules.ShouldEvadeHazard( WorldPosition, other.WorldPosition, radius ) ) continue;
+			hazardOrigin = other.WorldPosition;
+			escapeDistance = radius + 120f;
+			return true;
+		}
+
+		foreach ( var shot in Scene.GetAllComponents<Titanfall2Projectile>() )
+		{
+			if ( !shot.IsValid() ) continue;
+			var behavior = shot.Settings.Behavior;
+			if ( behavior is not (Titanfall2ProjectileBehavior.FragGrenade or Titanfall2ProjectileBehavior.ThermiteBurn or Titanfall2ProjectileBehavior.ElectricSmoke) )
+				continue;
+			var danger = MathF.Max( 220f, shot.Settings.SplashRadius + BodyRadius + 48f );
+			if ( !Titanfall2TacticsRules.ShouldEvadeHazard( WorldPosition, shot.WorldPosition, danger ) ) continue;
+			hazardOrigin = shot.WorldPosition;
+			escapeDistance = danger + 100f;
+			return true;
+		}
+
+		return false;
 	}
 
 	internal bool TickCombatTactics()
@@ -131,7 +190,7 @@ public sealed partial class Titanfall2Npc
 		if ( visible )
 		{
 			var delta = (_lastContact.Value - WorldPosition).WithZ( 0 );
-			if ( delta.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( delta ), Math.Clamp( Time.Delta * 7, 0, 1 ) );
+			if ( delta.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( delta ), Math.Clamp( Time.Delta * (IsTitan ? 5.5f : 8f), 0, 1 ) );
 			if ( _reaction <= 0 && WorldPosition.Distance( _lastContact.Value ) <= MeleeRange && MeleeDamage > 0 )
 			{
 				StopCombatMove();
@@ -140,7 +199,7 @@ public sealed partial class Titanfall2Npc
 			else if ( !MeleeOnly && _reaction <= 0 && _nextShot <= 0 && WorldPosition.Distance( _lastContact.Value ) <= AttackRange )
 			{
 				var aimPoint = AimAt( _target );
-				if ( Projectile.Enabled ) aimPoint += _seenVelocity * Math.Clamp( Eye.Distance( aimPoint ) / Projectile.Speed, 0, 0.45f );
+				if ( Projectile.Enabled && Projectile.Speed > 1f ) aimPoint += _seenVelocity * Math.Clamp( Eye.Distance( aimPoint ) / Projectile.Speed, 0, 0.45f );
 				var origin = CombatMuzzle;
 				if ( HasClearShot( aimPoint ) ) Fire( new Ray( origin, (aimPoint - origin).Normal ), GameObject, piloted: false );
 			}
@@ -150,7 +209,7 @@ public sealed partial class Titanfall2Npc
 		CheckCombatProgress();
 		if ( _plan <= 0 )
 		{
-			_plan = 0.6f;
+			_plan = 0.55f;
 			PlanCombatMove( visible );
 		}
 		return true;
@@ -179,23 +238,44 @@ public sealed partial class Titanfall2Npc
 			CombatAction = visible ? CombatActions.Attack : CombatActions.Search;
 			return;
 		}
+
+		// Urgent hazard evasion (armed Nuke Titans, grenades, thermite, electric smoke).
+		if ( TryFindNearbyHazard( out var hazard, out var escapeDist ) )
+		{
+			var rawEscape = Titanfall2TacticsRules.ComputeEvadePoint( WorldPosition, hazard, escapeDist );
+			var projected = Movement.ProjectPoint( rawEscape );
+			if ( projected.HasValue )
+			{
+				CombatMoveTo( projected.Value, CombatActions.Retreat, 24 );
+				return;
+			}
+		}
+
 		if ( MeleeOnly )
 		{
 			if ( !visible || distance > AttackRange * 0.85f ) CombatMoveTo( contact, visible ? CombatActions.Advance : CombatActions.Search, MathF.Max( 12, AttackRange * 0.65f ) );
 			else StopCombatMove();
 			return;
 		}
-		var seekCover = UseCover && !IsTitan && CombatStyle != CombatStyles.Assault
-			&& (Reloading || (_underFire > 0 && Health < MaxHealth * 0.5f));
-		if ( seekCover )
+
+		var targetIsTitan = _target?.GetComponent<Titanfall2Npc>() is { IsTitan: true };
+		var chassis = GetComponent<Titanfall2TitanKit>()?.Kit ?? Titanfall2TitanKit.Chassis.None;
+		var shieldDepleted = MaxShield > 0 && Shield < MaxShield * 0.25f;
+		var infantryCoverTrigger = UseCover && !IsTitan && CombatStyle != CombatStyles.Assault
+			&& (Reloading || (_underFire > 0 && (Health < MaxHealth * 0.6f || shieldDepleted || targetIsTitan)));
+		var titanCoverTrigger = IsTitan && chassis is not (Titanfall2TitanKit.Chassis.Ronin or Titanfall2TitanKit.Chassis.Scorch)
+			&& (Reloading || (_underFire > 0 && shieldDepleted && Health < MaxHealth * 0.5f));
+
+		if ( infantryCoverTrigger || titanCoverTrigger )
 		{
-			if ( CombatAction == CombatActions.TakeCover && _combatDestination.HasValue && _moveAge < 3.5f ) return;
+			if ( CombatAction == CombatActions.TakeCover && _combatDestination.HasValue && _moveAge < 3.2f ) return;
 			if ( TryCombatPosition( contact, cover: true, retreat: false, out var cover ) )
 			{
 				CombatMoveTo( cover, CombatActions.TakeCover );
 				return;
 			}
 		}
+
 		if ( !visible )
 		{
 			// Do not chase the hidden target's current transform or stop at weapon range.
@@ -205,74 +285,109 @@ public sealed partial class Titanfall2Npc
 				if ( _combatDestination.HasValue && CombatAction == CombatActions.Reposition && _moveAge < 2.5f ) return;
 				if ( _relocate <= 0 && TryCombatPosition( contact, false, false, out var sweep ) )
 				{
-					_relocate = 2;
+					_relocate = 1.8f;
 					CombatMoveTo( sweep, CombatActions.Reposition );
 				}
 				else StopCombatMove( CombatActions.Search );
 			}
 			return;
 		}
-		var tooClose = CombatStyle != CombatStyles.Assault && distance < PreferredCombatRange * 0.45f;
+
+		var preferred = PreferredCombatRange;
+		var tooCloseThreshold = Titanfall2TacticsRules.TooCloseRange( IsTitan, chassis, CombatStyle, preferred );
+		var tooClose = tooCloseThreshold > 0 && distance < tooCloseThreshold;
 		var blocked = !HasClearShot( AimAt( _target ) );
-		if ( _combatDestination.HasValue && (CombatAction is CombatActions.Reposition or CombatActions.Retreat) && _moveAge < 2.5f
+		if ( _combatDestination.HasValue && (CombatAction is CombatActions.Reposition or CombatActions.Retreat) && _moveAge < 2.2f
 			&& Movement.Status == MovementLayer.MovementStatus.Moving ) return;
+
 		if ( (tooClose || blocked || (distance <= AttackRange && _relocate <= 0))
-			&& TryCombatPosition( contact, false, tooClose, out var position ) )
+			&& TryCombatPosition( contact, cover: false, retreat: tooClose, out var position ) )
 		{
-			_relocate = CombatStyle == CombatStyles.Pilot ? 1.2f : 2.5f;
+			_relocate = CombatStyle == CombatStyles.Pilot || chassis == Titanfall2TitanKit.Chassis.Ronin ? 1.1f : 2.3f;
 			CombatMoveTo( position, tooClose ? CombatActions.Retreat : CombatActions.Reposition );
 			return;
 		}
-		if ( distance > AttackRange * 0.9f || blocked ) CombatMoveTo( contact, CombatActions.Advance, blocked ? 24 : PreferredCombatRange );
+
+		if ( distance > MathF.Min( AttackRange * 0.9f, preferred * 1.35f ) || blocked )
+			CombatMoveTo( contact, CombatActions.Advance, blocked ? 24 : preferred );
 		else StopCombatMove();
 	}
 
-	float PreferredCombatRange => MathF.Min( AttackRange * (CombatStyle == CombatStyles.Assault ? 0.35f : 0.6f), IsTitan ? 1600 : 650 );
+	float PreferredCombatRange => Titanfall2TacticsRules.PreferredRange(
+		IsTitan,
+		GetComponent<Titanfall2TitanKit>()?.Kit ?? Titanfall2TitanKit.Chassis.None,
+		CombatStyle,
+		AttackRange );
 
 	bool TryCombatPosition( Vector3 contact, bool cover, bool retreat, out Vector3 result )
 	{
 		result = default;
 		if ( !Movement.IsValid() || !Scene.NavMesh.IsEnabled ) return false;
 		var candidates = new List<(Vector3 Position, float Score)>();
-		var forward = (contact - WorldPosition).WithZ( 0 ).Normal;
+		var forward = (contact - WorldPosition).WithZ( 0 );
+		forward = forward.LengthSquared > 0.01f ? forward.Normal : WorldRotation.Forward.WithZ( 0 ).Normal;
 		var side = Vector3.Cross( forward, Vector3.Up );
-		var reach = MathF.Max( BodyRadius * 3, MathF.Min( MoveSpeed * 1.5f, 320 ) );
-		for ( var i = 0; i < 12; i++ )
+		var outerReach = MathF.Max( BodyRadius * 3.5f, MathF.Min( MoveSpeed * 1.7f, IsTitan ? 480f : 340f ) );
+		float[] rings = [outerReach * 0.58f, outerReach];
+
+		var squadAllies = new List<Titanfall2Npc>();
+		var allyDirections = new List<Vector3>();
+		foreach ( var ally in Scene.GetAllComponents<Titanfall2Npc>() )
 		{
-			var angle = i * MathF.PI / 6;
-			var raw = WorldPosition + (forward * MathF.Cos( angle ) + side * MathF.Sin( angle )) * reach;
-			var projected = Movement.ProjectPoint( raw );
-			if ( !projected.HasValue ) continue;
-			var point = projected.Value;
-			var travel = point.Distance( WorldPosition );
-			if ( travel < BodyRadius * 2 || travel > reach * 1.6f || MathF.Abs( point.z - WorldPosition.z ) > 72 ) continue;
-			if ( _avoidFailed > 0 && _failedDestination.HasValue && point.Distance( _failedDestination.Value ) < 80 ) continue;
-			var range = point.Distance( contact );
-			if ( retreat && range < WorldPosition.Distance( contact ) + 40 ) continue;
-			if ( !cover && range > AttackRange * 0.95f ) continue;
-			var hull = new BBox( new Vector3( -BodyRadius, -BodyRadius, 4 ), new Vector3( BodyRadius, BodyRadius, BodyHeight - 2 ) );
-			if ( Scene.Trace.Box( hull, point, point ).IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger" ).Run().StartedSolid ) continue;
-			var eye = point + Vector3.Up * EyeHeight;
-			var sight = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( eye, _lastAimPoint ).IgnoreGameObjectHierarchy( GameObject )
-				.IgnoreGameObjectHierarchy( _target ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
-			if ( sight.StartedSolid ) continue;
-			if ( cover != sight.Hit ) continue;
-			// Another actor is not cover. Require geometry at both chest and eye height.
-			if ( cover && (sight.GameObject?.GetComponentInParent<BaseNpc>() is not null
-				|| sight.GameObject?.GetComponentInParent<PlayerController>() is not null
-				|| !Titanfall2CollisionQueries.Run( Scene.Trace.Ray( point + Vector3.Up * BodyHeight * 0.45f, _lastAimPoint )
-					.IgnoreGameObjectHierarchy( GameObject ).IgnoreGameObjectHierarchy( _target ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot ).Hit) ) continue;
-			var score = MathF.Abs( range - PreferredCombatRange ) + travel * (cover ? 0.8f : 0.15f);
-			foreach ( var ally in Scene.GetAllComponents<Titanfall2Npc>() )
-			{
-				if ( ally == this || ally.Dead || IsHostileToFaction( ally.Faction ) ) continue;
-				var occupied = ally._combatDestination ?? ally.WorldPosition;
-				if ( occupied.Distance( point ) < BodyRadius * 4 ) score += 600;
-			}
-			candidates.Add( (point, score) );
+			if ( ally == this || ally.Dead || IsHostileToFaction( ally.Faction ) ) continue;
+			squadAllies.Add( ally );
+			var allyPos = ally._combatDestination ?? ally.WorldPosition;
+			var fromTarget = (allyPos - contact).WithZ( 0 );
+			if ( fromTarget.LengthSquared > 16f && allyPos.Distance( WorldPosition ) < 1200f )
+				allyDirections.Add( fromTarget.Normal );
 		}
+
+		var targetForward = _target.IsValid() ? _target.WorldRotation.Forward : -forward;
+		var chassis = GetComponent<Titanfall2TitanKit>()?.Kit ?? Titanfall2TitanKit.Chassis.None;
+		var prefersFlank = CombatStyle == CombatStyles.Pilot || chassis == Titanfall2TitanKit.Chassis.Ronin;
+
+		foreach ( var reach in rings )
+		{
+			for ( var i = 0; i < 12; i++ )
+			{
+				var angle = i * MathF.PI / 6f;
+				var raw = WorldPosition + (forward * MathF.Cos( angle ) + side * MathF.Sin( angle )) * reach;
+				var projected = Movement.ProjectPoint( raw );
+				if ( !projected.HasValue ) continue;
+				var point = projected.Value;
+				var travel = point.Distance( WorldPosition );
+				if ( travel < BodyRadius * 1.8f || travel > outerReach * 1.65f || MathF.Abs( point.z - WorldPosition.z ) > 84 ) continue;
+				if ( _avoidFailed > 0 && _failedDestination.HasValue && point.Distance( _failedDestination.Value ) < 80 ) continue;
+				var range = point.Distance( contact );
+				if ( retreat && range < WorldPosition.Distance( contact ) + 36 ) continue;
+				if ( !cover && range > AttackRange * 0.95f ) continue;
+				var hull = new BBox( new Vector3( -BodyRadius, -BodyRadius, 4 ), new Vector3( BodyRadius, BodyRadius, BodyHeight - 2 ) );
+				if ( Scene.Trace.Box( hull, point, point ).IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger" ).Run().StartedSolid ) continue;
+				var eye = point + Vector3.Up * EyeHeight;
+				var sight = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( eye, _lastAimPoint ).IgnoreGameObjectHierarchy( GameObject )
+					.IgnoreGameObjectHierarchy( _target ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
+				if ( sight.StartedSolid ) continue;
+				if ( cover != sight.Hit ) continue;
+				// Another actor is not cover. Require geometry at both chest and eye height.
+				if ( cover && (sight.GameObject?.GetComponentInParent<BaseNpc>() is not null
+					|| sight.GameObject?.GetComponentInParent<PlayerController>() is not null
+					|| !Titanfall2CollisionQueries.Run( Scene.Trace.Ray( point + Vector3.Up * BodyHeight * 0.45f, _lastAimPoint )
+						.IgnoreGameObjectHierarchy( GameObject ).IgnoreGameObjectHierarchy( _target ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot ).Hit) ) continue;
+
+				var score = MathF.Abs( range - PreferredCombatRange ) + travel * (cover ? 0.7f : 0.16f);
+				if ( !cover )
+					score += Titanfall2TacticsRules.FlankScoreAdjustment( point - contact, targetForward, allyDirections, prefersFlank );
+				foreach ( var ally in squadAllies )
+				{
+					var occupied = ally._combatDestination ?? ally.WorldPosition;
+					if ( occupied.Distance( point ) < BodyRadius * 4f ) score += 600f;
+				}
+				candidates.Add( (point, score) );
+			}
+		}
+
 		// Bound path searches and reject disconnected islands and partial paths.
-		foreach ( var candidate in candidates.OrderBy( x => x.Score ).Take( 3 ) )
+		foreach ( var candidate in candidates.OrderBy( x => x.Score ).Take( 4 ) )
 		{
 			var path = Scene.NavMesh.CalculatePath( new CalculatePathRequest { Start = WorldPosition, Target = candidate.Position, Agent = Agent } );
 			if ( path.Status != NavMeshPathStatus.Complete ) continue;

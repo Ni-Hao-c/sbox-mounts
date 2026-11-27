@@ -54,7 +54,10 @@ public sealed partial class Titanfall2TitanKit
 	[Sync( SyncFlags.FromHost )] public float IonZoomFraction { get; private set; }
 	public int SharedEnergyMaximum => Titanfall2IonEnergy.Maximum;
 	public bool IonVortexActive => Kit == Chassis.Ion && GuardRemaining > 0;
-	public bool BlocksTitanPrimary => Kit == Chassis.Ion && (IonVortexActive || IonZoomFraction is > 0 and < 1);
+	public bool BlocksTitanPrimary =>
+		(Kit == Chassis.Ion && (IonVortexActive || IonZoomFraction is > 0 and < 1))
+		|| (Kit == Chassis.Scorch && DefenseVolumeActive)
+		|| (Kit == Chassis.Ronin && RoninBlocking);
 	public bool CanIonLaser => Kit == Chassis.Ion && !IonVortexActive && OffenseRemaining <= 0
 		&& IonData() is { } data && SharedEnergy >= data.LaserCost;
 	readonly Titanfall2IonEnergy _ionEnergy = new();

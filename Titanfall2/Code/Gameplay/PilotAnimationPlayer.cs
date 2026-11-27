@@ -95,7 +95,8 @@ internal sealed class Titanfall2PilotAnimationPlayer : IDisposable
 	}
 
 	static bool IsAction( string role ) => role is Titanfall2PilotViewModel.Draw or Titanfall2PilotViewModel.Reload
-		or Titanfall2PilotViewModel.EmptyReload or Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.SprintRaise or Titanfall2PilotViewModel.OneHandedIdle
+		or Titanfall2PilotViewModel.EmptyReload or Titanfall2PilotViewModel.ReloadSegLoop or Titanfall2PilotViewModel.ReloadSegEnd or Titanfall2PilotViewModel.ReloadEmptySegEnd
+		or Titanfall2PilotViewModel.Sprint or Titanfall2PilotViewModel.SprintRaise or Titanfall2PilotViewModel.OneHandedIdle
 		or Titanfall2PilotViewModel.Charge or Titanfall2PilotViewModel.Cooldown or Titanfall2PilotViewModel.CooldownAds
 		|| role.StartsWith( Titanfall2PilotViewModel.EmptyReload + "_late", StringComparison.Ordinal );
 	internal static float Cycle( double now, double started, float duration, bool loop )

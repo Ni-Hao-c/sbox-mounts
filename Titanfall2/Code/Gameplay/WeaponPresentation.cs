@@ -1,3 +1,39 @@
+public enum Titanfall2CrosshairStyle
+{
+	Tri,
+	Plus,
+	Alternator,
+	Sniper,
+	ChargeRifle,
+	Shotgun,
+	Mastiff,
+	Mozambique,
+	Wingman,
+	WingmanElite,
+	SmartPistol,
+	Circle,
+	LStar,
+	Smr,
+	GrenadeLauncher,
+	GrenadeLauncherArc,
+	Ordnance
+}
+
+public enum Titanfall2OpticReticleStyle
+{
+	None,
+	Dot,
+	GreenDot,
+	Diamond,
+	Hcog,
+	Holo,
+	AcgsRedline,
+	ThreatScope,
+	Aog,
+	MastiffHorseshoe,
+	DoubleTakeDoubleV
+}
+
 /// <summary>Authored presentation from the retail multiplayer WeaponData, not generic engine effects.</summary>
 public record struct Titanfall2WeaponPresentation
 {
@@ -25,6 +61,9 @@ public record struct Titanfall2WeaponPresentation
 	public int ScopeBodyChoice { get; set; }
 	public float ScopeBlendStart { get; set; }
 	public float ScopeBlendEnd { get; set; }
+	public Titanfall2CrosshairStyle CrosshairStyle { get; set; }
+	public float CrosshairBaseSpread { get; set; }
+	public Titanfall2OpticReticleStyle OpticReticle { get; set; }
 	/// <summary>Retail view-local axes: right, forward, up (not engine X, Y, Z).</summary>
 	public Vector3 ViewModelOffsetHip { get; set; }
 	public Vector3 ViewModelOffsetAds { get; set; }

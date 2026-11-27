@@ -1,3 +1,56 @@
+/// <summary>Pure deterministic rules for piloted Titan locomotion, turning, wall sliding, and foot support.</summary>
+internal static class Titanfall2TitanDriveRules
+{
+	internal const float StepHeight = 28f;
+	internal const float WalkableNormalZ = 0.58f;
+	internal const float Gravity = 1000f;
+	internal const float MaxFallSpeed = 1200f;
+	internal const float MaxTurnRateDegrees = 280f;
+
+	internal static float ChassisDashSpeed( Titanfall2TitanKit.Chassis kit ) => kit switch
+	{
+		Titanfall2TitanKit.Chassis.Ronin or Titanfall2TitanKit.Chassis.Northstar => 960f,
+		Titanfall2TitanKit.Chassis.Legion or Titanfall2TitanKit.Chassis.Scorch => 700f,
+		_ => 820f
+	};
+
+	internal static float ComputeTurnStep( float eyeYaw, float deltaTime )
+	{
+		if ( !float.IsFinite( eyeYaw ) || !float.IsFinite( deltaTime ) || deltaTime <= 0 ) return 0;
+		var desired = eyeYaw * Math.Clamp( deltaTime * 16f, 0f, 1f );
+		var minStep = MathF.Sign( eyeYaw ) * MathF.Min( MathF.Abs( eyeYaw ), 140f * deltaTime );
+		var step = MathF.Abs( desired ) > MathF.Abs( minStep ) ? desired : minStep;
+		var maxStep = MaxTurnRateDegrees * deltaTime;
+		return Math.Clamp( step, -maxStep, maxStep );
+	}
+
+	internal static Vector3 SlideDisplacement( Vector3 remaining, Vector3 hitNormal )
+	{
+		var flat = remaining.WithZ( 0 );
+		var normal = hitNormal.WithZ( 0 );
+		if ( normal.LengthSquared < 0.0001f ) return Vector3.Zero;
+		normal = normal.Normal;
+		var into = Vector3.Dot( flat, normal );
+		if ( into >= 0 ) return flat;
+		var slid = flat - normal * into;
+		return Vector3.Dot( slid, flat ) > 0 ? slid : Vector3.Zero;
+	}
+
+	internal static bool HasMajorityFootSupport( bool centerSupported, int outerSupportedCount ) =>
+		centerSupported || outerSupportedCount >= 2;
+}
+
+/// <summary>Frame input snapshot captured by Titanfall2PilotInputInterceptor in Stage.StartUpdate while piloting a Titan.</summary>
+internal readonly record struct Titanfall2TitanCockpitInput(
+	bool OffensePressed,
+	bool DefensePressed,
+	bool DefenseDown,
+	bool UtilityPressed,
+	bool SmokePressed,
+	bool MeleePressed,
+	bool CorePressed,
+	bool AdsDown );
+
 /// <summary>Collision-checked embarkation and local/listen-host Titan controls.</summary>
 [Title( "Titanfall 2 Titan Cockpit" ), Group( "Titanfall 2" )]
 public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandbox.Movement.ISitTarget
@@ -9,14 +62,23 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	[Property] public float EmbarkSeconds { get; set; } = 0.8f;
 	[Property] public float EmbarkRange { get; set; } = 200;
 	[Property] public bool AlignWithPilot { get; set; } = true;
-	[Property] public string CoreAction { get; set; } = "flashlight";
+	[Property] public string OffenseAction { get; set; } = "spray";
+	[Property] public string DefenseAction { get; set; } = "duck";
+	[Property] public string DefenseAltAction { get; set; } = "toolmenu";
+	[Property] public string UtilityAction { get; set; } = "drop";
+	[Property] public string SmokeAction { get; set; } = "inspectmenu";
+	[Property] public string MeleeAction { get; set; } = "flashlight";
+	[Property] public string CoreAction { get; set; } = "noclip";
 	[Property] public string EjectAction { get; set; } = "jump";
-	[Property] public string IonLaserAction { get; set; } = "slot2";
+	[Property] public string IonLaserAction { get; set; } = "spray";
 	[Property] public bool ShowHud { get; set; } = true;
 	[Property] public bool ShowCockpit { get; set; } = true;
 	[Sync( SyncFlags.FromHost )] public float EmbarkRemaining { get; private set; }
 	[Sync( SyncFlags.FromHost )] public int SeatSerial { get; private set; }
 	public bool IsDriving { get; private set; }
+	public Vector3 DriveVelocity { get; private set; }
+	public float DashRemainingVisual => _dashTime > 0 ? Math.Clamp( _dashTime / 0.24f, 0f, 1f ) : 0f;
+	public Vector3 DashDirection => _dashDirection;
 	public bool IsEmbarking => BoardingPilot.IsValid();
 	public string StatusMessage => _messageTime > 0 ? _message : null;
 	internal PlayerController LocalPilot => GetOccupant() is { IsProxy: false } pilot ? pilot
@@ -33,14 +95,26 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	PlayerController _viewPilot;
 	bool _previousThirdPerson;
 	TimeUntil _dashTime;
+	bool _phaseDashActive;
+	float _hoverOriginZ;
 	TimeUntil _entryGrace;
 	TimeUntil _reentryDelay;
 	TimeUntil _messageTime;
 	string _message;
 	Vector3 _dashDirection;
+	float _verticalVelocity;
+	bool _pausedAiNavigation;
+	bool _hasInterceptedInput;
+	bool _cockpitInputYielded;
+	Titanfall2TitanCockpitInput _interceptedInput;
+
+	/// <summary>Only players currently in Pilot Combat State (Jump Kit equipped) may embark a Titan.</summary>
+	public static bool HasPilotCombatState( PlayerController player ) =>
+		player.IsValid() && player.GameObject.GetComponent<Titanfall2PilotParkour>() is { IsValid: true, Equipped: true };
 
 	public override bool CanEnter( PlayerController player ) => Active && Actor is { Active: true, IsTitan: true, TitanCanAct: true }
 		&& player.IsValid() && player.Active && player.Scene == Scene && !player.IsProxy && Networking.IsHost && !IsProxy && !Actor.IsProxy
+		&& HasPilotCombatState( player )
 		&& SeatPosition.IsValid() && !BoardingPilot.IsValid() && _reentryDelay <= 0
 		&& player.GetComponentInParent<BaseChair>() is null && base.CanEnter( player )
 		&& !Scene.GetAllComponents<Titanfall2TitanSeat>().Any( seat => seat != this && seat.BoardingPilot == player )
@@ -48,7 +122,9 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 
 	Component.IPressable.Tooltip? Component.IPressable.GetTooltip( Component.IPressable.Event e ) => Actor is not { TitanCanAct: true } ? null
 		: new Component.IPressable.Tooltip( Actor.DisplayName ?? "泰坦", "airline_seat_recline_normal",
-			IsOccupied ? "座舱已占用" : IsEmbarking ? "正在建立神经连接" : "登乘泰坦" );
+			IsOccupied ? "座舱已占用" : IsEmbarking ? "正在建立神经连接"
+			: e.Source is PlayerController pilot && !HasPilotCombatState( pilot ) ? "需先穿戴铁驭跃升背包 (进入铁驭战斗态)"
+			: "登乘泰坦" );
 	bool Component.IPressable.CanPress( Component.IPressable.Event e ) => e.Source is PlayerController pilot && CanEnter( pilot );
 	bool Component.IPressable.Press( Component.IPressable.Event e ) => e.Source is PlayerController pilot && TryEmbark( pilot );
 
@@ -99,14 +175,58 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		BoardingPilot = null;
 		SeatSerial++;
 		_seatedPilot = pilot;
+		PauseAiNavigation();
 		SeatPosition.GetOrAddComponent<Titanfall2TitanSeatEscape>().Seat = this;
 		// SitMoveMode owns physics transitions. Do not disable a body while Walk still ticks.
 		pilot.GameObject.GetOrAddComponent<Sandbox.Movement.SitMoveMode>().Enabled = true;
 		pilot.GameObject.SetParent( SeatPosition, false );
 		pilot.GameObject.LocalTransform = global::Transform.Zero;
 		_entryGrace = 0.6f;
+		_verticalVelocity = 0;
 		if ( AlignWithPilot ) { Actor.Friendly = true; Actor.Leader = pilot.GameObject; }
 		SetMessage( "神经连接完成 · 使用键离舱 · 跳跃键弹射", 4 );
+	}
+
+	void PauseAiNavigation()
+	{
+		if ( !Actor.IsValid() ) return;
+		if ( Actor.Movement.IsValid() ) { Actor.Movement.Stop(); Actor.Movement.Enabled = false; }
+		if ( Actor.Agent.IsValid() ) { Actor.Agent.Stop(); Actor.Agent.Enabled = false; }
+		_pausedAiNavigation = true;
+	}
+
+	void RestoreAiNavigation()
+	{
+		if ( !_pausedAiNavigation ) return;
+		_pausedAiNavigation = false;
+		if ( !Actor.IsValid() || Actor.Dead ) return;
+		if ( Actor.Agent.IsValid() && Actor.NavigationMode == Titanfall2Npc.Navigation.Ground && Actor.MoveSpeed > 0 )
+			Actor.Agent.Enabled = true;
+		if ( Actor.Movement.IsValid() && Actor.UsesEngineSchedules )
+			Actor.Movement.Enabled = true;
+	}
+
+	internal void BeginFlightCoreHover()
+	{
+		_hoverOriginZ = WorldPosition.z;
+		_verticalVelocity = 0f;
+	}
+
+	internal void ConsumeCockpitInput( in Titanfall2TitanCockpitInput input )
+	{
+		_interceptedInput = input;
+		_hasInterceptedInput = true;
+		_cockpitInputYielded = false;
+	}
+
+	internal void OnCockpitInputYielded()
+	{
+		_cockpitInputYielded = true;
+		_hasInterceptedInput = false;
+		_interceptedInput = default;
+		var kit = Actor?.GetComponent<Titanfall2TitanKit>();
+		kit?.ClearIonInput();
+		kit?.ClearHoldDefenseInput();
 	}
 
 	protected override void OnUpdate()
@@ -118,12 +238,30 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		if ( !Networking.IsHost || Actor is not { TitanCanAct: true } || !pilot.IsValid() || pilot.IsProxy )
 		{
 			IsDriving = false;
+			_hasInterceptedInput = false;
+			_cockpitInputYielded = false;
 			if ( !BoardingPilot.IsValid() ) RestoreInventory();
 			return;
 		}
 		_seatedPilot = pilot;
 		PauseInventory( pilot );
 		if ( pilot.Mode is not Sandbox.Movement.SitMoveMode ) return;
+		if ( Actor.IsInTermination )
+		{
+			IsDriving = false;
+			DriveVelocity = Vector3.Zero;
+			_hasInterceptedInput = false;
+			_cockpitInputYielded = false;
+			return;
+		}
+
+		var yielded = _cockpitInputYielded;
+		var hasInput = _hasInterceptedInput;
+		var frameInput = _interceptedInput;
+		_hasInterceptedInput = false;
+		_cockpitInputYielded = false;
+		if ( yielded ) return;
+
 		if ( _entryGrace <= 0 && !string.IsNullOrWhiteSpace( EjectAction ) && Input.Pressed( EjectAction ) )
 		{
 			Input.Clear( EjectAction );
@@ -131,37 +269,92 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 			return;
 		}
 		if ( _entryGrace <= 0 && Input.Pressed( "use" ) ) { TryDisembark( pilot ); return; }
+
 		var aim = pilot.EyeTransform.ForwardRay;
 		Actor.SetAnimationAimDirection( aim.Forward );
 		var core = Actor.GetComponent<Titanfall2TitanCore>();
 		core?.SetAim( aim );
-		if ( !string.IsNullOrWhiteSpace( CoreAction ) && Input.Pressed( CoreAction ) )
+
+		var corePressed = hasInput ? frameInput.CorePressed : (!string.IsNullOrWhiteSpace( CoreAction ) && Input.Pressed( CoreAction ));
+		if ( corePressed )
 		{
 			if ( core?.TryActivate( aim, pilot.GameObject ) != true )
 				SetMessage( core is { Supported: true } ? "核心尚未就绪" : "此机体的核心尚未接入", 2 );
-			Input.Clear( CoreAction );
+			if ( !string.IsNullOrWhiteSpace( CoreAction ) ) Input.Clear( CoreAction );
 		}
+
 		if ( Actor.GetComponent<Titanfall2TitanKit>() is { } kit )
 		{
-			if ( kit.Kit == Titanfall2TitanKit.Chassis.Ion )
+			var isIon = kit.Kit == Titanfall2TitanKit.Chassis.Ion;
+			var offensePressed = hasInput ? frameInput.OffensePressed : (!string.IsNullOrWhiteSpace( OffenseAction ) && Input.Pressed( OffenseAction ));
+			var defensePressed = hasInput ? frameInput.DefensePressed
+				: ((!string.IsNullOrWhiteSpace( DefenseAction ) && Input.Pressed( DefenseAction ))
+					|| (!string.IsNullOrWhiteSpace( DefenseAltAction ) && Input.Pressed( DefenseAltAction ))
+					|| (!isIon && Input.Pressed( "attack2" )));
+			var defenseDown = hasInput ? frameInput.DefenseDown
+				: ((!string.IsNullOrWhiteSpace( DefenseAction ) && Input.Down( DefenseAction ))
+					|| (!string.IsNullOrWhiteSpace( DefenseAltAction ) && Input.Down( DefenseAltAction ))
+					|| (!isIon && Input.Down( "attack2" )));
+			var utilityPressed = hasInput ? frameInput.UtilityPressed : (!string.IsNullOrWhiteSpace( UtilityAction ) && Input.Pressed( UtilityAction ));
+			var smokePressed = hasInput ? frameInput.SmokePressed : (!string.IsNullOrWhiteSpace( SmokeAction ) && Input.Pressed( SmokeAction ));
+			var meleePressed = hasInput ? frameInput.MeleePressed : (!string.IsNullOrWhiteSpace( MeleeAction ) && Input.Pressed( MeleeAction ));
+			var adsDown = hasInput ? frameInput.AdsDown : Input.Down( "attack2" );
+
+			if ( isIon )
 			{
-				kit.SetIonInput( pilot, aim, Input.Down( "attack2" ), Input.Down( "duck" ) );
-				if ( !string.IsNullOrWhiteSpace( IonLaserAction ) && Input.Pressed( IonLaserAction ) )
-				{
-					if ( !kit.TryOffense( aim, pilot.GameObject ) ) SetMessage( kit.LastOffenseFailure ?? "激光肩炮未就绪", 2 );
-					Input.Clear( IonLaserAction );
-				}
+				kit.SetIonInput( pilot, aim, adsDown, defenseDown );
+				if ( offensePressed && !kit.TryOffense( aim, pilot.GameObject ) )
+					SetMessage( kit.LastOffenseFailure ?? "激光肩炮未就绪", 2 );
+			}
+			else if ( kit.Kit is Titanfall2TitanKit.Chassis.Scorch or Titanfall2TitanKit.Chassis.Ronin )
+			{
+				kit.SetHoldDefenseInput( pilot, aim, defenseDown );
+				if ( offensePressed && !kit.TryOffense( aim, pilot.GameObject ) )
+					SetMessage( kit.LastOffenseFailure ?? "战术技能冷却中", 2 );
 			}
 			else
 			{
-				if ( Input.Pressed( "attack2" ) && !kit.TryOffense( aim, pilot.GameObject ) ) SetMessage( kit.LastOffenseFailure ?? "攻击技能冷却中", 2 );
-				if ( Input.Pressed( "duck" ) && !kit.TryDefense( aim, pilot.GameObject ) ) SetMessage( "防御技能冷却中", 2 );
+				if ( offensePressed && !kit.TryOffense( aim, pilot.GameObject ) )
+					SetMessage( kit.LastOffenseFailure ?? "战术技能冷却中", 2 );
+				if ( defensePressed && !kit.TryDefense( aim, pilot.GameObject ) )
+					SetMessage( "防御技能冷却中", 2 );
 			}
+
+			if ( utilityPressed )
+			{
+				if ( kit.TryUtility( aim, pilot.GameObject ) )
+				{
+					if ( kit.Kit == Titanfall2TitanKit.Chassis.Ronin )
+					{
+						var move = Input.AnalogMove;
+						_dashDirection = (pilot.EyeTransform.Rotation * (move.LengthSquared > 0.01f ? move : Vector3.Forward)).WithZ( 0 ).Normal;
+						_dashTime = 0.28f;
+						_phaseDashActive = true;
+					}
+					else if ( kit.Kit == Titanfall2TitanKit.Chassis.Northstar )
+					{
+						_hoverOriginZ = WorldPosition.z;
+						_verticalVelocity = 0f;
+					}
+				}
+				else
+				{
+					SetMessage( kit.LastUtilityFailure ?? "辅助技能冷却中", 2 );
+				}
+			}
+
+			if ( smokePressed && !kit.TryElectricSmoke( pilot.GameObject ) )
+				SetMessage( "反铁驭电子烟幕冷却中", 2 );
+
+			if ( meleePressed && !kit.TryTitanMelee( aim, pilot.GameObject ) )
+				SetMessage( "泰坦近战冷却中", 1 );
+
 			if ( Input.Pressed( "run" ) && kit.TryDash() )
 			{
 				var move = Input.AnalogMove;
 				_dashDirection = (pilot.EyeTransform.Rotation * (move.LengthSquared > 0.01f ? move : Vector3.Forward)).WithZ( 0 ).Normal;
-				_dashTime = 0.2f;
+				_dashTime = 0.24f;
+				_phaseDashActive = false;
 			}
 		}
 		if ( Input.Pressed( "reload" ) ) Actor.StartReload();
@@ -171,54 +364,183 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	protected override void OnFixedUpdate()
 	{
 		IsDriving = false;
-		if ( !Networking.IsHost || Actor is not { TitanCanAct: true } || BoardingPilot.IsValid()
+		DriveVelocity = Vector3.Zero;
+		if ( !Networking.IsHost || Actor is not { TitanCanAct: true, IsInTermination: false } || BoardingPilot.IsValid()
 			|| GetOccupant() is not { IsProxy: false } pilot || pilot.Mode is not Sandbox.Movement.SitMoveMode ) return;
-		if ( _dashTime > 0 ) { if ( !TryDrive( _dashDirection * (800 * Time.Delta) ) ) _dashTime = 0; return; }
+		PauseAiNavigation();
 		var angles = pilot.EyeAngles;
-		var turn = Math.Clamp( angles.yaw, -100 * Time.Delta, 100 * Time.Delta );
-		if ( MathF.Abs( turn ) > 0.001f ) { WorldRotation *= Rotation.FromYaw( turn ); pilot.EyeAngles = angles.WithYaw( angles.yaw - turn ); }
+		var turn = Titanfall2TitanDriveRules.ComputeTurnStep( angles.yaw, Time.Delta );
+		if ( MathF.Abs( turn ) > 0.001f )
+		{
+			WorldRotation *= Rotation.FromYaw( turn );
+			pilot.EyeAngles = angles.WithYaw( angles.yaw - turn );
+		}
+		var kit = Actor.GetComponent<Titanfall2TitanKit>();
+		if ( _dashTime > 0 )
+		{
+			var chassis = kit?.Kit ?? Titanfall2TitanKit.Chassis.None;
+			var dashSpeed = _phaseDashActive ? 1250f : Titanfall2TitanDriveRules.ChassisDashSpeed( chassis );
+			if ( !TryDrive( _dashDirection * (dashSpeed * Time.Delta) ) ) { _dashTime = 0; _phaseDashActive = false; }
+			return;
+		}
+		_phaseDashActive = false;
 		var input = Input.AnalogMove;
-		if ( input.LengthSquared < 0.01f ) { TryDrive( Vector3.Zero ); return; }
+		var core = Actor.GetComponent<Titanfall2TitanCore>();
+		var hovering = kit is { IsHovering: true } || core is { FlightCoreActive: true };
+		if ( input.LengthSquared < 0.01f )
+		{
+			if ( hovering || _verticalVelocity < 0 ) TryDrive( Vector3.Zero );
+			return;
+		}
 		var planar = (pilot.EyeTransform.Rotation * input).WithZ( 0 );
-		TryDrive( planar.Normal * (MathF.Min( 1, input.Length ) * DriveSpeed * Time.Delta) );
+		if ( planar.LengthSquared < 0.0001f )
+		{
+			if ( hovering ) TryDrive( Vector3.Zero );
+			return;
+		}
+		var speed = DriveSpeed > 1 ? DriveSpeed : MathF.Max( 120f, Actor.MoveSpeed );
+		if ( kit is { IsValid: true } ) speed *= kit.CurrentMoveSpeedMultiplier;
+		TryDrive( planar.Normal * (MathF.Min( 1, input.Length ) * speed * Time.Delta) );
 	}
 
 	internal bool TryDrive( Vector3 displacement )
 	{
 		if ( !Networking.IsHost || !Active || Actor is not { Active: true, TitanCanAct: true } || !displacement.IsFinite ) return false;
-		if ( Time.Delta > 0 && Actor.GetComponent<Titanfall2TetherConstraint>() is { HasTethers: true } tether )
-			displacement = tether.Constrain( Actor, displacement / Time.Delta, Time.Delta ) * Time.Delta;
-		if ( displacement.LengthSquared <= 0.001f ) return false;
+		var dt = MathF.Max( Time.Delta, 0.001f );
+		if ( displacement.LengthSquared > 0.001f && Actor.GetComponent<Titanfall2TetherConstraint>() is { HasTethers: true } tether )
+			displacement = tether.Constrain( Actor, displacement / dt, dt ) * dt;
+		var kit = Actor.GetComponent<Titanfall2TitanKit>();
+		var core = Actor.GetComponent<Titanfall2TitanCore>();
+		var flightCore = core is { FlightCoreActive: true };
+		var hovering = kit is { IsHovering: true } || flightCore;
+		var phasing = kit is { IsPhasing: true };
+		var horizontal = displacement.WithZ( 0 );
+		var hasHorizontal = horizontal.LengthSquared > 0.0004f;
+		if ( !hasHorizontal && !hovering && _verticalVelocity >= 0 ) return false;
+
 		var radius = MathF.Max( 4, Actor.BodyRadius - 2 );
-		var hull = new BBox( new Vector3( -radius, -radius, 0 ), new Vector3( radius, radius, Actor.BodyHeight - 2 ) );
-		var origin = WorldPosition + Vector3.Up * 2;
-		var step = TraceHull( hull, origin, origin + displacement.WithZ( 0 ), DrivingMask );
-		if ( step.StartedSolid || (step.EndPosition - origin).LengthSquared <= 0.01f ) return false;
-		var ground = TraceHull( hull, step.EndPosition, step.EndPosition - Vector3.Up * 32, DrivingMask );
-		if ( !ground.Hit || ground.StartedSolid || ground.Normal.z < 0.6f || !HasFootSupport( ground.EndPosition, radius, DrivingMask ) ) return false;
-		WorldPosition = ground.EndPosition;
-		IsDriving = true;
+		var hull = new BBox( new Vector3( -radius, -radius, 0 ), new Vector3( radius, radius, MathF.Max( 24, Actor.BodyHeight - 2 ) ) );
+		var startPosition = WorldPosition;
+		var current = startPosition + Vector3.Up * 4f;
+
+		// Recover cleanly if the chassis began slightly embedded in terrain or a curb.
+		var startCheck = TraceHull( hull, current, current, DrivingMask, phasing );
+		if ( startCheck.StartedSolid )
+		{
+			var lifted = startPosition + Vector3.Up * Titanfall2TitanDriveRules.StepHeight;
+			var liftCheck = TraceHull( hull, lifted, lifted, DrivingMask, phasing );
+			if ( liftCheck.StartedSolid ) return false;
+			current = lifted;
+		}
+
+		var remaining = horizontal;
+		for ( var slide = 0; slide < 2 && remaining.LengthSquared > 0.0004f; slide++ )
+		{
+			var step = TraceHull( hull, current, current + remaining, DrivingMask, phasing );
+			if ( step.StartedSolid ) break;
+			if ( !step.Hit || step.Fraction >= 0.999f )
+			{
+				current = step.EndPosition;
+				remaining = Vector3.Zero;
+				break;
+			}
+
+			// Attempt stepping over curbs, stairs, and low rubble before sliding along the obstacle.
+			if ( TryStepUp( hull, current, remaining, step.EndPosition, out var steppedPosition ) )
+			{
+				current = steppedPosition;
+				remaining = Vector3.Zero;
+				break;
+			}
+
+			current = step.EndPosition;
+			remaining = Titanfall2TitanDriveRules.SlideDisplacement( remaining * (1f - step.Fraction), step.Normal );
+		}
+
+		if ( hovering )
+		{
+			var targetZ = _hoverOriginZ + (flightCore ? 220f : 160f);
+			var desiredStep = Math.Clamp( (targetZ - current.z) * 3.8f, -120f, 280f ) * dt;
+			var lift = TraceHull( hull, current, current + Vector3.Up * desiredStep, DrivingMask, phasing );
+			WorldPosition = lift.StartedSolid ? current : lift.EndPosition;
+			_verticalVelocity = 0;
+		}
+		else
+		{
+			var snapDrop = Titanfall2TitanDriveRules.StepHeight + 36f;
+			var ground = TraceHull( hull, current, current - Vector3.Up * snapDrop, DrivingMask );
+			if ( ground.Hit && !ground.StartedSolid && ground.Normal.z >= Titanfall2TitanDriveRules.WalkableNormalZ
+				&& HasFootSupport( ground.EndPosition, radius, DrivingMask ) )
+			{
+				WorldPosition = ground.EndPosition;
+				_verticalVelocity = 0;
+			}
+			else
+			{
+				// Allow smooth drops off ledges/ramps instead of locking the Titan in place.
+				_verticalVelocity = MathF.Max( -Titanfall2TitanDriveRules.MaxFallSpeed,
+					_verticalVelocity - Titanfall2TitanDriveRules.Gravity * dt );
+				var fallDistance = MathF.Max( 4f, -_verticalVelocity * dt );
+				var fall = TraceHull( hull, current, current - Vector3.Up * fallDistance, DrivingMask );
+				if ( fall.StartedSolid ) return false;
+				WorldPosition = fall.EndPosition;
+				if ( fall.Hit && fall.Normal.z >= Titanfall2TitanDriveRules.WalkableNormalZ ) _verticalVelocity = 0;
+			}
+		}
+
+		var moved = WorldPosition - startPosition;
+		if ( moved.LengthSquared <= 0.0004f ) return false;
+		DriveVelocity = moved / dt;
+		IsDriving = moved.WithZ( 0 ).LengthSquared > 0.0004f;
 		return true;
 	}
 
-	SceneTraceResult TraceHull( BBox hull, Vector3 start, Vector3 end, Titanfall2TraceMask mask ) =>
-		Titanfall2CollisionQueries.Run( Scene.Trace.Box( hull, start, end ).IgnoreGameObjectHierarchy( GameObject )
-			.WithoutTags( "trigger", "projectile", "tether-trap" ), mask );
+	bool TryStepUp( BBox hull, Vector3 current, Vector3 remaining, Vector3 unsteppedEnd, out Vector3 result )
+	{
+		result = default;
+		var up = TraceHull( hull, current, current + Vector3.Up * Titanfall2TitanDriveRules.StepHeight, DrivingMask );
+		if ( up.StartedSolid || (up.EndPosition.z - current.z) < 4f ) return false;
+		var forward = TraceHull( hull, up.EndPosition, up.EndPosition + remaining, DrivingMask );
+		if ( forward.StartedSolid ) return false;
+		var unsteppedDist = (unsteppedEnd - current).WithZ( 0 ).LengthSquared;
+		var steppedDist = (forward.EndPosition - up.EndPosition).WithZ( 0 ).LengthSquared;
+		if ( steppedDist <= unsteppedDist + 0.25f ) return false;
+		var down = TraceHull( hull, forward.EndPosition, forward.EndPosition - Vector3.Up * (Titanfall2TitanDriveRules.StepHeight + 8f), DrivingMask );
+		if ( down.StartedSolid || !down.Hit || down.Normal.z < Titanfall2TitanDriveRules.WalkableNormalZ ) return false;
+		result = down.EndPosition + Vector3.Up * 2f;
+		return true;
+	}
+
+	SceneTraceResult TraceHull( BBox hull, Vector3 start, Vector3 end, Titanfall2TraceMask mask, bool ignoreActors = false )
+	{
+		var trace = Scene.Trace.Box( hull, start, end ).IgnoreGameObjectHierarchy( GameObject );
+		trace = ignoreActors
+			? trace.WithoutTags( "trigger", "projectile", "tether-trap", "npc", "player" )
+			: trace.WithoutTags( "trigger", "projectile", "tether-trap" );
+		return Titanfall2CollisionQueries.Run( trace, mask );
+	}
 
 	bool HasFootSupport( Vector3 position, float radius, Titanfall2TraceMask mask )
 	{
-		// A downward box sweep can land with only one corner on a platform.
-		// Check the feet independently so a candidate over a ledge cannot pass.
-		var edge = radius * 0.7f;
-		Vector3[] samples = [Vector3.Zero, new( edge, edge, 0 ), new( edge, -edge, 0 ), new( -edge, edge, 0 ), new( -edge, -edge, 0 )];
-		foreach ( var offset in samples )
+		var edge = radius * 0.55f;
+		var centerHit = ProbeFoot( position, position.z, mask );
+		if ( centerHit ) return true;
+		var outerHits = 0;
+		Vector3[] outer = [new( edge, edge, 0 ), new( edge, -edge, 0 ), new( -edge, edge, 0 ), new( -edge, -edge, 0 )];
+		foreach ( var offset in outer )
 		{
-			var foot = position + offset;
-			var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( foot + Vector3.Up * 32, foot - Vector3.Up * 40 )
-				.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile" ), mask );
-			if ( hit.StartedSolid || !hit.Hit || hit.Normal.z < 0.65f || MathF.Abs( hit.EndPosition.z - position.z ) > 28 ) return false;
+			if ( ProbeFoot( position + offset, position.z, mask ) ) outerHits++;
 		}
-		return true;
+		return Titanfall2TitanDriveRules.HasMajorityFootSupport( centerHit, outerHits );
+	}
+
+	bool ProbeFoot( Vector3 foot, float referenceZ, Titanfall2TraceMask mask )
+	{
+		var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( foot + Vector3.Up * (Titanfall2TitanDriveRules.StepHeight + 12f),
+			foot - Vector3.Up * (Titanfall2TitanDriveRules.StepHeight + 16f) )
+			.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile", "tether-trap" ), mask );
+		return !hit.StartedSolid && hit.Hit && hit.Normal.z >= Titanfall2TitanDriveRules.WalkableNormalZ
+			&& MathF.Abs( hit.EndPosition.z - referenceZ ) <= Titanfall2TitanDriveRules.StepHeight + 16f;
 	}
 
 	/// <summary>Finds a grounded exit reachable without crossing world or imported player clips.</summary>
@@ -273,6 +595,9 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		SeatSerial++;
 		_reentryDelay = 0.8f;
 		IsDriving = false;
+		DriveVelocity = Vector3.Zero;
+		_verticalVelocity = 0;
+		RestoreAiNavigation();
 		return true;
 	}
 
@@ -301,6 +626,9 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 		_seatedPilot = null;
 		SeatSerial++;
 		IsDriving = false;
+		DriveVelocity = Vector3.Zero;
+		_verticalVelocity = 0;
+		RestoreAiNavigation();
 		var speed = 1500f + Random.Shared.NextSingle() * 200f;
 		if ( Actor.Role == Titanfall2Npc.FrontierRole.NukeTitan ) speed += 400;
 		var gravityScale = pilot.Body.IsValid() && float.IsFinite( pilot.Body.GravityScale ) ? MathF.Max( 0, pilot.Body.GravityScale ) : 1;
@@ -341,7 +669,9 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 	}
 	void RestoreInventory()
 	{
-		Actor?.GetComponent<Titanfall2TitanKit>()?.ClearIonInput();
+		var kit = Actor?.GetComponent<Titanfall2TitanKit>();
+		kit?.ClearIonInput();
+		kit?.ClearHoldDefenseInput();
 		_dashTime = 0;
 		if ( _viewPilot.IsValid() ) _viewPilot.ThirdPerson = _previousThirdPerson;
 		_viewPilot = null;
@@ -392,6 +722,10 @@ public sealed class Titanfall2TitanSeat : BaseChair, Component.IPressable, Sandb
 			EmbarkRemaining = 0;
 		}
 		RestoreInventory();
+		IsDriving = false;
+		DriveVelocity = Vector3.Zero;
+		_verticalVelocity = 0;
+		RestoreAiNavigation();
 		if ( _hud.IsValid() ) _hud.Destroy();
 		if ( _cockpitView.IsValid() ) _cockpitView.Destroy();
 	}

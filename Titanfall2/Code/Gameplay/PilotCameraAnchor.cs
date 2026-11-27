@@ -3,8 +3,9 @@
 /// before its cached world bones are rebuilt; pairing those two snapshots feeds a
 /// camera turn back into viewmodel placement. Neither world snapshot is needed here.
 /// </summary>
-internal sealed class Titanfall2PilotCameraAnchor
+internal sealed class Titanfall2PilotCameraAnchor( string attachmentName = "CAMERA_BASE" )
 {
+	readonly string _attachmentName = string.IsNullOrWhiteSpace( attachmentName ) ? "CAMERA_BASE" : attachmentName;
 	Model _model;
 	int[] _parents = [];
 	Transform _attachment;
@@ -29,7 +30,8 @@ internal sealed class Titanfall2PilotCameraAnchor
 	{
 		_model = model;
 		_parents = [];
-		var attachment = model.Attachments.Get( "CAMERA_BASE" );
+		var attachment = model.Attachments.Get( _attachmentName )
+			?? (_attachmentName != "CAMERA_BASE" ? model.Attachments.Get( "CAMERA_BASE" ) : null);
 		if ( attachment?.Bone is not { } bone ) return;
 		var chain = new Stack<int>();
 		for ( var current = bone; current is not null; current = current.Parent )

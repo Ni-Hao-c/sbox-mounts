@@ -15,14 +15,22 @@ public sealed partial class Titanfall2Weapon
 	TimeUntil _smartShotTime;
 	float _smartBurstZoom;
 	int _smartRequestSerial, _lastSmartRequestSerial, _observedSmartBurstSerial;
-	bool _smartRemoteAiming, _smartSentAiming;
+	bool _smartRemoteAiming, _smartSentAiming, _smartAcquiringSoundActive;
+	GameObject _smartAudioRoot;
+	Titanfall2SoundEventEmitter _smartAudio;
 	sealed class SmartTarget
 	{
 		internal BaseNpc Npc;
 		internal float Fraction;
+		internal int Required = 1;
+		internal int ConfirmedLocks;
 		internal double LastVisible;
 	}
 	internal (GameObject Target, float Fraction)[] ObserveSmartLocks() => _smartLocks.Select( entry => (entry.Npc.GameObject, entry.Fraction) ).ToArray();
+	internal IReadOnlyList<(Vector3 AimPoint, float Fraction, int Required)> GetSmartLockDrawTargets() => _smartLocks
+		.Where( entry => SmartAlive( entry.Npc ) && entry.Fraction > 0 )
+		.Select( entry => (SmartAimPoint( entry.Npc ), entry.Fraction, Math.Max( 1, entry.Required )) )
+		.ToArray();
 
 	static Vector3 SmartAimPoint( BaseNpc npc )
 	{
@@ -79,12 +87,14 @@ public sealed partial class Titanfall2Weapon
 		var aim = new Ray( Owner.EyePosition, Owner.EyeTransform.Forward );
 		var aiming = Networking.IsHost && IsProxy ? _smartRemoteAiming : IsAiming;
 		var maySearch = SmartAmmo.SearchNpcs && (aiming ? SmartAmmo.AllowAds : SmartAmmo.AllowHip);
+		var lockedIncreased = false;
 		foreach ( var entry in _smartLocks.ToArray() )
 		{
 			if ( !SmartAlive( entry.Npc ) ) { _smartLocks.Remove( entry ); continue; }
 			var distance = Owner.WorldPosition.Distance( entry.Npc.WorldPosition );
 			var heavy = entry.Npc is Titanfall2Npc { IsTitan: true };
 			var required = SmartAmmo.RequiredLocks( entry.Npc.Health, heavy ? TitanDamage : Ballistics.Damage, true, heavy );
+			entry.Required = required;
 			if ( maySearch && CanSeeSmartTarget( entry.Npc, aim ) )
 			{
 				entry.LastVisible = Time.NowDouble;
@@ -98,21 +108,67 @@ public sealed partial class Titanfall2Weapon
 				entry.Fraction = seconds <= 0 ? 0 : MathF.Max( 0, entry.Fraction - Time.Delta * required / seconds );
 				if ( entry.Fraction == 0 ) _smartLocks.Remove( entry );
 			}
+			var nowConfirmed = (int)MathF.Floor( entry.Fraction );
+			if ( nowConfirmed > entry.ConfirmedLocks ) lockedIncreased = true;
+			entry.ConfirmedLocks = nowConfirmed;
 		}
-		if ( !maySearch || _smartLocks.Count >= SmartAmmo.MaxTargets || Time.NowDouble < _nextSmartTarget ) return;
-		// Stable target objects survive acquisition and burst snapshots. A dead
-		// first target must never shift subsequent rounds to a different actor.
-		foreach ( var candidate in Scene.GetAllComponents<BaseNpc>()
-			.Where( npc => !_smartLocks.Any( entry => entry.Npc == npc ) && CanSeeSmartTarget( npc, aim ) )
-			.OrderBy( npc => SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), SmartAimPoint( npc ) ) ) )
+		if ( maySearch && _smartLocks.Count < SmartAmmo.MaxTargets && Time.NowDouble >= _nextSmartTarget )
 		{
-			var required = SmartAmmo.RequiredLocks( candidate.Health, Ballistics.Damage, true, false );
-			var seconds = SmartAmmo.LockSeconds( Owner.WorldPosition.Distance( candidate.WorldPosition ), true );
-			_smartLocks.Add( new() { Npc = candidate, Fraction = seconds <= 0 ? required
-				: MathF.Min( required, 0.0001f + Time.Delta / seconds ), LastVisible = Time.NowDouble } );
-			_nextSmartTarget = Time.NowDouble + SmartAmmo.NewTargetDelay;
-			if ( SmartAmmo.NewTargetDelay > 0 || _smartLocks.Count >= SmartAmmo.MaxTargets ) break;
+			// Stable target objects survive acquisition and burst snapshots. A dead
+			// first target must never shift subsequent rounds to a different actor.
+			foreach ( var candidate in Scene.GetAllComponents<BaseNpc>()
+				.Where( npc => !_smartLocks.Any( entry => entry.Npc == npc ) && CanSeeSmartTarget( npc, aim ) )
+				.OrderBy( npc => SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), SmartAimPoint( npc ) ) ) )
+			{
+				var required = SmartAmmo.RequiredLocks( candidate.Health, Ballistics.Damage, true, false );
+				var seconds = SmartAmmo.LockSeconds( Owner.WorldPosition.Distance( candidate.WorldPosition ), true );
+				var fraction = seconds <= 0 ? required : MathF.Min( required, 0.0001f + Time.Delta / seconds );
+				var confirmed = (int)MathF.Floor( fraction );
+				if ( confirmed > 0 ) lockedIncreased = true;
+				_smartLocks.Add( new() { Npc = candidate, Fraction = fraction, Required = required, ConfirmedLocks = confirmed, LastVisible = Time.NowDouble } );
+				_nextSmartTarget = Time.NowDouble + SmartAmmo.NewTargetDelay;
+				if ( SmartAmmo.NewTargetDelay > 0 || _smartLocks.Count >= SmartAmmo.MaxTargets ) break;
+			}
 		}
+		UpdateSmartLockAudio( lockedIncreased );
+	}
+
+	void UpdateSmartLockAudio( bool lockedIncreased )
+	{
+		if ( !HasLocalFirstPersonHud ) { StopSmartLockAudio(); return; }
+		var acquiring = _smartLocks.Any( entry => entry.Fraction > 0 && entry.Fraction < entry.Required );
+		if ( !acquiring && !lockedIncreased )
+		{
+			if ( _smartAcquiringSoundActive ) StopSmartLockAudio();
+			return;
+		}
+		if ( !_smartAudioRoot.IsValid() )
+		{
+			_smartAudioRoot = new GameObject( GameObject, false, "TF2 smart lock audio" );
+			_smartAudioRoot.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+			_smartAudio = _smartAudioRoot.AddComponent<Titanfall2SoundEventEmitter>();
+			_smartAudioRoot.Enabled = true;
+		}
+		var sourcePosition = Owner.IsValid() ? Owner.EyePosition : WorldPosition;
+		_smartAudio.SetSource( sourcePosition );
+		if ( acquiring && !_smartAcquiringSoundActive && !string.IsNullOrEmpty( SmartAmmo.AcquiringSound ) )
+			_smartAcquiringSoundActive = _smartAudio.Play( MountIdent, SmartAmmo.AcquiringSound, firstPerson: true, sourcePosition, sustain: true );
+		else if ( !acquiring && _smartAcquiringSoundActive )
+		{
+			_smartAudio.StopAll();
+			_smartAcquiringSoundActive = false;
+		}
+		if ( lockedIncreased && !string.IsNullOrEmpty( SmartAmmo.ConfirmedSound ) )
+			_smartAudio.Play( MountIdent, SmartAmmo.ConfirmedSound, firstPerson: true, sourcePosition );
+	}
+
+	void StopSmartLockAudio()
+	{
+		_smartAudio?.StopAll();
+		if ( _smartAudioRoot.IsValid() ) _smartAudioRoot.Destroy();
+		_smartAudioRoot = null;
+		_smartAudio = null;
+		_smartAcquiringSoundActive = false;
 	}
 
 	void BeginSmartAttack()
@@ -188,6 +244,7 @@ public sealed partial class Titanfall2Weapon
 	void ResetSmartAmmo()
 	{
 		_smartLocks.Clear(); _smartBurst.Clear();
+		StopSmartLockAudio();
 		if ( Networking.IsHost ) SmartBurstRemaining = 0;
 	}
 

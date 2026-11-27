@@ -264,6 +264,14 @@ sealed class Titanfall2VmtDefinition
 		return expressions;
 	}
 
+	internal bool HasWeaponChargeAlphaProxy() =>
+		GetRuntimeExpressions().Any( static expression =>
+			expression.Type.Equals( "WeaponChargeFraction", StringComparison.OrdinalIgnoreCase )
+			&& string.Equals( expression.Target, "$alpha", StringComparison.OrdinalIgnoreCase ) );
+
+	internal float GetInitialAlpha() =>
+		GetFloat( "$alpha", HasWeaponChargeAlphaProxy() ? 0f : 1f );
+
 	IEnumerable<VmtBlock> EnumerateProxies( string name )
 	{
 		foreach ( var proxies in _root.Children.Where( static child => child.Name.Equals( "Proxies", StringComparison.OrdinalIgnoreCase ) ) )

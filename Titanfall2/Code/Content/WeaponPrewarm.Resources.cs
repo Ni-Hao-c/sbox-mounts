@@ -202,8 +202,9 @@ public partial class Titanfall2Mount
 			{
 				if ( prepared.UiLayout is not { } layout ) { error = "Prepared weapon UI is unavailable."; return false; }
 				PublishWeaponUiLayout( layout );
-				foreach ( var character in "0123456789" ) request.Add( new( Titanfall2WeaponPrewarmKind.FontGlyph,
-					character.ToString(), FontId: layout.FontId, FontSize: layout.FontSize ) );
+				if ( layout.FontId > 0 && layout.FontSize > 0 )
+					foreach ( var character in "0123456789" ) request.Add( new( Titanfall2WeaponPrewarmKind.FontGlyph,
+						character.ToString(), FontId: layout.FontId, FontSize: layout.FontSize ) );
 				return true;
 			}
 			if ( !prepared.Cached && !PublishWeaponFontGlyph( prepared.FontData, item.FontId, item.FontSize, item.Name[0],

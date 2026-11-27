@@ -70,7 +70,7 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 			_texture = animation?.Frames.ElementAtOrDefault( _animation.CurrentFrameIndex )?.Texture;
 			_items.Clear();
 			if ( _texture is null || !_texture.IsValid || _texture.IsError ) { _object.RenderingEnabled = false; return; }
-			_pivot = Source.Pivot;
+			_pivot = WorldSpaceTrail ? new Vector2( 0.5f, 0f ) : Source.Pivot;
 			_scale = MathF.Abs( Source.Scale * Source.WorldScale.x * 0.5f );
 			_rotation = Source.WorldRotation;
 			var min = new Vector3( float.MaxValue ); var max = new Vector3( float.MinValue );

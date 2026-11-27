@@ -22,6 +22,9 @@ partial class ModelLoader
 	static readonly string[] FireSequenceNames = ["attack_seq", "toss_seq"];
 	static readonly string[] ReloadSequenceNames = ["reload_seq", "reload_segStart_seq"];
 	static readonly string[] EmptyReloadSequenceNames = ["reload_empty_seq", "reload_seq_empty", "reload_empty_segStart_seq"];
+	static readonly string[] ReloadSegLoopSequenceNames = ["reload_segLoop_seq"];
+	static readonly string[] ReloadSegEndSequenceNames = ["reload_segEnd_seq"];
+	static readonly string[] ReloadEmptySegEndSequenceNames = ["reload_empty_end_seq", "reload_empty_segEnd_seq"];
 	static readonly string[] AdsInSequenceNames = ["ads_in_seq"];
 	static readonly string[] AdsOutSequenceNames = ["ads_out_seq"];
 	static readonly string[] SprintSequenceNames = ["sprint_seq", "toss_hold_sprinting_seq"];
@@ -34,6 +37,9 @@ partial class ModelLoader
 		Titanfall2Mdl53Reader.SequenceInfo Fire,
 		Titanfall2Mdl53Reader.SequenceInfo Reload,
 		Titanfall2Mdl53Reader.SequenceInfo EmptyReload,
+		Titanfall2Mdl53Reader.SequenceInfo ReloadSegLoop,
+		Titanfall2Mdl53Reader.SequenceInfo ReloadSegEnd,
+		Titanfall2Mdl53Reader.SequenceInfo ReloadEmptySegEnd,
 		Titanfall2Mdl53Reader.SequenceInfo AdsIn,
 		Titanfall2Mdl53Reader.SequenceInfo AdsOut,
 		Titanfall2Mdl53Reader.SequenceInfo Sprint,
@@ -62,6 +68,10 @@ partial class ModelLoader
 		reload ??= emptyReload ?? draw;
 		emptyReload ??= reload;
 
+		var reloadSegLoop = FindSequence( model, ReloadSegLoopSequenceNames, "ACT_VM_SEGMENTEDRELOAD_LOOP" );
+		var reloadSegEnd = FindSequence( model, ReloadSegEndSequenceNames, "ACT_VM_SEGMENTEDRELOAD_END" );
+		var reloadEmptySegEnd = FindSequence( model, ReloadEmptySegEndSequenceNames, "ACT_VM_SEGMENTEDEMPTYRELOAD_END" ) ?? reloadSegEnd;
+
 		var adsIn = FindSequence( model, AdsInSequenceNames, "ACT_VM_ADS_IN" );
 		var adsOut = FindSequence( model, AdsOutSequenceNames, "ACT_VM_ADS_OUT" );
 		var sprint = FindSequence( model, SprintSequenceNames, "ACT_VM_SPRINT" )
@@ -72,7 +82,7 @@ partial class ModelLoader
 		var charge = FindSequence( model, ["charge_seq"], "ACT_VM_CHARGE" );
 		var cooldown = FindSequence( model, ["cooldown_seq"], "ACT_VM_COOLDOWN" );
 		var late = Enumerable.Range( 1, 5 ).Select( index => FindSequence( model, [$"reload_empty_late{index}_seq"], $"ACT_VM_RELOADEMPTY_LATE{index}" ) ).ToArray();
-		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle, charge, cooldown, late );
+		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, reloadSegLoop, reloadSegEnd, reloadEmptySegEnd, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle, charge, cooldown, late );
 	}
 
 	int AddPilotViewAnimations( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel model, byte[] data )
@@ -109,6 +119,24 @@ partial class ModelLoader
 		CollectEvents( Titanfall2PilotViewModel.Fire, sequences.Fire );
 		CollectEvents( Titanfall2PilotViewModel.Reload, sequences.Reload );
 		CollectEvents( Titanfall2PilotViewModel.EmptyReload, sequences.EmptyReload );
+		if ( sequences.ReloadSegLoop is { } segLoop )
+		{
+			Add( Titanfall2PilotViewModel.ReloadSegLoop, Decode( segLoop ), ready );
+			CollectEvents( Titanfall2PilotViewModel.ReloadSegLoop, segLoop );
+			count++;
+		}
+		if ( sequences.ReloadSegEnd is { } segEnd )
+		{
+			Add( Titanfall2PilotViewModel.ReloadSegEnd, Decode( segEnd ), ready );
+			CollectEvents( Titanfall2PilotViewModel.ReloadSegEnd, segEnd );
+			count++;
+		}
+		if ( sequences.ReloadEmptySegEnd is { } emptySegEnd )
+		{
+			Add( Titanfall2PilotViewModel.ReloadEmptySegEnd, Decode( emptySegEnd ), ready );
+			CollectEvents( Titanfall2PilotViewModel.ReloadEmptySegEnd, emptySegEnd );
+			count++;
+		}
 		if ( sequences.Charge is { } charge )
 		{
 			Add( Titanfall2PilotViewModel.Charge, Decode( charge ), ready, loop: (charge.Sequence.Flags & 1) != 0 );

@@ -13,8 +13,10 @@ public sealed partial class Titanfall2TitanKit
 
 	internal bool DefenseVolumeActive => Active && !IsProxy && _defenseLive && GuardRemaining > 0
 		&& Actor.IsValid() && Actor == _defenseActor && Actor.TitanCanAct
-		&& (Kit == Chassis.Ion || Kit == Chassis.Legion && GunShieldHealth > 0);
-	internal float DefenseRadius => Kit == Chassis.Ion ? Titanfall2TitanDefense.VortexRadius : Titanfall2TitanDefense.GunShieldRadius;
+		&& (Kit == Chassis.Ion || Kit == Chassis.Scorch || Kit == Chassis.Legion && GunShieldHealth > 0);
+	internal float DefenseRadius => Kit == Chassis.Ion ? Titanfall2TitanDefense.VortexRadius
+		: Kit == Chassis.Scorch ? Titanfall2TitanDefense.ThermalShieldRadius
+		: Titanfall2TitanDefense.GunShieldRadius;
 	internal Transform DefenseTransform
 	{
 		get
@@ -23,9 +25,9 @@ public sealed partial class Titanfall2TitanKit
 			var rotation = aim.Forward.LengthSquared > 0.5f ? Rotation.LookAt( aim.Forward ) : Actor.WorldRotation;
 			if ( Kit == Chassis.Legion && Actor.TryGunShieldAttachment( out var gun ) )
 				return new Transform( gun.Position, gun.Rotation * Rotation.FromRoll( 180 ) );
-			// Ion's authored collection offset is relative to the owner's eyes. Legion's
-			// fallback is used only when the mounted gun has no gun_shield attachment.
+			// Ion's authored collection offset is relative to the owner's eyes. Scorch projects directly forward.
 			var offset = Kit == Chassis.Ion ? new Vector3( 110, -28, -22 )
+				: Kit == Chassis.Scorch ? new Vector3( 96, 0, -14 )
 				: new Vector3( Actor.BodyRadius + 16, -Actor.BodyRadius * 0.35f, -Actor.BodyHeight * 0.15f );
 			return new Transform( Eye + rotation * offset, rotation );
 		}
@@ -56,6 +58,7 @@ public sealed partial class Titanfall2TitanKit
 		_defensePilot = Actor.Seat?.GetOccupant()?.GameObject;
 		GunShieldHealth = Kit == Chassis.Legion ? Titanfall2TitanDefense.GunShieldHealth : 0;
 		GuardRemaining = Kit == Chassis.Legion ? Titanfall2TitanDefense.GunShieldDuration
+			: Kit == Chassis.Scorch ? (_holdDefenseHeld && _holdDefensePilot.IsValid() ? 1f : 3.0f)
 			: _ionVortexHeld && _ionPilot.IsValid() ? 1 : Titanfall2TitanDefense.VortexAiDuration;
 		var pose = DefenseTransform;
 		DefenseCenter = pose.Position;
@@ -65,7 +68,7 @@ public sealed partial class Titanfall2TitanKit
 	void TickDefenseVolume()
 	{
 		if ( !_defenseLive ) return;
-		if ( !Actor.IsValid() || Actor != _defenseActor || !Actor.TitanCanAct || Kit is not (Chassis.Ion or Chassis.Legion) )
+		if ( !Actor.IsValid() || Actor != _defenseActor || !Actor.TitanCanAct || Kit is not (Chassis.Ion or Chassis.Legion or Chassis.Scorch) )
 		{
 			ClearDefenseVolume();
 			GuardRemaining = 0;
@@ -143,6 +146,7 @@ public sealed partial class Titanfall2TitanKit
 	{
 		if ( !Networking.IsHost || !DefenseVolumeActive ) return;
 		if ( Kit == Chassis.Legion ) { DamageGunShield( shot.At( distance, true ), point ); return; }
+		if ( Kit == Chassis.Scorch ) { PlayDefenseHit( point, false ); return; }
 		if ( shot.Refire && _capturedRounds.Count < Titanfall2TitanDefense.VortexCapacity )
 		{
 			// Preserve the host damage at capture for both armor classes; do not trust
@@ -163,6 +167,7 @@ public sealed partial class Titanfall2TitanKit
 			DamageGunShield( direct + MathF.Max( 0, projectile.Settings.SplashTitanDamage > 0 ? projectile.Settings.SplashTitanDamage : projectile.Settings.SplashDamage ), point );
 			return;
 		}
+		if ( Kit == Chassis.Scorch ) { PlayDefenseHit( point, false ); return; }
 		// A remote satchel has no valid detonation controller after ownership changes;
 		// it is absorbed without a refire payload in this first-stage implementation.
 		if ( !projectile.Settings.VortexAbsorbOnly && projectile.Settings.Behavior != Titanfall2ProjectileBehavior.RemoteCharge

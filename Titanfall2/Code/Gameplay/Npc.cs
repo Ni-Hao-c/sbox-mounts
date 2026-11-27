@@ -19,7 +19,11 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	float _hoverHeight;
 	[Property] public string ModelPath { get; set; }
 	[Property, Sync( SyncFlags.FromHost )] public string GunModelPath { get; set; }
+	[Property, Sync( SyncFlags.FromHost )] public string ViewModelPath { get; set; }
 	[Property] public string MountIdent { get; set; }
+	[Sync( SyncFlags.FromHost )] public int ShotSerial { get; private set; }
+	[Sync( SyncFlags.FromHost )] public int HitMarkerSerial { get; private set; }
+	[Sync( SyncFlags.FromHost )] public bool HitMarkerKill { get; private set; }
 	[Property, Sync( SyncFlags.FromHost )] public string FireSound { get; set; }
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2WeaponPresentation WeaponPresentation { get; set; }
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2WeaponAudio WeaponAudio { get; set; }
@@ -222,6 +226,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			return;
 		}
 		if ( TickTitanLife() ) { if ( !Dead ) PlayLocomotion(); return; }
+		if ( IsInTermination ) { PlayLocomotion(); return; }
 		TickMelee();
 		if ( !IsDoomed && Shield < MaxShield && _shieldDelay <= 0 ) Shield = MathF.Min( MaxShield, Shield + MaxShield * 0.2f * Time.Delta );
 		if ( Reloading && _nextShot <= 0 )
@@ -232,12 +237,18 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		if ( Seat.IsValid() && (Seat.IsOccupied || Seat.IsEmbarking) )
 		{
 			if ( ActiveSchedule is not null ) EndCurrentSchedule();
-			Movement?.Stop();
-			if ( _chasing ) { Agent?.Stop(); _chasing = false; }
+			if ( Movement.IsValid() ) { Movement.Stop(); if ( Movement.Enabled ) Movement.Enabled = false; }
+			if ( Agent.IsValid() ) { Agent.Stop(); if ( Agent.Enabled ) Agent.Enabled = false; }
+			_chasing = false;
 			_target = null;
 			Moving = Seat.IsDriving;
 			PlayLocomotion();
 			return;
+		}
+		if ( NavigationMode == Navigation.Ground && MoveSpeed > 0 )
+		{
+			if ( Agent.IsValid() && !Agent.Enabled ) Agent.Enabled = true;
+			if ( Movement.IsValid() && !Movement.Enabled ) Movement.Enabled = true;
 		}
 		if ( TickMortar() ) { PlayLocomotion(); return; }
 		if ( UsesEngineSchedules )
@@ -270,8 +281,20 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		PlayLocomotion();
 		if ( !CanTarget( _target ) ) { TickArcCannon(); return; }
 		var delta = _target.WorldPosition - WorldPosition;
-		if ( delta.WithZ( 0 ).LengthSquared > 1 ) WorldRotation = Rotation.LookAt( delta.WithZ( 0 ), Vector3.Up );
-		if ( TickArcCannon() || IsRushingHarvester ) return;
+		if ( delta.WithZ( 0 ).LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( delta.WithZ( 0 ), Vector3.Up ), Math.Clamp( Time.Delta * (IsTitan ? 5.5f : 8f), 0, 1 ) );
+		if ( TickArcCannon() ) return;
+		if ( IsRushingHarvester )
+		{
+			// Nuke Titans march relentlessly toward the Harvester while laying down suppressive fire ahead.
+			var forwardThreat = FindTarget();
+			if ( forwardThreat.IsValid() && _nextShot <= 0 && HasLineOfSight( forwardThreat ) )
+			{
+				var toThreat = AimAt( forwardThreat ) - Eye;
+				if ( toThreat.LengthSquared <= AttackRange * AttackRange && Vector3.Dot( WorldRotation.Forward, toThreat.WithZ( 0 ).Normal ) > 0.45f )
+					Fire( new Ray( Eye, toThreat.Normal ), GameObject, piloted: false );
+			}
+			return;
+		}
 		if ( MeleeDamage > 0 && delta.LengthSquared <= MeleeRange * MeleeRange && HasLineOfSight( _target ) )
 		{
 			TryStartMelee( new Ray( Eye, (AimAt( _target ) - Eye).Normal ), GameObject );
@@ -282,8 +305,9 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 
 	GameObject FindTarget()
 	{
-		GameObject nearest = null;
-		var best = DetectionRange * DetectionRange;
+		GameObject bestTarget = null;
+		var bestScore = float.MaxValue;
+		var maxDistSq = DetectionRange * DetectionRange;
 		if ( AttackPlayers && !Friendly )
 			foreach ( var player in Scene.GetAllComponents<PlayerController>() ) Consider( player.GameObject );
 		foreach ( var npc in Scene.GetAllComponents<BaseNpc>() )
@@ -293,21 +317,25 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			if ( !IsHostileToFaction( npc.Faction ) ) continue;
 			Consider( npc.GameObject );
 		}
-		return nearest;
+		return bestTarget;
 
 		void Consider( GameObject candidate )
 		{
 			if ( !CanTarget( candidate ) ) return;
-			var distance = (candidate.WorldPosition - WorldPosition).LengthSquared;
-			if ( distance >= best ) return;
-			best = distance;
-			nearest = candidate;
+			if ( (candidate.WorldPosition - WorldPosition).LengthSquared >= maxDistSq ) return;
+			var score = EvaluateTargetScore( candidate );
+			if ( score >= bestScore ) return;
+			bestScore = score;
+			bestTarget = candidate;
 		}
 	}
 
 	internal bool CanTarget( GameObject target ) => target.IsValid() && target.Active && target != GameObject
-		&& (target.GetComponent<PlayerController>() is null || target.GetComponentInParent<Titanfall2TitanSeat>()?.IsOccupied != true)
+		&& (target.GetComponent<PlayerController>() is null
+			|| (target.GetComponentInParent<Titanfall2TitanSeat>()?.IsOccupied != true
+				&& target.GetComponent<Titanfall2PilotTactical>() is not { IsPhaseActive: true }))
 		&& target.GetComponent<Titanfall2Npc>() is not { Dead: true }
+		&& target.GetComponent<Titanfall2TitanKit>() is not { IsPhasing: true }
 		&& target.GetComponent<BaseNpc>() is not { Health: <= 0 }
 		&& target.GetComponent<Titanfall2Harvester>() is not { Destroyed: true };
 
@@ -328,13 +356,40 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	void UpdateMovement()
 	{
 		if ( NavigationMode != Navigation.Ground || !Agent.IsValid() || !Scene.NavMesh.IsEnabled ) return;
-		if ( CanTarget( _target ) && (IsRushingHarvester || (_target.WorldPosition - WorldPosition).LengthSquared > AttackRange * AttackRange || !HasLineOfSight( _target )) )
+		if ( CanTarget( _target ) )
 		{
-			Agent.MoveTo( _target.WorldPosition );
-			_chasing = true;
-			_followingLeader = false;
+			var distSq = (_target.WorldPosition - WorldPosition).LengthSquared;
+			var arcNeedsClose = Role == FrontierRole.ArcTitan && distSq > EmpOuterRadius * EmpOuterRadius * 0.72f;
+			var eliteStrafe = Role == FrontierRole.EliteMonarch && distSq < 650f * 650f && HasLineOfSight( _target );
+			if ( IsRushingHarvester || arcNeedsClose || distSq > AttackRange * AttackRange || !HasLineOfSight( _target ) )
+			{
+				var dest = _target.WorldPosition;
+				if ( Role == FrontierRole.ArcTitan && !IsRushingHarvester && distSq > 260f * 260f )
+				{
+					var toTarget = (dest - WorldPosition).WithZ( 0 ).Normal;
+					var lateral = Vector3.Cross( toTarget, Vector3.Up ) * (MathF.Sin( (float)Time.NowDouble * 1.15f + GameObject.Id.GetHashCode() ) * 160f);
+					dest = Scene.NavMesh.GetClosestPoint( dest + lateral ) ?? dest;
+				}
+				Agent.MoveTo( dest );
+				_chasing = true;
+				_followingLeader = false;
+				return;
+			}
+			if ( eliteStrafe )
+			{
+				var toTarget = (_target.WorldPosition - WorldPosition).WithZ( 0 ).Normal;
+				var strafeDir = Vector3.Cross( toTarget, Vector3.Up ) * (MathF.Sin( (float)Time.NowDouble * 0.9f + GameObject.Id.GetHashCode() ) >= 0 ? 1f : -1f);
+				var candidate = Scene.NavMesh.GetClosestPoint( WorldPosition + strafeDir * 220f );
+				if ( candidate.HasValue )
+				{
+					Agent.MoveTo( candidate.Value );
+					_chasing = true;
+					_followingLeader = false;
+					return;
+				}
+			}
 		}
-		else if ( !CanTarget( _target ) && UpdateFollowLeader() )
+		if ( !CanTarget( _target ) && UpdateFollowLeader() )
 		{
 			_chasing = false;
 		}
@@ -350,10 +405,19 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	{
 		if ( !Friendly || !Leader.IsValid() || NavigationMode != Navigation.Ground || !Agent.IsValid() || !Scene.NavMesh.IsEnabled )
 			return false;
-		var dist = Leader.WorldPosition.Distance( WorldPosition );
-		if ( dist > FollowDistance )
+		var followers = Scene.GetAllComponents<Titanfall2Npc>()
+			.Where( ally => ally.Active && !ally.Dead && ally.Friendly && ally.Leader == Leader )
+			.OrderBy( ally => ally.IsTitan ? 0 : 1 )
+			.ThenBy( ally => ally.GameObject.Id )
+			.ToList();
+		var slot = Math.Max( 0, followers.IndexOf( this ) );
+		var spacing = MathF.Max( FollowDistance * 0.65f, BodyRadius * 3.5f );
+		var offset = Titanfall2TacticsRules.FormationOffset( slot, spacing, Leader.WorldRotation.Forward, Leader.WorldRotation.Right );
+		var desired = Scene.NavMesh.GetClosestPoint( Leader.WorldPosition + offset ) ?? Leader.WorldPosition;
+		var dist = desired.Distance( WorldPosition );
+		if ( dist > MathF.Max( 48f, BodyRadius * 1.6f ) )
 		{
-			Agent.MoveTo( Leader.WorldPosition );
+			Agent.MoveTo( desired );
 			_followingLeader = true;
 			return true;
 		}
@@ -412,6 +476,17 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			if ( (target - origin).LengthSquared > 1f ) aim = new Ray( origin, (target - origin).Normal );
 		}
 		var spread = FiringSpread( piloted );
+		var effectiveRange = AttackRange;
+		var ammoCost = Firing.Cost;
+		if ( kit is { Kit: Titanfall2TitanKit.Chassis.Legion } )
+		{
+			if ( kit.LegionLongRangeMode )
+			{
+				spread *= 0.28f;
+				effectiveRange = MathF.Max( AttackRange * 1.45f, 3200f );
+				ammoCost = Math.Max( 2, Firing.Cost * 2 );
+			}
+		}
 		var patternDirection = Firing.HasPattern || ionShot.Enabled ? aim.Forward.WithAimCone( spread, spread ) : aim.Forward;
 		// Retail NPC callbacks use a fixed zoom fraction of 0.5.
 		var zoom = 0.5f;
@@ -426,24 +501,29 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 				Titanfall2Projectile.Launch( Scene, ray, flight, ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, attacker, GameObject, GameObject, DamageProfile, !piloted );
 				continue;
 			}
-			var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( ray, AttackRange ).IgnoreGameObjectHierarchy( GameObject )
+			var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( ray, effectiveRange ).IgnoreGameObjectHierarchy( GameObject )
 				.UseHitboxes().UseHitPosition().WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
 			var intercepted = Titanfall2TitanDefense.TryInterceptHitscan( Scene, ref hit, attacker, GameObject,
-				new Titanfall2DefenseShot( ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, 0, DamageProfile, !piloted, AttackRange ) );
+				new Titanfall2DefenseShot( ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, 0, DamageProfile, !piloted, effectiveRange ) );
 			if ( !intercepted )
 			{
-				var heavyTarget = hit.GameObject?.GetComponentInParent<Titanfall2Npc>() is { IsTitan: true };
+				var hitNpc = hit.GameObject?.GetComponentInParent<Titanfall2Npc>();
+				var heavyTarget = hitNpc is { IsTitan: true };
 				var damage = DamageProfile.Evaluate( ray.Position.Distance( hit.HitPosition ), heavyTarget, !piloted, ShotDamage, TitanShotDamage )
 					* (!DamageProfile.Enabled && !piloted && !heavyTarget ? 0.45f : 1) * damageMultiplier;
 				var tags = new TagSet();
 				tags.Add( "bullet" );
+				var wasAlive = hitNpc is { Dead: false };
 				Titanfall2HostDamage.ShootBullet( hit, damage, 0, attacker, GameObject, tags );
+				if ( piloted && hit.Hit && (hitNpc is not null && IsHostileToFaction( hitNpc.Faction ) || hit.GameObject?.GetComponentInParent<Titanfall2Harvester>() is not null) )
+					NotifyHitMarker( wasAlive && hitNpc is { Dead: true } );
 			}
 			PlayBulletTrace( origin, new BaseCombatWeapon.ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface ) );
 		}
+		NotifyShotFired();
 		PlayShotSound( origin, npc: !piloted );
 		core?.NotifyPrimaryFired();
-		if ( core is not { UnlimitedAmmo: true } ) Rounds = Math.Max( 0, Rounds - Firing.Cost );
+		if ( core is not { UnlimitedAmmo: true } ) Rounds = Math.Max( 0, Rounds - ammoCost );
 		var interval = core?.PrimaryInterval( ShotInterval ) ?? ShotInterval;
 		if ( Rounds < Firing.Minimum && core is not { UnlimitedAmmo: true } ) StartReload();
 		else if ( !piloted && Role != FrontierRole.EliteMonarch && ++_burst >= Math.Max( 1, BurstShots ) )
@@ -453,6 +533,13 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		}
 		else _nextShot = MathF.Max( 0.05f, interval );
 		return true;
+	}
+
+	internal void NotifyShotFired() => ShotSerial = ShotSerial == int.MaxValue ? 1 : ShotSerial + 1;
+	internal void NotifyHitMarker( bool kill = false )
+	{
+		HitMarkerKill = kill;
+		HitMarkerSerial = HitMarkerSerial == int.MaxValue ? 1 : HitMarkerSerial + 1;
 	}
 
 	internal void StartReload()
@@ -482,7 +569,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			var firstPerson = !npc && Seat.IsValid() && Seat.LocalPilot is { ThirdPerson: false };
 			GameObject.GetOrAddComponent<Titanfall2WeaponSoundEmitter>().Shot( MountIdent, WeaponAudio, firstPerson, position, ShotInterval,
 				npc: npc, ammoPercent: MagazineSize > 0 ? Rounds * 100f / MagazineSize : 100 );
-			if ( _gun.IsValid() && _gun.GetComponent<BaseWeaponModel>()?.MuzzleGameObject is { } muzzle && muzzle.IsValid() )
+			if ( !firstPerson && _gun.IsValid() && _gun.GetComponent<BaseWeaponModel>()?.MuzzleGameObject is { } muzzle && muzzle.IsValid() )
 			{
 				Titanfall2RetailWeaponEffects.MuzzleFlash( _gun.GetComponent<BaseWeaponModel>(), MountIdent, WeaponPresentation, false );
 				Titanfall2RetailWeaponEffects.Shells( _gun.GetComponent<BaseWeaponModel>(), MountIdent, WeaponPresentation, false );

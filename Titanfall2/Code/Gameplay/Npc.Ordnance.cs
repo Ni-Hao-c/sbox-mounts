@@ -139,6 +139,9 @@ public sealed partial class Titanfall2Npc
 		var live = Scene.GetAllComponents<Titanfall2Projectile>().Count( shot => shot.Settings.Behavior == Titanfall2ProjectileBehavior.FragGrenade );
 		var pending = Scene.GetAllComponents<Titanfall2Npc>().Count( npc => npc.ThrowingGrenade );
 		if ( live + pending >= 6 ) return false;
+		// Avoid multiple squadmates throwing grenades at the exact same spot simultaneously.
+		if ( Scene.GetAllComponents<Titanfall2Npc>().Any( ally => ally != this && ally.ThrowingGrenade
+			&& !IsHostileToFaction( ally.Faction ) && ally._grenadeLanding.Distance( landing ) < 240f ) ) return false;
 		if ( !TryGrenadeArc( landing, profile, out _ ) ) return false;
 		_grenadeLanding = landing;
 		_pendingGrenade = profile;

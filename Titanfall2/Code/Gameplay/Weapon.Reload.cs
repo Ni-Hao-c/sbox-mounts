@@ -9,7 +9,12 @@ public sealed partial class Titanfall2Weapon
 
 	/// <summary>Captured before the host starts reloading; magazine replication cannot change the selected animation.</summary>
 	public bool ReloadStartedEmpty => RetailReload.StartedEmpty;
+	public bool ReloadIsSegmented => RetailReload.Serial != 0 ? RetailReload.Segmented : ReloadProfile.Segmented;
 	public float ReloadDuration => RetailReload.Serial != 0 ? RetailReload.Duration : ReloadTime;
+	public float ReloadLoopDuration => RetailReload.Serial != 0 && RetailReload.LoopDuration > 0
+		? RetailReload.LoopDuration : ReloadProfile.LoopDurationFor( ReloadTime );
+	public float ReloadEndDuration => RetailReload.Serial != 0 && RetailReload.EndDuration > 0
+		? RetailReload.EndDuration : ReloadProfile.EndDurationFor( ReloadStartedEmpty, 0.55f );
 	public float ReloadElapsed => RetailReload.ElapsedAt( Time.NowDouble );
 	public int ReloadSerial => RetailReload.Serial;
 	public int ReloadMilestone => RetailReload.Milestone;
@@ -29,6 +34,9 @@ public sealed partial class Titanfall2Weapon
 		StopSpinUp();
 		var startedEmpty = Clip1 <= 0;
 		var duration = ReloadProfile.DurationFor( startedEmpty, ReloadTime );
+		var segmented = ReloadProfile.Enabled && ReloadProfile.Segmented && !HeatProfile.Valid;
+		var loopDuration = segmented ? ReloadProfile.LoopDurationFor( duration ) : 0f;
+		var endDuration = segmented ? ReloadProfile.EndDurationFor( startedEmpty, 0.55f ) : 0f;
 		var milestone = HeatProfile.Valid ? SavedHeatReloadMilestone : 0;
 		var stage = HeatProfile.Valid ? HeatReloadStage( milestone ) : default;
 		if ( HeatProfile.Valid && startedEmpty )
@@ -42,13 +50,27 @@ public sealed partial class Titanfall2Weapon
 		RetailReload = new()
 		{
 			Serial = RetailReload.Serial == int.MaxValue ? 1 : RetailReload.Serial + 1,
-			Active = true, StartedEmpty = startedEmpty, Duration = duration, StartedAt = Time.NowDouble, Milestone = milestone
+			Active = true, StartedEmpty = startedEmpty, Segmented = segmented,
+			Duration = duration, LoopDuration = loopDuration, EndDuration = endDuration,
+			StartedAt = Time.NowDouble, Milestone = milestone
 		};
-		// The official reload loop reads ReloadTime after IsReloading is set. It
-		// retains authority over reserve consumption, magazine fill and cancellation.
-		// L-STAR grants ammo at its model FILL event, then remains reloading
-		// until READY. The base timer ends at READY; the animation keeps its full duration.
-		ReloadTime = duration * (stage.ReadyCycle > 0 ? stage.ReadyCycle : 1);
+		// The official reload loop reads IncrementalReloading, ReloadStartTime and ReloadTime
+		// after IsReloading is set. For segmented weapons (Softball, Mastiff), each iteration
+		// loads one round and invokes OnReloadInserted -> OnIncrementalReload.
+		IncrementalReloading = segmented;
+		if ( segmented )
+		{
+			ReloadStartTime = duration;
+			ReloadTime = loopDuration;
+			CanCancelReload = true;
+		}
+		else
+		{
+			ReloadStartTime = 0f;
+			// L-STAR grants ammo at its model FILL event, then remains reloading
+			// until READY. The base timer ends at READY; the animation keeps its full duration.
+			ReloadTime = duration * (stage.ReadyCycle > 0 ? stage.ReadyCycle : 1);
+		}
 		base.Reload();
 		if ( HeatProfile.Valid && IsReloading )
 		{

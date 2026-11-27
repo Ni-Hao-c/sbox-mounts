@@ -21,15 +21,30 @@ partial class ModelLoader
 	internal const string MortarDeployRole = "tf2_mortar_deploy";
 	internal const string MortarAttackRole = "tf2_mortar_attack";
 	internal const string MortarRecoverRole = "tf2_mortar_recover";
+	internal const string ExecAttackerRole = "tf2_exec_attacker";
+	internal const string ExecVictimMonarchRole = "tf2_exec_victim_monarch";
+	internal const string ExecVictimIonRole = "tf2_exec_victim_ion";
+	internal const string ExecVictimToneRole = "tf2_exec_victim_tone";
+	internal const string ExecVictimLegionRole = "tf2_exec_victim_legion";
+	internal const string ExecVictimScorchRole = "tf2_exec_victim_scorch";
+	internal const string ExecVictimNorthstarRole = "tf2_exec_victim_northstar";
+	internal const string ExecVictimRoninRole = "tf2_exec_victim_ronin";
+
+	internal static bool IsExecutionRole( string role ) =>
+		role?.StartsWith( "tf2_exec_", StringComparison.Ordinal ) == true;
 
 	// These are full-body retail sequences, not gestures, aim deltas or cinematic poses.
 	// The first entries are explicit chassis matches verified from the MDL include graph.
-	internal static (string Role, int Score) InfantryAnimationRank( string name, string activity )
+	internal static (string Role, int Score) InfantryAnimationRank( string name, string activity, string modelPath = null )
 	{
 		var label = name?.TrimStart( '@' ).ToLowerInvariant() ?? "";
 		var act = activity?.ToUpperInvariant();
 		// A separate additive role, never a substitute for a full-body action.
 		if ( act == "ACT_GESTURE_SMALL_FLINCH" ) return (FlinchRole, 80);
+
+		var execRank = TitanExecutionAnimationRank( label, modelPath );
+		if ( execRank.Role is not null ) return execRank;
+
 		if ( label.StartsWith( "add_", StringComparison.Ordinal ) || label.StartsWith( "gest_", StringComparison.Ordinal )
 			|| label.StartsWith( "aim_", StringComparison.Ordinal ) || label.Contains( "synced", StringComparison.Ordinal ) ) return default;
 
@@ -44,7 +59,8 @@ partial class ModelLoader
 			"titan_light_menu_fd_idle_ronin" or "lt_ronin_reveal_stand_idle" => (IdleRole, 105),
 			"bt_combat_walk_forward" or "run_forward_mp" or "pr_combat_run_forward" or "sspec_run_forward" => (MoveRole, 120),
 			"bt_casual_walk_forward" or "walk_forward_mp" => (MoveRole, 102),
-			"bt_fire_stand" or "mt_stand_fire_auto2" or "legion_attack_auto" or "cqb_fire" or "sspec_speclaunch_fire" => (FireRole, 120),
+			"bt_fire_stand" or "mt_stand_fire_auto2" or "legion_attack_auto" or "at_attack_auto" or "cqb_fire" or "sspec_speclaunch_fire" => (FireRole, 120),
+			"at_fire_combat_kickup" => (FireRole, 115),
 			"bt_stand_reload_01" or "mt_stand_reload_xo16_vanguard" or "cqb_reload_static" => (ReloadRole, 120),
 			"pr_threat_bite_attack" or "sspec_attack_groundslam" or "st_stand_melee_swipe" => (MeleeRole, 120),
 			"cqb_throw" => (GrenadeRole, 120),
@@ -56,7 +72,7 @@ partial class ModelLoader
 				"ACT_IDLE_CASUAL" or "ACT_MP_STAND_IDLE" => (IdleRole, 60),
 				"ACT_RUN" or "ACT_RUN_AIM" or "ACT_RUN_AIM_FORWARD" or "ACT_MP_RUN_FORWARD" => (MoveRole, 80),
 				"ACT_WALK" or "ACT_WALK_AIM" or "ACT_WALK_CASUAL" or "ACT_WALK_AIM_FORWARD" or "ACT_MP_WALK_FORWARD" => (MoveRole, 60),
-				"ACT_RANGE_ATTACK1" or "ACT_RANGE_ATTACK1_SINGLE" or "ACT_SPECIAL_ATTACK" => (FireRole, 70),
+				"ACT_RANGE_ATTACK1" or "ACT_RANGE_ATTACK1_SINGLE" or "ACT_SPECIAL_ATTACK" when !label.Contains( "arcwave", StringComparison.Ordinal ) && !label.Contains( "sword", StringComparison.Ordinal ) => (FireRole, 70),
 				"ACT_RELOAD" => (ReloadRole, 70),
 				"ACT_MELEE_ATTACK1" or "ACT_MELEE_HIGH" => (MeleeRole, 70),
 				"ACT_RANGE_ATTACK2" or "ACT_THROW_GRENADE" => (GrenadeRole, 70),
@@ -70,6 +86,55 @@ partial class ModelLoader
 				}
 			}
 		};
+	}
+
+	internal static (string Role, int Score) TitanExecutionAnimationRank( string label, string modelPath )
+	{
+		if ( string.IsNullOrEmpty( label ) ) return default;
+		var path = modelPath?.ToLowerInvariant() ?? "";
+		if ( !string.IsNullOrEmpty( path ) && !path.Contains( "/titans/", StringComparison.Ordinal ) )
+			return default;
+
+		// Victim roles apply across all 3 Titan weight classes (medium / heavy / light).
+		switch ( label )
+		{
+			case "mt_execution_battery_victim_vanguard" or "ht_execution_battery_victim_vanguard" or "lt_execution_battery_victim_vanguard":
+				return (ExecVictimMonarchRole, 180);
+			case "mt_execution_victim_vanguard" or "ht_execution_victim_vanguard" or "lt_execution_victim_vanguard":
+				return (ExecVictimMonarchRole, 150);
+			case "mt_execution_victim_laser" or "ht_execution_victim_laser" or "lt_execution_victim_laser":
+				return (ExecVictimIonRole, 180);
+			case "mt_execution_victim_tone" or "ht_execution_victim_tone" or "lt_execution_victim_tone":
+				return (ExecVictimToneRole, 180);
+			case "t_meleeexecuted_by_htpred":
+				return (ExecVictimLegionRole, 180);
+			case "t_meleeexecuted_by_htthermite":
+				return (ExecVictimScorchRole, 180);
+			case "mt_execution_victim_sweep_01" or "ht_execution_victim_sweep_01" or "lt_execution_victim_sweep_01":
+				return (ExecVictimNorthstarRole, 180);
+			case "mt_execution_victim_sword_01" or "ht_execution_victim_sword_01" or "lt_execution_victim_sword_01":
+				return (ExecVictimRoninRole, 180);
+		}
+
+		// Attacker role is matched specifically to each Titan chassis model so Monarch/Ion/Tone/Legion/Scorch/Northstar/Ronin play their signature termination.
+		var expectedAttacker = path switch
+		{
+			_ when path.Contains( "vanguard", StringComparison.Ordinal ) || path.Contains( "buddy", StringComparison.Ordinal ) => "mt_execution_battery_attacker_vanguard",
+			_ when path.Contains( "wraith", StringComparison.Ordinal ) => "mt_execution_attacker_laser",
+			_ when path.Contains( "ajax", StringComparison.Ordinal ) => "mt_execution_attacker_tone",
+			_ when path.Contains( "deadbolt", StringComparison.Ordinal ) => "htpred_mp_sync_execution_attacker",
+			_ when path.Contains( "ogre", StringComparison.Ordinal ) => "htthermite_mp_sync_execution_attacker",
+			_ when path.Contains( "raptor", StringComparison.Ordinal ) => "lt_execution_attacker_sweep_01",
+			_ when path.Contains( "locust", StringComparison.Ordinal ) => "lt_execution_attacker_sword_01",
+			_ => null
+		};
+		if ( expectedAttacker is not null && label == expectedAttacker )
+			return (ExecAttackerRole, 200);
+		if ( (path.Contains( "vanguard", StringComparison.Ordinal ) || path.Contains( "buddy", StringComparison.Ordinal ))
+			&& label == "mt_execution_attacker_vanguard" )
+			return (ExecAttackerRole, 160);
+
+		return default;
 	}
 
 	internal static string InfantryAnimationRole( string name, string activity ) => InfantryAnimationRank( name, activity ).Role;
@@ -149,7 +214,7 @@ partial class ModelLoader
 
 			void Add( int index, int sequenceIndex, string label, string activity, int flags, int cell )
 			{
-				var (role, rank) = InfantryAnimationRank( label, activity );
+				var (role, rank) = InfantryAnimationRank( label, activity, ImportPath );
 				var locomotion = InfantryLocomotionRank( label, activity );
 				if ( role is not null ) AddRole( role, rank );
 				if ( locomotion.Role is not null ) AddRole( locomotion.Role, locomotion.Score );

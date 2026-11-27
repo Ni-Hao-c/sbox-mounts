@@ -4,6 +4,7 @@ public sealed class Titanfall2TitanArmament : Component
 {
 	[Property] public Titanfall2Npc Actor { get; set; }
 	[Property] public string ModelPath { get; set; }
+	[Property] public string ViewModelPath { get; set; }
 	[Property] public string MountIdent { get; set; }
 	[Property] public string FireSound { get; set; }
 	[Property] public Titanfall2WeaponPresentation Presentation { get; set; }
@@ -48,6 +49,7 @@ public sealed class Titanfall2TitanArmament : Component
 			|| !ValidProjectile( Projectile ) ) return false;
 		Actor = actor;
 		actor.GunModelPath = ModelPath;
+		actor.ViewModelPath = ViewModelPath;
 		actor.MountIdent = string.IsNullOrWhiteSpace( MountIdent ) ? actor.MountIdent ?? "titanfall2" : MountIdent;
 		actor.FireSound = FireSound;
 		actor.WeaponPresentation = Presentation;

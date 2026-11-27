@@ -157,6 +157,9 @@ public partial class Titanfall2Mount : BaseGameMount
 		_mapPreviewImages.Clear();
 		_mapPreviewNames.Clear();
 		_combatTables.Clear();
+		_pilotSettings = null;
+		_pilotMeleeSettings = null;
+		_defaultOffhandOrdnance = null;
 		_weaponAudio.Clear();
 		_ordnanceSoundSamples.Clear();
 		_missingWeaponEvents.Clear();

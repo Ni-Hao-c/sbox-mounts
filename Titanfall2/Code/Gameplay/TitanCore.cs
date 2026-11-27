@@ -22,12 +22,13 @@ public sealed class Titanfall2TitanCore : Component
 	public string Name => Kit switch
 	{
 		Chassis.Monarch => "Upgrade Core", Chassis.Ion => "Laser Core", Chassis.Legion => "Smart Core", Chassis.Ronin => "Sword Core",
-		Chassis.Tone => "Salvo Core", Chassis.Scorch => "Flame Core", _ => "Core Unavailable"
+		Chassis.Tone => "Salvo Core", Chassis.Scorch => "Flame Core", Chassis.Northstar => "Flight Core", _ => "Core Unavailable"
 	};
 	public float Duration => CoreDuration( Kit );
-	public bool BlocksPrimary => (IsActive || IsCharging) && Kit is Chassis.Ion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch;
+	public bool BlocksPrimary => (IsActive || IsCharging) && Kit is Chassis.Ion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch or Chassis.Northstar;
 	public bool UnlimitedAmmo => IsActive && Kit == Chassis.Legion;
 	public bool SwordCoreActive => IsActive && Kit == Chassis.Ronin;
+	public bool FlightCoreActive => (IsActive || IsCharging) && Kit == Chassis.Northstar;
 	public bool ArcRoundsActive => Kit == Chassis.Monarch && UpgradeLevel > 0 && HasXo16;
 	public int MagazineCapacity => Math.Clamp( (Actor?.MagazineSize ?? 1) + (ArcRoundsActive ? 10 : 0), 1, 260 );
 	public float ReloadMultiplier => ArcRoundsActive && UpgradeLevel >= 2 ? 0.75f : 1;
@@ -61,11 +62,15 @@ public sealed class Titanfall2TitanCore : Component
 	readonly List<Titanfall2Projectile> _salvoMissiles = [];
 	float _salvoElapsed;
 	int _salvoBursts;
+	Titanfall2TitanAbilityData _flightCoreData;
+	float _flightElapsed;
+	int _flightRockets;
+	float _aiFlightBaseZ;
 
-	internal static bool Supports( Chassis kit ) => kit is Chassis.Monarch or Chassis.Ion or Chassis.Legion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch;
+	internal static bool Supports( Chassis kit ) => kit is Chassis.Monarch or Chassis.Ion or Chassis.Legion or Chassis.Ronin or Chassis.Tone or Chassis.Scorch or Chassis.Northstar;
 	internal static float BuildSeconds( Chassis kit ) => kit == Chassis.Monarch ? 100 : kit == Chassis.Ronin ? 120 : 150;
-	internal static float CoreDuration( Chassis kit ) => kit switch { Chassis.Monarch or Chassis.Scorch => 0.5f, Chassis.Ion => 3.5f, Chassis.Legion or Chassis.Ronin => 12, Chassis.Tone => 2, _ => 0 };
-	internal static float CoreChargeup( Chassis kit ) => kit switch { Chassis.Ion => 1.1f, Chassis.Ronin or Chassis.Scorch => 0.75f, Chassis.Tone => 0.5f, _ => 0 };
+	internal static float CoreDuration( Chassis kit ) => kit switch { Chassis.Monarch or Chassis.Scorch => 0.5f, Chassis.Ion => 3.5f, Chassis.Legion or Chassis.Ronin => 12, Chassis.Tone => 2, Chassis.Northstar => 6, _ => 0 };
+	internal static float CoreChargeup( Chassis kit ) => kit switch { Chassis.Ion => 1.1f, Chassis.Ronin or Chassis.Scorch => 0.75f, Chassis.Tone => 0.5f, Chassis.Northstar => 0.4f, _ => 0 };
 	internal static float AddCharge( float current, float gain )
 	{
 		current = float.IsFinite( current ) ? Math.Clamp( current, 0, 1 ) : 0;
@@ -95,6 +100,12 @@ public sealed class Titanfall2TitanCore : Component
 	bool ValidAim( Ray aim ) => aim.Position.IsFinite && aim.Forward.IsFinite
 		&& aim.Forward.LengthSquared is > 0.25f and < 4 && aim.Position.Distance( Eye ) < 180;
 
+	internal void GrantTerminationCharge( float bonus )
+	{
+		if ( !HostReady || IsActive || IsCharging || !float.IsFinite( bonus ) || bonus <= 0 ) return;
+		Charge = AddCharge( Charge, bonus );
+	}
+
 	/// <summary>Consume a full core once, retaining its aim throughout the charge animation.</summary>
 	public bool TryActivate( Ray aim, GameObject attacker )
 	{
@@ -103,6 +114,13 @@ public sealed class Titanfall2TitanCore : Component
 		{
 			_salvoData = (Sandbox.Mounting.Directory.Get( Actor.MountIdent ?? "titanfall2" ) as Titanfall2Mount)?.GetSalvoCoreOrdnance();
 			if ( _salvoData is null ) return false;
+		}
+		else if ( Kit == Chassis.Northstar )
+		{
+			_flightCoreData = (Sandbox.Mounting.Directory.Get( Actor.MountIdent ?? "titanfall2" ) as Titanfall2Mount)?.GetFlightCoreOrdnance()
+				?? DefaultFlightCoreOrdnance( Actor.MountIdent );
+			_aiFlightBaseZ = Actor.WorldPosition.z;
+			Actor.Seat?.BeginFlightCoreHover();
 		}
 		Charge = 0;
 		SetAim( aim );
@@ -130,6 +148,7 @@ public sealed class Titanfall2TitanCore : Component
 		}
 		else if ( Kit == Chassis.Legion ) Actor.PrepareSmartCore( MagazineCapacity );
 		else if ( Kit == Chassis.Tone ) { _salvoElapsed = 0; _salvoBursts = 0; }
+		else if ( Kit == Chassis.Northstar ) { _flightElapsed = 0; _flightRockets = 0; }
 		else if ( Kit == Chassis.Scorch ) Titanfall2FlameCoreWave.Launch( Actor, _aim.Forward, _attacker );
 		else if ( Kit == Chassis.Ion ) { _pulse = 0.1f; PulseLaser(); }
 		if ( CoreChargeup( Kit ) > 0 ) PlayActivation( charging: false );
@@ -166,6 +185,16 @@ public sealed class Titanfall2TitanCore : Component
 					_salvoBursts++;
 				}
 			}
+			if ( Kit == Chassis.Northstar )
+			{
+				_flightElapsed += Time.Delta;
+				if ( !HasPilot ) TickAiFlightHover();
+				while ( _flightRockets < 60 && _flightElapsed >= _flightRockets * 0.1f )
+				{
+					LaunchFlightCoreRocket();
+					_flightRockets++;
+				}
+			}
 			if ( SwordCoreActive )
 			{
 				if ( UseAi && !HasPilot && Actor.CombatTarget.IsValid()
@@ -180,8 +209,15 @@ public sealed class Titanfall2TitanCore : Component
 		if ( !UseAi || !CanActivate || HasPilot || _aiCheck > 0 ) return;
 		_aiCheck = 0.5f;
 		var enemy = Actor.CombatTarget;
-		if ( !enemy.IsValid() || !Actor.HasLineOfSight( enemy ) || enemy.WorldPosition.Distance( Actor.WorldPosition ) > Actor.AttackRange ) return;
-		if ( Kit == Chassis.Ronin && enemy.WorldPosition.Distance( Actor.WorldPosition ) > 500 ) return;
+		if ( !enemy.IsValid() || !Actor.HasLineOfSight( enemy ) ) return;
+		var distance = enemy.WorldPosition.Distance( Actor.WorldPosition );
+		var healthFrac = Actor.MaxHealth > 0 ? Math.Clamp( Actor.Health / Actor.MaxHealth, 0f, 1f ) : 1f;
+		var shieldFrac = Actor.MaxShield > 0 ? Math.Clamp( Actor.Shield / Actor.MaxShield, 0f, 1f ) : 0f;
+		var enemyNpc = enemy.GetComponent<Titanfall2Npc>();
+		var targetIsHeavy = enemyNpc is { IsTitan: true } || enemyNpc is { BodyHeight: > 110f };
+		var targetGrounded = MathF.Abs( enemy.WorldPosition.z - Actor.WorldPosition.z ) < 160f;
+		if ( !Titanfall2TacticsRules.ShouldActivateTitanCore( Kit, healthFrac, shieldFrac, distance, Actor.AttackRange, targetIsHeavy, targetGrounded ) )
+			return;
 		TryActivate( new Ray( Eye, (enemy.GetBounds().Center - Eye).Normal ), Actor.GameObject );
 	}
 
@@ -241,6 +277,60 @@ public sealed class Titanfall2TitanCore : Component
 		}
 	}
 
+	void LaunchFlightCoreRocket()
+	{
+		if ( _flightCoreData is null ) return;
+		var targetPoint = SalvoAimPoint();
+		var dir = (targetPoint - Eye).Normal;
+		var side = Vector3.Cross( dir, Vector3.Up );
+		side = side.LengthSquared > 0.01f ? side.Normal : Actor.WorldRotation.Right;
+		var sign = (_flightRockets & 1) == 0 ? 1f : -1f;
+		var origin = Eye + side * (sign * 26f) + Vector3.Up * 12f;
+		var spread = dir.WithAimCone( 1.9f, 1.9f );
+		var settings = _flightCoreData.Projectile with { MountIdent = Actor.MountIdent, Lifetime = 8f };
+		var projectile = Titanfall2Projectile.Launch( Scene, new Ray( origin, spread ), settings,
+			_flightCoreData.Damage, _flightCoreData.TitanDamage, _attacker, Actor.GameObject, Actor.GameObject );
+		if ( projectile.IsValid() )
+			projectile.IsCoreProjectile = true;
+	}
+
+	void TickAiFlightHover()
+	{
+		var radius = MathF.Max( 8f, Actor.BodyRadius - 4f );
+		var hull = new BBox( new Vector3( -radius, -radius, 8f ), new Vector3( radius, radius, MathF.Max( 32f, Actor.BodyHeight - 2f ) ) );
+		var targetZ = _aiFlightBaseZ + 185f;
+		var step = Math.Clamp( (targetZ - Actor.WorldPosition.z) * 3.5f, -120f, 260f ) * Time.Delta;
+		var lift = Titanfall2CollisionQueries.Run( Scene.Trace.Box( hull, Actor.WorldPosition, Actor.WorldPosition + Vector3.Up * step )
+			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.NpcSolid );
+		if ( !lift.StartedSolid )
+			Actor.WorldPosition = lift.EndPosition;
+	}
+
+	static Titanfall2TitanAbilityData DefaultFlightCoreOrdnance( string mountIdent ) => new(
+		new Titanfall2ProjectileSettings
+		{
+			Speed = 1850f,
+			GravityScale = 0.05f,
+			Radius = 4f,
+			Lifetime = 8f,
+			SplashDamage = 65f,
+			SplashTitanDamage = 260f,
+			SplashRadius = 180f,
+			TrailEffect = "P_FlightCore_trail",
+			TrailAttachment = "exhaust",
+			ImpactTable = "exp_rocket_titan_rocket_launcher",
+			MountIdent = mountIdent ?? "titanfall2",
+			Tint = new Color( 1f, 0.55f, 0.14f ),
+			Behavior = Titanfall2ProjectileBehavior.Standard
+		},
+		Damage: 300f,
+		TitanDamage: 300f,
+		Range: 6000f,
+		Shots: 1,
+		Interval: 0.1f,
+		Sound: "ShoulderRocket_Cluster_Fire_3P",
+		Tracer: null );
+
 	/// <summary>Primary attack is a delayed, cover-respecting sword sweep during Sword Core.</summary>
 	public bool TryPrimaryAttack( Ray aim, GameObject attacker )
 	{
@@ -248,6 +338,7 @@ public sealed class Titanfall2TitanCore : Component
 		SetAim( aim );
 		_swingDirection = aim.Forward.Normal;
 		_swingAttacker = attacker.IsValid() ? attacker : Actor.GameObject;
+		Actor.NotifyShotFired();
 		_swingPending = true;
 		_swingContact = 0.25f;
 		_swingCooldown = 0.9f;
@@ -355,7 +446,9 @@ public sealed class Titanfall2TitanCore : Component
 			Chassis.Legion => "Titan_Legion_Smart_Core_Activated_3P",
 			Chassis.Ronin => "Titan_Ronin_Sword_Core_Activated_3P", Chassis.Monarch => "Titan_Monarch_Smart_Core_Activated_3P",
 			Chassis.Tone => charging ? "weapon_coreability_salvo_chargeup_3p" : "weapon_coreability_salvo_fire_3P",
-			Chassis.Scorch => charging ? "flamewave_start_3p" : "flamewave_blast_middle", _ => null
+			Chassis.Scorch => charging ? "flamewave_start_3p" : "flamewave_blast_middle",
+			Chassis.Northstar => charging ? "Jumpjet_Jump_Start_3P" : "ShoulderRocket_Cluster_Fire_3P",
+			_ => null
 		};
 		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, sound, Eye );
 	}
@@ -476,6 +569,24 @@ public partial class Titanfall2Mount
 		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
 			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? System.Text.Encoding.UTF8.GetString( bytes ) : null;
 	}
+
+	Titanfall2ContentSnapshot _flightCoreSnapshot;
+	Titanfall2TitanAbilityData _flightCoreOrdnance;
+	internal Titanfall2TitanAbilityData GetFlightCoreOrdnance()
+	{
+		if ( _contentSnapshot is null ) return null;
+		if ( ReferenceEquals( _flightCoreSnapshot, _contentSnapshot ) ) return _flightCoreOrdnance;
+		_flightCoreSnapshot = _contentSnapshot;
+		try
+		{
+			_flightCoreOrdnance = Titanfall2WeaponData.ReadTitanAbility( "scripts/weapons/mp_titanweapon_flightcore_rockets.txt", Read,
+				1850f, Titanfall2ProjectileBehavior.Standard );
+		}
+		catch ( InvalidDataException ) { _flightCoreOrdnance = null; }
+		return _flightCoreOrdnance;
+		string Read( string path ) => _contentSnapshot.GetSource( path ) is { } source
+			&& source.TryReadAllBytes( out var bytes, out _ ) && bytes.Length <= 512 * 1024 ? System.Text.Encoding.UTF8.GetString( bytes ) : null;
+	}
 }
 
 /// <summary>Three parallel ground waves share one receiver set, so overlapping lanes cannot multiply core damage.</summary>
@@ -535,6 +646,7 @@ public sealed class Titanfall2FlameCoreWave : Component
 		if ( wall.Hit || wall.StartedSolid || !ground.Hit || ground.StartedSolid || ground.Normal.z < 0.5f ) { GameObject.Destroy(); return; }
 		WorldPosition = ground.EndPosition + Vector3.Up * 12;
 		_distance += travel;
+		Titanfall2GasCanister.IgniteInRadius( Scene, WorldPosition, 240f, _attacker );
 		foreach ( var obj in Scene.FindInPhysics( new Sphere( WorldPosition + Vector3.Up * 100, 128 ) ) )
 		{
 			if ( obj.GetComponentInParent<IDamageable>() is not Component receiver || _receivers.Contains( receiver ) || receiver.GameObject == Actor.GameObject ) continue;

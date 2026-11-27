@@ -47,14 +47,16 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		{
 			"OnWeaponPrimaryAttack_weapon_doubletake" => Titanfall2BoltPattern.DoubleTake,
 			"OnWeaponPrimaryAttack_weapon_mastiff" => Titanfall2BoltPattern.Mastiff,
+			"OnWeaponPrimaryAttack_weapon_shotgun_pistol" => Titanfall2BoltPattern.Mozambique,
 			_ => Titanfall2BoltPattern.Default
 		};
 		var firing = new Titanfall2WeaponFiring { Pattern = pattern,
 			AmmoPerShot = (int)Math.Clamp( Number( "ammo_per_shot", 1 ), 1, 250 ),
 			AmmoMinToFire = (int)Math.Clamp( Number( "ammo_min_to_fire", 1 ), 1, 250 ),
-			BoltSpreadHip = pattern == Titanfall2BoltPattern.Mastiff ? 0.05f : Math.Clamp( Number( "bolt_spread_max" ), 0, 1 ),
-			BoltSpreadAds = pattern == Titanfall2BoltPattern.Mastiff ? 0.025f : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 ) };
+			BoltSpreadHip = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.05f : Math.Clamp( Number( "bolt_spread_max" ), 0, 1 ),
+			BoltSpreadAds = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.025f : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 ) };
 		if ( pattern == Titanfall2BoltPattern.Mastiff ) { pellets = 8; speed = 3000; }
+		else if ( pattern == Titanfall2BoltPattern.Mozambique ) { pellets = 3; speed = 3000; }
 		if ( (!integrated && world is null) || mode is not ("auto" or "semi-auto")
 			|| pellets is < 1 or > 12 || pellets != MathF.Truncate( pellets )
 			|| burst is < 1 or > 8 || burst != MathF.Truncate( burst ) || (pellets > 1 && burst > 1)
@@ -78,7 +80,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			{
 				Speed = speed,
 				VortexAbsorbOnly = Get( "vortex_refire_behavior" ).Equals( "absorb", StringComparison.OrdinalIgnoreCase ),
-				GravityScale = pattern == Titanfall2BoltPattern.Mastiff ? 0.09f : Math.Clamp( Number( "projectile_gravity_scale", Number( "bolt_gravity_amount", ordnance ? 1.1f : 0 ) ), 0, 4 ),
+				GravityScale = pattern is Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique ? 0.09f : Math.Clamp( Number( "projectile_gravity_scale", Number( "bolt_gravity_amount", ordnance ? 1.1f : 0 ) ), 0, 4 ),
 				Lifetime = Math.Clamp( Number( "projectile_lifetime", MathF.Max( ordnance ? 3.5f : 1.25f, range / speed ) ), 0.1f, 8 ),
 				Radius = Math.Clamp( Number( "projectile_radius", impactRadius > 0 ? 3 : 1.5f ), 0.5f, 10 ),
 				SplashRadius = impactRadius,
@@ -92,7 +94,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				ScriptTrailEffect = Get( "OnWeaponPrimaryAttack" ) == "OnWeaponPrimaryAttack_weapon_sniper" ? "Rocket_Smoke_SMR_Glow" : null,
 				FuseSeconds = behavior == Titanfall2ProjectileBehavior.FragGrenade ? Math.Clamp( Number( "grenade_fuse_time", 3.25f ), 0.1f, 12 ) : 0,
 				HazardSeconds = behavior == Titanfall2ProjectileBehavior.GravityPull ? 2.9f
-					: Math.Clamp( Number( "grenade_ignition_time", behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 5 : 3.5f ), 0.1f, 12 ),
+					: Math.Clamp( Number( "grenade_ignition_time", behavior == Titanfall2ProjectileBehavior.ElectricSmoke ? 6.5f : 3.5f ), 0.1f, 12 ),
 				HazardEffect = behavior switch { Titanfall2ProjectileBehavior.ThermiteBurn => "P_grenade_thermite", Titanfall2ProjectileBehavior.GravityPull => "P_wpn_grenade_gravity",
 					Titanfall2ProjectileBehavior.ElectricSmoke => "P_wpn_smk_electric_pilot", _ => null },
 				DamageOwner = Get( "explosion_damages_owner" ) == "1" || ordnance,
@@ -106,6 +108,8 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				&& !sound.Contains( "casing", StringComparison.OrdinalIgnoreCase ) ).Distinct( StringComparer.OrdinalIgnoreCase ).ToArray();
 		var fireSounds3p = FireSounds( "3p" );
 		var fireSounds1p = FireSounds( "1p" );
+		var (crosshairStyle, crosshairBaseSpread) = ReadCrosshair( root, ordnance );
+		var opticReticle = ReadOpticReticle( root, Get );
 		var presentation = new Titanfall2WeaponPresentation
 		{
 			ViewModelOffsetHip = ReadViewModelOffset( Get( "viewmodel_offset_hip" ) ),
@@ -117,6 +121,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				? "models/weapons/attachments/dcom_rifle_scope_crosshair" : null,
 			ScopeBodyGroup = Get( "bodygroup_ads_scope_name" ), ScopeBodyChoice = (int)Number( "bodygroup_ads_scope_set" ),
 			ScopeBlendStart = Number( "zoom_scope_frac_start", 0.2f ), ScopeBlendEnd = Number( "zoom_scope_frac_end", 0.7f ),
+			CrosshairStyle = crosshairStyle, CrosshairBaseSpread = crosshairBaseSpread, OpticReticle = opticReticle,
 			ShellView = Get( "fx_shell_eject_view" ), ShellWorld = Get( "fx_shell_eject_world" ), ShellAttachment = Get( "fx_shell_eject_attach" ),
 			ShellAttachmentScoped = Get( "fx_shell_eject_attach_scoped" ), Shell2View = Get( "fx_shell_eject2_view" ),
 			Shell2World = Get( "fx_shell_eject2_world" ), Shell2Attachment = Get( "fx_shell_eject2_attach" ),
@@ -137,8 +142,18 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 			spread.Stand.Hip, fireSounds3p, fireSounds1p, adsFov, hold, (int)pellets, (int)burst, Math.Clamp( Number( "burst_fire_delay", 0.25f ), 0, 5 ),
 			Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) / (projectile ? 1 : pellets), flight )
 			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = ReadAudio( Get, (int)burst ), Firing = firing, SpreadProfile = spread,
-				ReloadProfile = new() { Enabled = !charge.Valid && !ordnance, NormalSeconds = reload, EmptySeconds = emptyReload,
-					EmptyLateSeconds = Enumerable.Range( 1, 5 ).Select( i => Number( $"reloadempty_time_late{i}", 0 ) ).ToArray() },
+				ReloadProfile = new()
+				{
+					Enabled = !charge.Valid && !ordnance,
+					NormalSeconds = reload,
+					EmptySeconds = emptyReload,
+					Segmented = Number( "reload_is_segmented", 0 ) > 0.5f,
+					SegmentAmmo = Math.Clamp( (int)MathF.Round( Number( "ammo_size_segmented_reload", 1 ) ), 1, 8 ),
+					LoopSeconds = Number( "reloadsegment_time_loop", 0 ),
+					EndSeconds = Number( "reloadsegment_time_end", 0 ),
+					EmptyEndSeconds = Number( "reloadsegmentempty_time_end", Number( "reloadsegment_time_end", 0 ) ),
+					EmptyLateSeconds = Enumerable.Range( 1, 5 ).Select( i => Number( $"reloadempty_time_late{i}", 0 ) ).ToArray()
+				},
 				ChargeProfile = charge, HeatProfile = ReadHeatProfile( Get, Number ),
 				OrdnanceProfile = ReadOrdnanceProfile( Get, Number, ordnance ),
 				ChargePresentation = ReadChargePresentation( Get, Number ),

@@ -60,8 +60,11 @@ public sealed partial class Titanfall2Npc
 	TimeUntil _frontierClock;
 	int _nukePulses;
 	bool IsNuking => Ability is FrontierAbility.NukeArmed or FrontierAbility.NukeDetonating;
+	internal bool IsNukeHazard => IsNuking;
 	TimeUntil _empTick;
 	TimeUntil _smokeTick;
+	TimeUntil _smokeDeployPause;
+	TimeUntil _arcLosGrace;
 	TimeUntil _eliteCooldown;
 	GameObject _arcChargeTarget;
 	Vector3 _smokeOrigin;
@@ -132,8 +135,10 @@ public sealed partial class Titanfall2Npc
 	bool TickArcCannon()
 	{
 		if ( Role != FrontierRole.ArcTitan ) return false;
-		var valid = CanTarget( _target ) && (_target.WorldPosition - WorldPosition).LengthSquared <= AttackRange * AttackRange
-			&& HasLineOfSight( _target );
+		var inRange = CanTarget( _target ) && (_target.WorldPosition - WorldPosition).LengthSquared <= AttackRange * AttackRange;
+		var hasLos = inRange && HasLineOfSight( _target );
+		if ( hasLos ) _arcLosGrace = 0.35f;
+		var valid = inRange && (hasLos || (Ability == FrontierAbility.ArcCharge && _arcLosGrace > 0));
 		if ( !valid || (Ability == FrontierAbility.ArcCharge && _target != _arcChargeTarget) )
 		{
 			Ability = FrontierAbility.None;
@@ -146,9 +151,11 @@ public sealed partial class Titanfall2Npc
 			_arcChargeTarget = _target;
 			Ability = FrontierAbility.ArcCharge;
 			_frontierClock = ArcChargeSeconds;
+			_arcLosGrace = 0.35f;
 			return true;
 		}
 		if ( _frontierClock > 0 ) return true;
+		if ( !hasLos ) return true;
 
 		var muzzle = _gun.IsValid() ? _gun.GetComponent<BaseWeaponModel>()?.GetMuzzleTransform().Position ?? Eye : Eye;
 		var toTarget = AimAt( _target ) - muzzle;
@@ -182,7 +189,8 @@ public sealed partial class Titanfall2Npc
 				_smokeTick = SmokeTickSeconds;
 				Pulse( _smokeOrigin, 320, 375, 100 * SmokeTickSeconds, 1500 * SmokeTickSeconds, "electricsmoke" );
 			}
-			return true;
+			// Only pause movement briefly while popping smoke; keep fighting and strafing afterward.
+			return _smokeDeployPause > 0;
 		}
 		if ( Ability == FrontierAbility.ShieldCore )
 		{
@@ -196,7 +204,7 @@ public sealed partial class Titanfall2Npc
 		}
 		if ( !_eliteDefenseQueued || _frontierClock > 0 ) return false;
 		_eliteDefenseQueued = false;
-		var both = Random.Shared.NextSingle() < 0.2f;
+		var both = Random.Shared.NextSingle() < 0.25f;
 		if ( _elitePrefersCore || both )
 		{
 			Shield = MaxShield;
@@ -209,6 +217,7 @@ public sealed partial class Titanfall2Npc
 			_smokeOrigin = (blocked ? WorldPosition : ahead) + Vector3.Up * 100;
 			Ability = FrontierAbility.ElectricSmoke;
 			_smokeTick = 1;
+			_smokeDeployPause = 0.6f;
 			_frontierClock = 5;
 		}
 		else

@@ -68,7 +68,7 @@ class LegacyMaterialLoader( string materialName, bool previewMaterial = false ) 
 		material.Set( "g_vVmtColor2", color2 );
 		material.Set( "g_flVmtLayerAlpha1", definition.GetFloat( "$layeralpha1", 1f ) );
 		material.Set( "g_flVmtLayerAlpha2", definition.GetFloat( "$layeralpha2", 1f ) );
-		material.Set( "g_flVmtMaterialAlpha", definition.GetFloat( "$alpha", 1f ) );
+		material.Set( "g_flVmtMaterialAlpha", definition.GetInitialAlpha() );
 		material.Set( "g_flVmtUseVertexColor", metadata.UsesVertexColor ? 1f : 0f );
 		material.Set( "g_flVmtUseVertexAlpha", metadata.UsesVertexAlpha ? 1f : 0f );
 

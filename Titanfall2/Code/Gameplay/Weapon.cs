@@ -20,14 +20,19 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	TimeUntil _burstStep;
 	TimeUntil _nextProjectileRequest;
 	float _adsBlend;
+	internal float AdsBlend => _adsBlend;
 	internal bool IsFullyAds => _adsBlend >= 1f;
 
 	public bool IsAiming => !IsProxy && IsHeld && IsActive && !IsReloading && Input.Down( "attack2" )
+		&& _parkourState is not { Equipped: true, CombatBusy: true }
 		&& ViewModel.IsValid() && ViewModel.GetComponent<Titanfall2PilotViewModel>() is { HasAds: true };
 
 	public bool IsSprinting => !IsProxy && IsHeld && IsActive && !IsReloading && !IsAiming
-		&& TimeSinceShoot > 0.25f && Owner.IsValid() && Owner.IsOnGround
-		&& Input.Down( "run" ) && Owner.Velocity.WithZ( 0 ).Length > 180f;
+		&& _parkourState is not { Equipped: true, CombatBusy: true }
+		&& TimeSinceShoot > 0.25f && Owner.IsValid()
+		&& (_parkourPose.IsWallrunning || _parkourPose.IsSliding || _parkourPose.IsMantling ? false
+			: _parkourState is { Equipped: true } ? _parkourPose.IsSprinting
+			: Owner.IsOnGround && Input.Down( "run" ) && Owner.Velocity.WithZ( 0 ).Length > 180f);
 
 	public override Vector2 CurrentSpread => SpreadProfile.Enabled ? RetailSpread( _adsBlend ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, _adsBlend );
 
@@ -145,6 +150,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	}
 
 	public override bool CanPrimaryAttack() => _burstRemaining == 0
+		&& _parkourState is not { Equipped: true, CombatBusy: true }
 		&& (!UsesOrdnance || CanBeginOrdnance)
 		&& !HeatVenting && (!UsesRetailCharge || CanBeginCharge)
 		&& (!UsesRetailSmartAmmo || SmartBurstRemaining == 0 && _smartShotTime <= 0) && base.CanPrimaryAttack();
@@ -213,8 +219,8 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		UpdateWeaponHud();
 	}
 
-	float _wallrunSide;
-	float _mantleProgress;
+	Titanfall2PilotViewPoseState _parkourPose;
+	ITitanfall2PilotParkourState _parkourState;
 	GameObject _parkourOwner;
 	Component _parkourComponent;
 	PropertyDescription _wallrunProp;
@@ -225,14 +231,14 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		if ( IsProxy || !IsHeld || !IsActive || !ViewModel.IsValid() )
 		{
 			_adsBlend = 0;
-			_wallrunSide = 0;
-			_mantleProgress = 0;
+			_parkourPose = default;
 			return;
 		}
-		ReadPilotParkourState( out _wallrunSide, out _mantleProgress );
+		ReadPilotParkourState( out _parkourPose );
 		var aiming = IsAiming;
 		var sprinting = IsSprinting;
-		var oneHanded = MathF.Abs( _wallrunSide ) > 0.1f;
+		var oneHanded = _parkourPose.IsWallrunning || MathF.Abs( _parkourPose.WallrunSide ) > 0.1f
+			|| (_parkourPose.IsSliding && _parkourPose.SlideBlend > 0.3f);
 		var rate = aiming ? 9f : 11f;
 		_adsBlend = SpreadProfile.Enabled ? SpreadProfile.AdvanceZoom( _adsBlend, aiming, Time.Delta )
 			: Math.Clamp( _adsBlend + (aiming ? 1f : -1f) * rate * Time.Delta, 0f, 1f );
@@ -240,12 +246,25 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			pilotView.SetLocomotionState( aiming, sprinting, oneHanded, _adsBlend );
 	}
 
-	void ReadPilotParkourState( out float wallrunSide, out float mantleProgress )
+	void ReadPilotParkourState( out Titanfall2PilotViewPoseState pose )
 	{
-		wallrunSide = 0f;
-		mantleProgress = 0f;
+		pose = default;
 		var ownerGo = Owner?.GameObject;
-		if ( !ownerGo.IsValid() ) return;
+		if ( !ownerGo.IsValid() )
+		{
+			_parkourState = null;
+			return;
+		}
+
+		// Prefer the typed Pilot Jump Kit component; re-query so mid-hold equips take effect immediately.
+		var typed = ownerGo.GetComponent<ITitanfall2PilotParkourState>();
+		_parkourState = typed;
+		if ( typed is { Equipped: true } )
+		{
+			pose = typed.ViewPoseState;
+			return;
+		}
+
 		if ( _parkourOwner != ownerGo )
 		{
 			_parkourOwner = ownerGo;
@@ -254,7 +273,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			_mantleProp = null;
 			foreach ( var comp in ownerGo.Components.GetAll() )
 			{
-				if ( !comp.IsValid() ) continue;
+				if ( !comp.IsValid() || comp is ITitanfall2PilotParkourState ) continue;
 				var desc = Game.TypeLibrary.GetType( comp.GetType() );
 				if ( desc is null ) continue;
 				var wall = desc.GetProperty( "WallrunSide" );
@@ -267,8 +286,10 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			}
 		}
 		if ( !_parkourComponent.IsValid() ) return;
-		if ( _wallrunProp?.GetValue( _parkourComponent ) is float w ) wallrunSide = w;
-		if ( _mantleProp?.GetValue( _parkourComponent ) is float m ) mantleProgress = m;
+		var wallrunSide = _wallrunProp?.GetValue( _parkourComponent ) is float w ? w : 0f;
+		var mantleProgress = _mantleProp?.GetValue( _parkourComponent ) is float m ? m : 0f;
+		pose = new Titanfall2PilotViewPoseState( wallrunSide, 0f, mantleProgress, 0f, 0f, 0f,
+			MathF.Abs( wallrunSide ) > 0.1f, false, mantleProgress > 0.01f, false );
 	}
 
 	protected override void OnAdded( BaseInventoryComponent inventory )
@@ -375,7 +396,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		weaponView.Rotation *= ViewKickWeaponRotation;
 		if ( ViewModel.GetComponent<Titanfall2PilotViewModel>() is { } pilotView )
 		{
-			pilotView.Place( new Transform( weaponView.Position, weaponView.Rotation ), _adsBlend, _wallrunSide, _mantleProgress );
+			pilotView.Place( new Transform( weaponView.Position, weaponView.Rotation ), _adsBlend, _parkourPose );
 			return;
 		}
 		if ( _originalView && ViewModel.GetComponent<BaseWeaponModel>()?.Renderer?.Model?.Attachments.GetTransform( "CAMERA_BASE" ) is { } cameraBase )
