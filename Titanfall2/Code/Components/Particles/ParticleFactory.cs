@@ -721,7 +721,10 @@ static class Titanfall2ParticleFactory
 		Math.Clamp( value.y, -extent, extent ),
 		Math.Clamp( value.z, -extent, extent ) );
 
-	static Color ToColor( RgbaColor value ) => new( value.R / 255f, value.G / 255f, value.B / 255f, value.A / 255f );
+	// PCF color / Color Random / Color Fade write the RGB particle attribute.
+	// Their DMX color's fourth byte is not particle opacity (retail P_heal stores
+	// zero there). Alpha Random and alpha operators own the separate Alpha channel.
+	static Color ToColor( RgbaColor value ) => new( value.R / 255f, value.G / 255f, value.B / 255f, 1f );
 	static Vector3 ToSandbox( Vector3 value ) => value;
 }
 

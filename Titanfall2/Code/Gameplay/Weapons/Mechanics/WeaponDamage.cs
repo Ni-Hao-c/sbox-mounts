@@ -108,7 +108,7 @@ public sealed partial class Titanfall2Weapon
 		_lastHitscanRequestSequence = sequence;
 		// Small arrival jitter allowance, accumulated into the next deadline rather
 		// than granting extra sustained fire rate. Duplicates remain strictly rejected.
-		var slack = Math.Clamp( (SpinUp.Enabled ? SpinUp.Interval( _hostSpin.Fraction( SpinUp, Time.NowDouble ), PrimaryDelay ) : PrimaryDelay) * 0.25f, 0.003f, 0.02f );
+		var slack = Math.Clamp( (SpinUp.Enabled ? SpinUp.Interval( _spinUp.HostFraction( this ), PrimaryDelay ) : PrimaryDelay) * 0.25f, 0.003f, 0.02f );
 		if ( IsReloading || Projectile.Enabled || _nextHitscanRequest > slack
 			|| !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f || !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
 		if ( Vector3.Dot( owner.EyeTransform.Forward, direction.Normal ) < 0.35f ) return;
@@ -120,12 +120,13 @@ public sealed partial class Titanfall2Weapon
 	void ResolveHitscan( Ray aim, float zoom, Sandbox.Npcs.BaseNpc smartTarget = null )
 	{
 		if ( UsesRetailCharge && !IsDispatchingChargeShot ) return;
-		if ( !Networking.IsHost || !Active || Projectile.Enabled || IsReloading || !aim.Position.IsFinite || !aim.Forward.IsFinite
+		if ( !Networking.IsHost || !Active || Projectile.Enabled || IsReloading || !CanAcceptRechamberShot() || !aim.Position.IsFinite || !aim.Forward.IsFinite
 			|| aim.Forward.LengthSquared < 0.25f ) return;
-		if ( IsHeld && (!IsActive || !HasRoundAmmo() || !CanAcceptHeatShot()
-			|| !(UsesRetailCharge ? TryTakeChargeAmmo( Firing.Cost ) : TakePrimaryAmmo( Firing.Cost ))) ) return;
-		AcceptHeatShot();
-		_nextHitscanRequest = MathF.Max( 0, _nextHitscanRequest ) + MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
+		if ( IsHeld && (!IsActive || !HasRoundAmmo() || !_heat.CanAcceptShot( this )
+			|| !(UsesRetailCharge ? _charge.TryTakeAmmo( this, Firing.Cost ) : TakePrimaryAmmo( Firing.Cost ))) ) return;
+		_heat.AcceptShot( this );
+		_nextHitscanRequest = MathF.Max( 0, _nextHitscanRequest ) + MathF.Max( _spinUp.AcceptHostShot( this, zoom ), 0.015f );
+		if ( Clip1 > 0 ) RecordRechamberShot( _nextHitscanRequest );
 		var config = Ballistics;
 		var volley = new ShotEffect[Math.Clamp( config.Pellets, 1, 12 )];
 		var spread = smartTarget.IsValid() ? Vector2.Zero
@@ -138,7 +139,7 @@ public sealed partial class Titanfall2Weapon
 				new Titanfall2DefenseShot( config.Damage, TitanDamage, config.Force, DamageProfile, Range: config.Range ) ) )
 			{
 				var tags = new TagSet(); tags.Add( "bullet" );
-				var damage = SmartBulletDamage( HitDamage( hit.StartPosition, hit.HitPosition, hit.GameObject ), hit.GameObject, smartTarget );
+				var damage = Titanfall2WeaponSmartAmmoController.ComputeBulletDamage( this, HitDamage( hit.StartPosition, hit.HitPosition, hit.GameObject ), hit.GameObject, smartTarget );
 				Titanfall2HostDamage.ShootBullet( hit, damage, config.Force, Attacker, GameObject, tags );
 			}
 			volley[i] = new ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface, NoEvents: i > 0 );

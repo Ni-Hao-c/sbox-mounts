@@ -16,11 +16,12 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 
 	[Sync( SyncFlags.FromHost )] public bool Equipped { get; internal set; }
 
-	// Synced presentation states so 3P viewers and weapons see live wallrun/slide/mantle state.
+	// Synced presentation states so 3P viewers and weapons see live wallrun/wallhang/slide/mantle state.
 	[Sync] public float WallrunSide { get; internal set; }
 	[Sync] public float SlideBlend { get; internal set; }
 	[Sync] public float MantleProgress { get; internal set; }
 	[Sync] public bool IsWallrunning { get; internal set; }
+	[Sync] public bool IsWallhanging { get; internal set; }
 	[Sync] public bool IsSliding { get; internal set; }
 	[Sync] public bool IsMantling { get; internal set; }
 	[Sync] public bool IsSprinting { get; internal set; }
@@ -31,13 +32,15 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 	[Sync] public int DoubleJumpsRemaining { get; internal set; } = 1;
 
 	public bool CombatBusy => (_combat.IsValid() && _combat.CombatBusy) || (_tactical.IsValid() && _tactical.IsPhaseActive);
+	internal bool YieldedToSandbox => _combat.IsValid() && _combat.YieldedToSandbox;
 
 	public Titanfall2PilotViewPoseState ViewPoseState => new(
 		WallrunSide, SlideBlend, MantleProgress, _airborneBlend, HorizontalSpeed,
 		_landingDip, IsWallrunning, IsSliding, IsMantling, IsSprinting,
 		_combat.IsValid() ? _combat.OffhandDip : 0f,
 		_combat.IsValid() ? _combat.MeleeProgress : 0f,
-		_combat.IsValid() ? _combat.MeleeStrikeKind : Titanfall2PilotMeleeStrikeKind.None );
+		_combat.IsValid() ? _combat.MeleeStrikeKind : Titanfall2PilotMeleeStrikeKind.None,
+		IsWallhanging );
 
 	// Camera modifier state (local owner only).
 	float _cameraRoll;
@@ -65,10 +68,11 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 	public static Titanfall2PilotParkour Equip( PlayerController player, string mountIdent = "titanfall2",
 		Titanfall2PilotSettings? settings = null, string packModelPath = null )
 	{
-		if ( !player.IsValid() || !player.Scene.IsValid() ) return null;
+		if ( !player.IsValid() || !player.Scene.IsValid() || player.GameObject.IsDestroyed ) return null;
 		var resolved = settings ?? ResolveSettings( mountIdent );
 		var pack = string.IsNullOrWhiteSpace( packModelPath ) ? ResolvePackModel( mountIdent ) : packModelPath;
 		var parkour = AttachEquipped( player, mountIdent ?? "titanfall2", resolved, pack );
+		if ( !parkour.IsValid() ) return null;
 		player.Scene.GetSystem<Titanfall2JumpKitPersistence>()?.Remember( player, mountIdent ?? "titanfall2", resolved, pack );
 		return parkour;
 	}
@@ -98,27 +102,34 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 		Titanfall2PilotSettings settings, string packModelPath, Titanfall2OffhandOrdnanceConfig? ordnance = null,
 		Titanfall2PilotTacticalKind? tacticalKind = null )
 	{
+		if ( !player.IsValid() || !player.Scene.IsValid() || player.GameObject.IsDestroyed ) return null;
 		var resolvedMount = mountIdent ?? "titanfall2";
-		var parkour = player.GameObject.GetOrAddComponent<Titanfall2PilotParkour>();
+		var parkour = GetOrAddExisting<Titanfall2PilotParkour>( player.GameObject );
 		parkour.MountIdent = resolvedMount;
 		parkour.Settings = settings;
 		parkour.PackModelPath = packModelPath;
 		parkour.Equipped = true;
 		parkour.Enabled = true;
 
-		var mode = player.GameObject.GetOrAddComponent<Titanfall2PilotMoveMode>();
+		var mode = GetOrAddExisting<Titanfall2PilotMoveMode>( player.GameObject );
 		mode.Parkour = parkour;
 		mode.Enabled = true;
 
-		var combat = player.GameObject.GetOrAddComponent<Titanfall2PilotCombat>();
+		var combat = GetOrAddExisting<Titanfall2PilotCombat>( player.GameObject );
 		combat.ConfigureForEquip( parkour, resolvedMount, ordnance );
 		parkour._combat = combat;
 
-		var tactical = player.GameObject.GetOrAddComponent<Titanfall2PilotTactical>();
+		var tactical = GetOrAddExisting<Titanfall2PilotTactical>( player.GameObject );
 		tactical.ConfigureForEquip( parkour, resolvedMount, tacticalKind );
 		parkour._tactical = tactical;
 		return parkour;
 	}
+
+	// FindMode.EverythingInSelf avoids creating duplicates when a component was disabled
+	// (e.g. after Unequip), and callers guard GameObject.IsDestroyed so MoveMode's
+	// [RequireComponent] PlayerController cannot trigger recursive creation during teardown.
+	static T GetOrAddExisting<T>( GameObject target ) where T : Component, new() =>
+		target.Components.Get<T>( FindMode.EverythingInSelf ) ?? target.AddComponent<T>();
 
 	[ConCmd( "tf2_jumpkit", Help = "Toggle Titanfall 2 Pilot Jump Kit parkour on the local player." )]
 	static void ToggleJumpKitCommand()
@@ -140,7 +151,7 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 		}
 	}
 
-	static Titanfall2PilotSettings ResolveSettings( string mountIdent ) =>
+	internal static Titanfall2PilotSettings ResolveSettings( string mountIdent ) =>
 		Sandbox.Mounting.Directory.Get( mountIdent ?? "titanfall2" ) is Titanfall2Mount mount
 			? mount.GetPilotSettings()
 			: Titanfall2PilotSettings.RetailDefault;
@@ -157,6 +168,7 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 
 	protected override void OnUpdate()
 	{
+		if ( GameObject.IsDestroyed ) return;
 		_controller ??= GetComponent<PlayerController>();
 		_combat ??= GetComponent<Titanfall2PilotCombat>();
 		_tactical ??= GetComponent<Titanfall2PilotTactical>();
@@ -169,37 +181,47 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 		}
 
 		// Ensure MoveMode, PilotCombat & PilotTactical stay active on owners after host syncs Equipped = true.
-		if ( !IsProxy && _controller.IsValid() )
+		if ( !IsProxy && Active && _controller.IsValid() && _controller.Active && !GameObject.IsDestroyed )
 		{
-			var mode = GameObject.GetOrAddComponent<Titanfall2PilotMoveMode>();
+			var mode = GetOrAddExisting<Titanfall2PilotMoveMode>( GameObject );
 			mode.Parkour = this;
 			if ( !mode.Enabled ) mode.Enabled = true;
 
 			if ( !_combat.IsValid() || !_combat.Enabled )
 			{
-				_combat = GameObject.GetOrAddComponent<Titanfall2PilotCombat>();
+				_combat = GetOrAddExisting<Titanfall2PilotCombat>( GameObject );
 				_combat.ConfigureForEquip( this, MountIdent );
 			}
 
 			if ( !_tactical.IsValid() || !_tactical.Enabled )
 			{
-				_tactical = GameObject.GetOrAddComponent<Titanfall2PilotTactical>();
+				_tactical = GetOrAddExisting<Titanfall2PilotTactical>( GameObject );
 				_tactical.ConfigureForEquip( this, MountIdent );
 			}
 		}
 
 		var dt = Math.Clamp( Time.Delta, 0f, 0.05f );
-		_airborneBlend = MathX.Lerp( _airborneBlend, IsAirborne && !IsWallrunning && !IsMantling ? 1f : 0f, dt * 10f, true );
+		_airborneBlend = MathX.Lerp( _airborneBlend, IsAirborne && !IsWallrunning && !IsWallhanging && !IsMantling ? 1f : 0f, dt * 10f, true );
 		_thrusterGlow = MathF.Max( 0f, _thrusterGlow - dt * 2.8f );
-		if ( IsWallrunning || IsSliding ) _thrusterGlow = MathF.Max( _thrusterGlow, 0.75f );
+		if ( IsWallrunning || IsWallhanging || IsSliding || IsMantling ) _thrusterGlow = MathF.Max( _thrusterGlow, 0.75f );
 
 		UpdateLandingDip( dt );
+		UpdateWallrunJetAudio();
+		UpdateProxyThirdPersonPose( dt );
 		UpdatePackVisual();
 		UpdateCombatHud();
 	}
 
+	protected override void OnDisabled()
+	{
+		StopWallrunJetSound();
+		ResetThirdPersonBodyVisual();
+	}
+
 	protected override void OnDestroy()
 	{
+		StopWallrunJetSound();
+		ResetThirdPersonBodyVisual();
 		DestroyPackVisual();
 		DestroyCombatHud();
 	}
@@ -217,14 +239,158 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 		_thrusterGlow = Math.Clamp( MathF.Max( _thrusterGlow, intensity ), 0f, 1.5f );
 	}
 
-	internal void PlayMovementSound( string event1P, string event3P = null )
+	GameObject _wallrunJetAudioRoot;
+	Titanfall2SoundEventEmitter _wallrunJetAudio;
+	bool _wallrunJetPlaying;
+
+	internal void PlayMovementSound( string event1P, string event3P = null, string fallbackEvent = null )
 	{
 		if ( Application.IsHeadless || Application.IsDedicatedServer || !Scene.IsValid() ) return;
 		var localFirstPerson = !IsProxy && _controller is { ThirdPerson: false };
 		var name = localFirstPerson ? event1P : (event3P ?? event1P);
-		if ( string.IsNullOrWhiteSpace( name ) ) return;
-		Titanfall2SoundEventEmitter.OneShot( Scene, MountIdent, name, WorldPosition + Vector3.Up * 36f, firstPerson: localFirstPerson );
+		var origin = WorldPosition + Vector3.Up * 36f;
+		if ( !string.IsNullOrWhiteSpace( name )
+			&& Titanfall2SoundEventEmitter.OneShot( Scene, MountIdent, name, origin, firstPerson: localFirstPerson ) )
+			return;
+		if ( !string.IsNullOrWhiteSpace( fallbackEvent ) )
+			Titanfall2SoundEventEmitter.OneShot( Scene, MountIdent, fallbackEvent, origin, firstPerson: localFirstPerson );
 	}
+
+	/// <summary>Plays the audible retail Jump Kit thruster ignition + body burst (double jump, wallkick, equip).</summary>
+	internal void PlayJumpJetBurst()
+	{
+		var settings = Settings;
+		var body1P = string.IsNullOrWhiteSpace( settings.SoundJumpJetBody1P ) ? "Jumpjet_Jump_Body_1P" : settings.SoundJumpJetBody1P;
+		var body3P = string.IsNullOrWhiteSpace( settings.SoundJumpJetBody3P ) ? "Jumpjet_Jump_Body_3P" : settings.SoundJumpJetBody3P;
+		var jet1P = string.IsNullOrWhiteSpace( settings.SoundJumpJetBurst1P ) ? "Jumpjet_Jet_Body_1P" : settings.SoundJumpJetBurst1P;
+		var jet3P = string.IsNullOrWhiteSpace( settings.SoundJumpJetBurst3P ) ? "Jumpjet_Jet_Body_3P" : settings.SoundJumpJetBurst3P;
+		PlayMovementSound( body1P, body3P );
+		PlayMovementSound( jet1P, jet3P );
+	}
+
+	/// <summary>Starts the sustained retail Jumpjet_Wallrun_Body thruster loop while running on a wall.</summary>
+	internal void StartWallrunJetSound()
+	{
+		if ( Application.IsHeadless || Application.IsDedicatedServer || !Scene.IsValid() ) return;
+		StopWallrunJetSound();
+		var localFirstPerson = !IsProxy && _controller is { ThirdPerson: false };
+		var settings = Settings;
+		var name = localFirstPerson
+			? (string.IsNullOrWhiteSpace( settings.SoundWallrunBody1P ) ? "Jumpjet_Wallrun_Body_1P" : settings.SoundWallrunBody1P)
+			: (string.IsNullOrWhiteSpace( settings.SoundWallrunBody3P ) ? "Jumpjet_Wallrun_Body_3P" : settings.SoundWallrunBody3P);
+		_wallrunJetAudioRoot = new GameObject( GameObject, false, "TF2 Wallrun Jet Audio" );
+		_wallrunJetAudioRoot.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+		_wallrunJetAudioRoot.LocalTransform = global::Transform.Zero;
+		_wallrunJetAudio = _wallrunJetAudioRoot.AddComponent<Titanfall2SoundEventEmitter>();
+		_wallrunJetPlaying = _wallrunJetAudio.Play( MountIdent, name, firstPerson: localFirstPerson, WorldPosition + Vector3.Up * 36f, sustain: true );
+		if ( _wallrunJetPlaying ) _wallrunJetAudioRoot.Enabled = true;
+		else DestroyWallrunJetAudioRoot();
+	}
+
+	internal void StopWallrunJetSound()
+	{
+		_wallrunJetPlaying = false;
+		if ( _wallrunJetAudio.IsValid() ) _wallrunJetAudio.StopSustain();
+		DestroyWallrunJetAudioRoot();
+	}
+
+	void DestroyWallrunJetAudioRoot()
+	{
+		if ( _wallrunJetAudioRoot.IsValid() ) _wallrunJetAudioRoot.Destroy();
+		_wallrunJetAudioRoot = null;
+		_wallrunJetAudio = null;
+	}
+
+	void UpdateWallrunJetAudio()
+	{
+		if ( !_wallrunJetPlaying ) return;
+		if ( !IsWallrunning && !IsWallhanging )
+		{
+			StopWallrunJetSound();
+			return;
+		}
+		if ( _wallrunJetAudio.IsValid() ) _wallrunJetAudio.SetSource( WorldPosition + Vector3.Up * 36f );
+	}
+
+	float _proxyBodyPitch;
+	float _proxyBodyRoll;
+
+	/// <summary>
+	/// Applies synced 3P Citizen special_movement_states and body tilt for remote observers (proxies),
+	/// since PilotMoveMode.UpdateAnimator only executes on the owning client.
+	/// </summary>
+	void UpdateProxyThirdPersonPose( float dt )
+	{
+		if ( !IsProxy || Application.IsHeadless || Application.IsDedicatedServer || !_controller.IsValid() ) return;
+		var renderer = _controller.Renderer;
+		if ( !renderer.IsValid() ) return;
+
+		var pose = Titanfall2PilotParkourRules.ComputeThirdPersonBodyPose(
+			IsMantling, MantleProgress, IsWallhanging, IsWallrunning,
+			WallrunSide, WallNormal, IsSliding, SlideBlend, SlideDirection );
+
+		SetBodyAnimatorInt( renderer, "special_movement_states", pose.SpecialMoveState );
+		SetBodyAnimatorBool( renderer, "b_climb", pose.Climbing );
+		if ( IsWallrunning || IsWallhanging || IsMantling )
+			SetBodyAnimatorBool( renderer, "b_grounded", true );
+		if ( IsMantling )
+		{
+			SetBodyAnimatorFloat( renderer, "move_z", 140f );
+			SetBodyAnimatorFloat( renderer, "move_x", 80f );
+			SetBodyAnimatorFloat( renderer, "move_groundspeed", 80f );
+		}
+
+		var rate = Math.Clamp( dt * 14f, 0f, 1f );
+		_proxyBodyPitch = MathX.Lerp( _proxyBodyPitch, pose.PitchDegrees, rate, true );
+		_proxyBodyRoll = MathX.Lerp( _proxyBodyRoll, pose.RollDegrees, rate, true );
+		if ( MathF.Abs( _proxyBodyPitch ) > 0.05f || MathF.Abs( _proxyBodyRoll ) > 0.05f || pose.FacingDirection.HasValue )
+		{
+			var flatForward = renderer.WorldRotation.Forward.WithZ( 0 );
+			var yaw = flatForward.LengthSquared > 0.001f
+				? Rotation.LookAt( flatForward.Normal, Vector3.Up ).Yaw()
+				: WorldRotation.Yaw();
+			if ( pose.FacingDirection is { } facing )
+			{
+				var targetYaw = Rotation.LookAt( facing, Vector3.Up ).Yaw();
+				yaw = Rotation.Slerp( Rotation.FromYaw( yaw ), Rotation.FromYaw( targetYaw ), Math.Clamp( dt * 12f, 0f, 1f ) ).Yaw();
+			}
+			renderer.WorldRotation = Rotation.FromYaw( yaw ) * Rotation.From( new Angles( _proxyBodyPitch, 0f, _proxyBodyRoll ) );
+		}
+	}
+
+	internal void ResetThirdPersonBodyVisual()
+	{
+		_proxyBodyPitch = 0f;
+		_proxyBodyRoll = 0f;
+		if ( !_controller.IsValid() ) return;
+		var renderer = _controller.Renderer;
+		if ( !renderer.IsValid() ) return;
+		SetBodyAnimatorInt( renderer, "special_movement_states", 0 );
+		SetBodyAnimatorBool( renderer, "b_climb", false );
+		var flatForward = renderer.WorldRotation.Forward.WithZ( 0 );
+		if ( flatForward.LengthSquared > 0.001f )
+			renderer.WorldRotation = Rotation.LookAt( flatForward.Normal, Vector3.Up );
+	}
+
+#pragma warning disable CS0618 // Keep AnimGraph1 compatibility alongside Animation.Parameters, matching MoveMode.Animation.cs.
+	internal static void SetBodyAnimatorInt( SkinnedModelRenderer renderer, string name, int value )
+	{
+		if ( renderer.Animation.Graph is not null ) renderer.Animation.Parameters.TrySet( name, value );
+		else renderer.Set( name, value );
+	}
+
+	internal static void SetBodyAnimatorBool( SkinnedModelRenderer renderer, string name, bool value )
+	{
+		if ( renderer.Animation.Graph is not null ) renderer.Animation.Parameters.TrySet( name, value );
+		else renderer.Set( name, value );
+	}
+
+	internal static void SetBodyAnimatorFloat( SkinnedModelRenderer renderer, string name, float value )
+	{
+		if ( renderer.Animation.Graph is not null ) renderer.Animation.Parameters.TrySet( name, value );
+		else renderer.Set( name, value );
+	}
+#pragma warning restore CS0618
 
 	void UpdateLandingDip( float dt )
 	{
@@ -241,10 +407,13 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 
 	void ResetTransientState()
 	{
+		StopWallrunJetSound();
+		ResetThirdPersonBodyVisual();
 		WallrunSide = 0f;
 		SlideBlend = 0f;
 		MantleProgress = 0f;
 		IsWallrunning = false;
+		IsWallhanging = false;
 		IsSliding = false;
 		IsMantling = false;
 		IsSprinting = false;
@@ -281,13 +450,18 @@ public sealed class Titanfall2PilotParkour : Component, ICameraModifier, ITitanf
 		var dt = _lastCameraTime != Time.NowDouble ? Math.Clamp( Time.Delta, 0f, 0.05f ) : 0f;
 		_lastCameraTime = Time.NowDouble;
 
-		// 1. Target camera roll from wallrun & slide (retail 0x1802c1970 projection).
+		// 1. Target camera roll from wallrun, wallhang & slide (retail 0x1802c1970 projection).
 		var targetRoll = 0f;
 		var rollRate = Settings.WallrunViewTiltSpeed * 2.2f;
 		if ( IsWallrunning && WallNormal.LengthSquared > 0.25f )
 		{
 			targetRoll = Titanfall2PilotParkourRules.ComputeWallrunCameraRoll( view.Rotation.Right, WallNormal, adsBlend, Settings );
 			rollRate = Settings.WallrunViewTiltSpeed * 2.2f;
+		}
+		else if ( IsWallhanging && WallNormal.LengthSquared > 0.25f )
+		{
+			targetRoll = Titanfall2PilotParkourRules.ComputeWallhangCameraRoll( view.Rotation.Right, WallNormal, adsBlend );
+			rollRate = Settings.WallrunViewTiltSpeed * 2.4f;
 		}
 		else if ( SlideBlend > 0.01f && SlideDirection.LengthSquared > 0.25f )
 		{

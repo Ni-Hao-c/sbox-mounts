@@ -23,6 +23,7 @@ public readonly record struct Titanfall2PilotSettings
 	public float StandViewHeight { get; init; }
 	public float CrouchHeight { get; init; }
 	public float CrouchViewHeight { get; init; }
+	public float ViewModelDuckOffset { get; init; }
 	public float StepHeight { get; init; }
 
 	// Jump, coyote grace, air strafing & double jump.
@@ -33,10 +34,13 @@ public readonly record struct Titanfall2PilotSettings
 	public float DoubleJumpHeight { get; init; }
 	public float DoubleJumpHorzSpeed { get; init; }
 
-	// Wallrun & wallkick (pilot_mp.set + client.dll wallrun_* ConVars).
+	// Wallrun, wallhang & wallkick (pilot_mp.set + pilot_base.set + client.dll wallrun_* ConVars).
 	public float WallrunTimeLimit { get; init; }
+	public float WallhangTimeLimit { get; init; }
 	public float WallrunMaxSpeedHorizontal { get; init; }
+	public float WallrunMaxSpeedHorizontalBackward { get; init; }
 	public float WallrunAccelerateHorizontal { get; init; }
+	public float WallrunFriction { get; init; }
 	public float WallrunMaxSpeedVertical { get; init; }
 	public float WallrunAccelerateVertical { get; init; }
 	public float WallrunUpWallBoost { get; init; }
@@ -48,6 +52,7 @@ public readonly record struct Titanfall2PilotSettings
 	public float WallrunUpwardAutoPush { get; init; }
 	public float WallrunAllowedWallDist { get; init; }
 	public float WallrunAngleChangeMinCos { get; init; }
+	public float WallrunRotateMaxRate { get; init; }
 	public float WallrunFallAwaySpeed { get; init; }
 	public float WallrunSameWallDist { get; init; }
 	public float WallrunSameWallDot { get; init; }
@@ -86,14 +91,24 @@ public readonly record struct Titanfall2PilotSettings
 	public float TraversalViewLerpInDuration { get; init; }
 
 	// Retail Miles sound event keys from pilot_base.set / pilot_medium.set.
+	// Note: *_Start_* and *_End_* events in general.mbnk are muted (-96 dB) or sound/null;
+	// the audible jump-jet thrusters live in *_Body_* and Jumpjet_Jet_* events.
 	public string SoundJumpJetStart1P { get; init; }
 	public string SoundJumpJetStart3P { get; init; }
+	public string SoundJumpJetBody1P { get; init; }
+	public string SoundJumpJetBody3P { get; init; }
+	public string SoundJumpJetBurst1P { get; init; }
+	public string SoundJumpJetBurst3P { get; init; }
 	public string SoundWallrunStart1P { get; init; }
 	public string SoundWallrunStart3P { get; init; }
+	public string SoundWallrunBody1P { get; init; }
+	public string SoundWallrunBody3P { get; init; }
 	public string SoundWallrunEnd1P { get; init; }
 	public string SoundWallrunEnd3P { get; init; }
 	public string SoundWallrunImpact { get; init; }
 	public string SoundWallrunFootstep { get; init; }
+	public string SoundWallhangStart { get; init; }
+	public string SoundWallhangFall { get; init; }
 	public string SoundSlideBoost1P { get; init; }
 	public string SoundSlideBoost3P { get; init; }
 	public string SoundSlideStart1P { get; init; }
@@ -116,6 +131,7 @@ public readonly record struct Titanfall2PilotSettings
 		StandViewHeight = 60f,
 		CrouchHeight = 47f,
 		CrouchViewHeight = 32f,
+		ViewModelDuckOffset = -0.75f,
 		StepHeight = 18f,
 		JumpHeight = 60f,
 		JumpGracePeriod = 0.2f,
@@ -124,8 +140,11 @@ public readonly record struct Titanfall2PilotSettings
 		DoubleJumpHeight = 60f,
 		DoubleJumpHorzSpeed = 180f,
 		WallrunTimeLimit = 1.75f,
+		WallhangTimeLimit = 4.0f,
 		WallrunMaxSpeedHorizontal = 420f,
+		WallrunMaxSpeedHorizontalBackward = 50f,
 		WallrunAccelerateHorizontal = 1500f,
+		WallrunFriction = 4.0f,
 		WallrunMaxSpeedVertical = 225f,
 		WallrunAccelerateVertical = 360f,
 		WallrunUpWallBoost = 250f,
@@ -137,6 +156,7 @@ public readonly record struct Titanfall2PilotSettings
 		WallrunUpwardAutoPush = 0.65f,
 		WallrunAllowedWallDist = 13f,
 		WallrunAngleChangeMinCos = 0.8f,
+		WallrunRotateMaxRate = 3.0f,
 		WallrunFallAwaySpeed = 70f,
 		WallrunSameWallDist = 100f,
 		WallrunSameWallDot = 0.9f,
@@ -171,12 +191,20 @@ public readonly record struct Titanfall2PilotSettings
 		TraversalViewLerpInDuration = 0.15f,
 		SoundJumpJetStart1P = "Jumpjet_Jump_Start_1P",
 		SoundJumpJetStart3P = "Jumpjet_Jump_Start_3P",
+		SoundJumpJetBody1P = "Jumpjet_Jump_Body_1P",
+		SoundJumpJetBody3P = "Jumpjet_Jump_Body_3P",
+		SoundJumpJetBurst1P = "Jumpjet_Jet_Body_1P",
+		SoundJumpJetBurst3P = "Jumpjet_Jet_Body_3P",
 		SoundWallrunStart1P = "Jumpjet_Wallrun_Start_1P",
 		SoundWallrunStart3P = "Jumpjet_Wallrun_Start_3P",
+		SoundWallrunBody1P = "Jumpjet_Wallrun_Body_1P",
+		SoundWallrunBody3P = "Jumpjet_Wallrun_Body_3P",
 		SoundWallrunEnd1P = "Jumpjet_Wallrun_End_1P",
 		SoundWallrunEnd3P = "Jumpjet_Wallrun_End_3P",
 		SoundWallrunImpact = "wallrun_impact",
 		SoundWallrunFootstep = "human_wallrun_default",
+		SoundWallhangStart = "Default.WallCling_Attach",
+		SoundWallhangFall = "Default.WallCling_Detach",
 		SoundSlideBoost1P = "jumpjet_slide_start_1p",
 		SoundSlideBoost3P = "jumpjet_slide_start_3p",
 		SoundSlideStart1P = "pilotslide_start_default_1p",
@@ -224,13 +252,17 @@ public readonly record struct Titanfall2PilotSettings
 			StandViewHeight = TryParseVectorZ( stand, "viewheight", out var svh ) ? Math.Clamp( svh, 30f, 100f ) : settings.StandViewHeight,
 			CrouchHeight = TryParseVectorZ( crouch, "hull_max", out var ch ) ? Math.Clamp( ch, 24f, 70f ) : settings.CrouchHeight,
 			CrouchViewHeight = TryParseVectorZ( crouch, "viewheight", out var cvh ) ? Math.Clamp( cvh, 16f, 60f ) : settings.CrouchViewHeight,
+			ViewModelDuckOffset = GlobalFloat( "viewmodelDuckOffset", settings.ViewModelDuckOffset, -16f, 16f ),
 			StepHeight = GlobalFloat( "stepheight", settings.StepHeight, 4f, 36f ),
 			JumpHeight = GlobalFloat( "jumpheight", settings.JumpHeight, 20f, 180f ),
 			DoubleJumpHeight = GlobalFloat( "superjumpMaxHeight", settings.DoubleJumpHeight, 20f, 180f ),
 			DoubleJumpHorzSpeed = GlobalFloat( "superjumpHorzSpeed", settings.DoubleJumpHorzSpeed, 0f, 600f ),
 			WallrunTimeLimit = GlobalFloat( "wallrun_timeLimit", settings.WallrunTimeLimit, 0.5f, 8f ),
+			WallhangTimeLimit = GlobalFloat( "wallrun_hangTimeLimit", settings.WallhangTimeLimit, 0.5f, 20f ),
 			WallrunMaxSpeedHorizontal = GlobalFloat( "wallrunMaxSpeedHorizontal", settings.WallrunMaxSpeedHorizontal, 200f, 1000f ),
+			WallrunMaxSpeedHorizontalBackward = GlobalFloat( "wallrunMaxSpeedHorizontalBackward", settings.WallrunMaxSpeedHorizontalBackward, 0f, 300f ),
 			WallrunAccelerateHorizontal = GlobalFloat( "wallrunAccelerateHorizontal", settings.WallrunAccelerateHorizontal, 200f, 5000f ),
+			WallrunFriction = GlobalFloat( "wallrunFriction", settings.WallrunFriction, 0.5f, 20f ),
 			WallrunMaxSpeedVertical = GlobalFloat( "wallrunMaxSpeedVertical", settings.WallrunMaxSpeedVertical, 50f, 600f ),
 			WallrunAccelerateVertical = GlobalFloat( "wallrunAccelerateVertical", settings.WallrunAccelerateVertical, 50f, 2000f ),
 			WallrunJumpOutwardSpeed = GlobalFloat( "wallrunJumpOutwardSpeed", settings.WallrunJumpOutwardSpeed, 50f, 600f ),
@@ -243,11 +275,19 @@ public readonly record struct Titanfall2PilotSettings
 			SlideFovLerpOutTime = GlobalFloat( "slideFOVLerpOutTime", settings.SlideFovLerpOutTime, 0.05f, 1f ),
 			SoundJumpJetStart1P = GlobalString( "sound_jumpjet_jump_start_1p", settings.SoundJumpJetStart1P ),
 			SoundJumpJetStart3P = GlobalString( "sound_jumpjet_jump_start_3p", settings.SoundJumpJetStart3P ),
+			SoundJumpJetBody1P = GlobalString( "sound_jumpjet_jump_body_1p", settings.SoundJumpJetBody1P ),
+			SoundJumpJetBody3P = GlobalString( "sound_jumpjet_jump_body_3p", settings.SoundJumpJetBody3P ),
+			SoundJumpJetBurst1P = GlobalString( "sound_jumpjet_jet_body_1p", settings.SoundJumpJetBurst1P ),
+			SoundJumpJetBurst3P = GlobalString( "sound_jumpjet_jet_body_3p", settings.SoundJumpJetBurst3P ),
 			SoundWallrunStart1P = GlobalString( "sound_jumpjet_wallrun_start_1p", settings.SoundWallrunStart1P ),
 			SoundWallrunStart3P = GlobalString( "sound_jumpjet_wallrun_start_3p", settings.SoundWallrunStart3P ),
+			SoundWallrunBody1P = GlobalString( "sound_jumpjet_wallrun_body_1p", settings.SoundWallrunBody1P ),
+			SoundWallrunBody3P = GlobalString( "sound_jumpjet_wallrun_body_3p", settings.SoundWallrunBody3P ),
 			SoundWallrunEnd1P = GlobalString( "sound_jumpjet_wallrun_finish_1p", settings.SoundWallrunEnd1P ),
 			SoundWallrunEnd3P = GlobalString( "sound_jumpjet_wallrun_finish_3p", settings.SoundWallrunEnd3P ),
 			SoundWallrunImpact = GlobalString( "sound_wallrunImpact", settings.SoundWallrunImpact ),
+			SoundWallhangStart = GlobalString( "sound_wallHangStart", settings.SoundWallhangStart ),
+			SoundWallhangFall = GlobalString( "sound_wallHangFall", settings.SoundWallhangFall ),
 			SoundGroundImpact = GlobalString( "sound_groundImpact", settings.SoundGroundImpact )
 		};
 	}

@@ -8,7 +8,7 @@ public sealed partial class Titanfall2Npc
 		if ( !UsesEngineSchedules || Dead || Seat is { IsOccupied: true } ) return null;
 		RefreshCombatContact( force: true );
 		if ( CanFight && HasCombatContact ) return GetSchedule<Titanfall2EngageSchedule>();
-		CombatAction = CombatActions.Idle;
+		ResetCombatActionIdle();
 		return base.SelectSchedule();
 	}
 }
@@ -24,7 +24,7 @@ public sealed class Titanfall2EngageSchedule : BaseSchedule
 	protected override void OnEnd()
 	{
 		if ( Npc is Titanfall2Npc actor ) actor.CancelNpcOrdnance();
-		Npc.Movement?.Stop();
+		if ( Npc is not Titanfall2Npc { AiOwnsMovement: true } ) Npc.Movement?.Stop();
 		Npc.Animation.ClearLookTarget();
 	}
 }

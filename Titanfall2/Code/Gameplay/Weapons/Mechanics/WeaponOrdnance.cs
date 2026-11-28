@@ -12,6 +12,8 @@ public record struct Titanfall2OrdnanceProfile
 	public float ThrowSeconds { get; set; }
 	public float ReleaseCycle { get; set; }
 	public float ReadyCycle { get; set; }
+	public float DetonateSeconds { get; set; }
+	public float DetonateCycle { get; set; }
 	public float MaxCookSeconds { get; set; }
 	public float FuseSeconds { get; set; }
 	public float PitchOffset { get; set; }
@@ -37,6 +39,8 @@ public record struct Titanfall2OrdnanceProfile
 
 	internal readonly float RemainingFuse( double preparedAt, double now ) => FuseSeconds > 0
 		? (float)Math.Max( 0.001, FuseSeconds - Math.Max( 0, now - preparedAt ) ) : 0;
+	internal readonly bool HasDetonationTiming => float.IsFinite( DetonateSeconds ) && DetonateSeconds is > 0 and <= 5
+		&& float.IsFinite( DetonateCycle ) && DetonateCycle is > 0 and <= 1;
 	internal readonly Vector3 ThrowDirection( Vector3 direction )
 	{
 		var angles = Rotation.LookAt( direction.Normal ).Angles();
@@ -96,12 +100,14 @@ internal static class Titanfall2OrdnanceData
 	}
 	internal static Titanfall2OrdnanceProfile WithModelTiming( Titanfall2Mdl53Reader.ParsedModel model, Titanfall2OrdnanceProfile profile )
 	{
-		var toss = model.Sequences.FirstOrDefault( sequence => sequence.ActivityName == "ACT_VM_TOSS" );
-		var prep = model.Sequences.FirstOrDefault( sequence => sequence.ActivityName == "ACT_VM_TOSS_PREP_PULLOUT" );
+		var sequences = ModelLoader.ResolvePilotOrdnanceSequences( model );
+		var toss = sequences.Toss;
+		var prep = sequences.Pullout;
 		if ( toss is null || prep is null ) return profile;
 		var release = toss.Events.FirstOrDefault( item => item.Name == "AE_WPN_TOSS_RELEASE" || string.IsNullOrEmpty( item.Name ) && item.Event == 78 );
 		if ( release is null || !float.IsFinite( release.Cycle ) || release.Cycle is < 0 or > 1 ) return profile;
 		var ready = toss.Events.FirstOrDefault( item => item.Name == "AE_WPN_READYTOFIRE" || string.IsNullOrEmpty( item.Name ) && item.Event == 76 );
+		var detonate = sequences.Detonate?.Events.FirstOrDefault( item => item.Name == "AE_WPN_PRIMARYATTACK" );
 		float Duration( Titanfall2Mdl53Reader.SequenceInfo sequence )
 		{
 			if ( sequence.AnimationIndices.Length == 0 || sequence.AnimationIndices[0] < 0 || sequence.AnimationIndices[0] >= model.Animations.Length ) return 0;
@@ -111,6 +117,7 @@ internal static class Titanfall2OrdnanceData
 		return profile with
 		{
 			HasModelTiming = true, ReleaseCycle = release.Cycle, ReadyCycle = ready?.Cycle ?? 1,
+			DetonateSeconds = detonate is not null ? Duration( sequences.Detonate ) : 0, DetonateCycle = detonate?.Cycle ?? 0,
 			PulloutSeconds = profile.PulloutSeconds > 0 ? profile.PulloutSeconds : Duration( prep ),
 			ThrowSeconds = profile.ThrowSeconds > 0 ? profile.ThrowSeconds : Duration( toss )
 		};

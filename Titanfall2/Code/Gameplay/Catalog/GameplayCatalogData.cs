@@ -51,6 +51,7 @@ internal sealed record Titanfall2ActorCatalogEntry
 	public string VoiceProfile { get; init; }
 	public Chassis Chassis { get; init; } = Chassis.None;
 	public string ProjectileTrailOverride { get; init; }
+	public bool DualFaction { get; init; }
 }
 
 /// <summary>
@@ -165,6 +166,40 @@ internal static class Titanfall2GameplayCatalogData
 		Integrated( "integrated:droneplasma", "mp_weapon_droneplasma", 1100, [0.45f, 0.8f, 1f] )
 	];
 
+	internal const string AllyBucket = "ally";
+	internal const string EnemyBucket = "enemy";
+	internal const string NeutralBucket = "neutral";
+	const string AllyFaction = "militia";
+	const string EnemyFaction = "imc";
+	const string AllyTitlePrefix = "[Ally] ";
+	const string EnemyTitlePrefix = "[Enemy] ";
+	const string NeutralTitlePrefix = "[Neutral] ";
+
+	internal static string ActorSideBucket( string faction ) =>
+		Titanfall2Npc.IsNeutralFaction( faction ) ? NeutralBucket
+		: Titanfall2Npc.IsAllyFaction( faction ) ? AllyBucket
+		: EnemyBucket;
+
+	internal static string ActorPrefabPath( Titanfall2ActorCatalogEntry entry ) =>
+		$"entities/{(entry.Titan ? "titans" : "npcs")}/{ActorSideBucket( entry.Faction )}/{entry.Id}";
+
+	internal static string FormatActorTitle( string title, string faction )
+	{
+		if ( string.IsNullOrWhiteSpace( title ) ) return title;
+		if ( title.StartsWith( AllyTitlePrefix, StringComparison.OrdinalIgnoreCase )
+			|| title.StartsWith( EnemyTitlePrefix, StringComparison.OrdinalIgnoreCase )
+			|| title.StartsWith( NeutralTitlePrefix, StringComparison.OrdinalIgnoreCase ) )
+			return title;
+
+		var prefix = ActorSideBucket( faction ) switch
+		{
+			AllyBucket => AllyTitlePrefix,
+			NeutralBucket => NeutralTitlePrefix,
+			_ => EnemyTitlePrefix
+		};
+		return prefix + title;
+	}
+
 	internal static readonly Titanfall2ActorCatalogEntry[] DefaultActors =
 	[
 		new() { Id = "npc_soldier", Title = "IMC Grunt", Model = "models/humans/grunts/imc_grunt_rifle.mdl", Weapon = "rspn101", Health = 100, Speed = 155, VoiceProfile = "imc_grunt" },
@@ -172,35 +207,35 @@ internal static class Titanfall2GameplayCatalogData
 		new() { Id = "npc_stalker", Title = "Stalker", Model = "models/robots/stalker/robot_stalker.mdl", Weapon = "rspn101", Health = 240, Speed = 105, VoiceProfile = "spectre" },
 		new() { Id = "npc_militia_grunt", Title = "Militia Grunt", Model = "models/humans/grunts/mlt_grunt_rifle.mdl", Weapon = "rspn101", Health = 100, Speed = 155, Faction = "militia", VoiceProfile = "militia_grunt" },
 		new() { Id = "npc_imc_heavy", Title = "IMC Heavy Grunt", Model = "models/humans/grunts/imc_grunt_lmg.mdl", Weapon = "lmg", Health = 160, Speed = 115, VoiceProfile = "imc_grunt" },
-		new() { Id = "npc_reaper", Title = "Reaper", Model = "models/robots/super_spectre/super_spectre_v1.mdl", Weapon = "integrated:super_spectre", Health = 650, Speed = 135, Height = 136, Radius = 28, ProjectileTrailOverride = "P_plasma_proj_MD_DLight" },
+		new() { Id = "npc_reaper", Title = "Reaper", Model = "models/robots/super_spectre/super_spectre_v1.mdl", Weapon = "integrated:super_spectre", Health = 650, Speed = 135, Height = 136, Radius = 28, ProjectileTrailOverride = "P_plasma_proj_MD_DLight", DualFaction = true },
 		new() { Id = "npc_marvin", Title = "MRVN", Model = "models/robots/marvin/marvin.mdl", Health = 85, Speed = 0, Faction = "neutral" },
-		new() { Id = "npc_plasma_turret", Title = "Plasma Turret", Model = "models/robots/turret_plasma/turret_plasma.mdl", Weapon = "integrated:turretplasma", Health = 350, Speed = 0, Height = 54, Radius = 25, Navigation = Titanfall2Npc.Navigation.Stationary },
-		new() { Id = "npc_attack_drone", Title = "Attack Drone", Model = "models/robots/drone_air_attack/drone_air_attack_plasma.mdl", Weapon = "integrated:droneplasma", Health = 120, Speed = 240, Height = 36, Radius = 23, Navigation = Titanfall2Npc.Navigation.Hover, VoiceProfile = "drone" },
-		new() { Id = "npc_prowler", Title = "Prowler", Model = "models/creatures/prowler/r2_prowler.mdl", Health = 180, Speed = 235, Faction = "wildlife", Height = 52, Radius = 24, MeleeDamage = 36 },
+		new() { Id = "npc_plasma_turret", Title = "Plasma Turret", Model = "models/robots/turret_plasma/turret_plasma.mdl", Weapon = "integrated:turretplasma", Health = 350, Speed = 0, Height = 54, Radius = 25, Navigation = Titanfall2Npc.Navigation.Stationary, DualFaction = true },
+		new() { Id = "npc_attack_drone", Title = "Attack Drone", Model = "models/robots/drone_air_attack/drone_air_attack_plasma.mdl", Weapon = "integrated:droneplasma", Health = 120, Speed = 240, Height = 36, Radius = 23, Navigation = Titanfall2Npc.Navigation.Hover, VoiceProfile = "drone", DualFaction = true },
+		new() { Id = "npc_prowler", Title = "Prowler", Model = "models/creatures/prowler/r2_prowler.mdl", Health = 180, Speed = 235, Faction = "wildlife", Height = 52, Radius = 24, MeleeDamage = 36, DualFaction = true },
 		new() { Id = "npc_imc_smg", Title = "IMC SMG Grunt", Model = "models/humans/grunts/imc_grunt_smg.mdl", Weapon = "r97", Health = 100, Speed = 175, VoiceProfile = "imc_grunt" },
 		new() { Id = "npc_imc_shotgun", Title = "IMC Shotgun Grunt", Model = "models/humans/grunts/imc_grunt_shotgun.mdl", Weapon = "shotgun", Health = 140, Speed = 160, VoiceProfile = "imc_grunt" },
-		new() { Id = "npc_imc_captain", Title = "IMC Shield Captain", Model = "models/humans/grunts/imc_grunt_shield_captain.mdl", Weapon = "lmg", Health = 220, Speed = 125, Shield = 100, VoiceProfile = "imc_grunt" },
+		new() { Id = "npc_imc_captain", Title = "IMC Shield Captain", Model = "models/humans/grunts/imc_grunt_shield_captain.mdl", Weapon = "lmg", Health = 220, Speed = 125, Shield = 100, VoiceProfile = "imc_grunt", DualFaction = true },
 		new() { Id = "npc_militia_heavy", Title = "Militia Heavy Grunt", Model = "models/humans/grunts/mlt_grunt_lmg.mdl", Weapon = "lmg", Health = 160, Speed = 115, Faction = "militia", VoiceProfile = "militia_grunt" },
 		new() { Id = "npc_militia_smg", Title = "Militia SMG Grunt", Model = "models/humans/grunts/mlt_grunt_smg.mdl", Weapon = "car", Health = 100, Speed = 175, Faction = "militia", VoiceProfile = "militia_grunt" },
 		new() { Id = "npc_militia_shotgun", Title = "Militia Shotgun Grunt", Model = "models/humans/grunts/mlt_grunt_shotgun.mdl", Weapon = "shotgun", Health = 140, Speed = 160, Faction = "militia", VoiceProfile = "militia_grunt" },
-		new() { Id = "npc_stalker_red", Title = "Red Stalker", Model = "models/robots/stalker/robot_stalker_red.mdl", Weapon = "lstar", Health = 320, Speed = 125, VoiceProfile = "spectre" },
+		new() { Id = "npc_stalker_red", Title = "Red Stalker", Model = "models/robots/stalker/robot_stalker_red.mdl", Weapon = "lstar", Health = 320, Speed = 125, VoiceProfile = "spectre", DualFaction = true },
 		new() { Id = "npc_imc_pilot", Title = "IMC Pilot", Model = "models/humans/pilots/pilot_medium_stalker_m.mdl", Weapon = "car", Health = 250, Speed = 240 },
 		new() { Id = "npc_militia_pilot", Title = "Militia Pilot", Model = "models/humans/pilots/pilot_medium_stalker_f.mdl", Weapon = "rspn101", Health = 250, Speed = 240, Faction = "militia" },
-		new() { Id = "npc_corporate_spectre", Title = "Corporate Spectre", Model = "models/robots/spectre/spectre_corporate.mdl", Weapon = "alternator_smg", Health = 180, Speed = 150 },
-		new() { Id = "npc_mossy_stalker", Title = "Overgrown Stalker", Model = "models/robots/stalker/robot_stalker_mossy.mdl", Weapon = "shotgun", Health = 280, Speed = 120 },
+		new() { Id = "npc_corporate_spectre", Title = "Corporate Spectre", Model = "models/robots/spectre/spectre_corporate.mdl", Weapon = "alternator_smg", Health = 180, Speed = 150, DualFaction = true },
+		new() { Id = "npc_mossy_stalker", Title = "Overgrown Stalker", Model = "models/robots/stalker/robot_stalker_mossy.mdl", Weapon = "shotgun", Health = 280, Speed = 120, DualFaction = true },
 		new() { Id = "npc_militia_spectre", Title = "Militia Spectre", Model = "models/robots/spectre/imc_spectre.mdl", Weapon = "car", Health = 180, Speed = 155, Faction = "militia" },
 		new() { Id = "npc_militia_stalker", Title = "Militia Stalker", Model = "models/robots/stalker/robot_stalker.mdl", Weapon = "shotgun", Health = 280, Speed = 120, Faction = "militia" },
 		new() { Id = "npc_mossy_marvin", Title = "Overgrown MRVN", Model = "models/robots/marvin/marvin_mossy.mdl", Health = 85, Speed = 0, Faction = "neutral" },
-		// Drivable Titans
-		new() { Id = "monarch", Title = "Monarch", Model = "models/titans/medium/titan_medium_vanguard.mdl", Weapon = "mp_titanweapon_xo16_shorty", Health = 10000, Speed = 200, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Monarch },
-		new() { Id = "bt7274", Title = "BT-7274", Model = "models/titans/buddy/titan_buddy.mdl", Weapon = "mp_titanweapon_xo16_vanguard", Health = 11000, Speed = 190, Faction = "militia", Height = 284, Radius = 54, Shield = 1750, Titan = true, VoiceProfile = "bt7274", Chassis = Chassis.Monarch },
-		new() { Id = "legion", Title = "Legion", Model = "models/titans/heavy/titan_heavy_deadbolt.mdl", Weapon = "mp_titanweapon_predator_cannon", Health = 12500, Speed = 150, Height = 296, Radius = 61, Shield = 2200, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Legion },
-		new() { Id = "ion", Title = "Ion", Model = "models/titans/medium/titan_medium_wraith.mdl", Weapon = "mp_titanweapon_particle_accelerator", Health = 10000, Speed = 195, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Ion },
-		new() { Id = "tone", Title = "Tone", Model = "models/titans/medium/titan_medium_ajax.mdl", Weapon = "mp_titanweapon_sticky_40mm", Health = 10000, Speed = 185, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Tone },
-		new() { Id = "scorch", Title = "Scorch", Model = "models/titans/heavy/titan_heavy_ogre.mdl", Weapon = "mp_titanweapon_meteor", Health = 12500, Speed = 145, Height = 296, Radius = 61, Shield = 2200, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Scorch },
-		new() { Id = "northstar", Title = "Northstar", Model = "models/titans/light/titan_light_raptor.mdl", Weapon = "mp_titanweapon_sniper", Health = 7500, Speed = 220, Height = 273, Radius = 49, Shield = 1500, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Northstar },
-		new() { Id = "ronin", Title = "Ronin", Model = "models/titans/light/titan_light_locust.mdl", Weapon = "mp_titanweapon_leadwall", Health = 7500, Speed = 235, Height = 273, Radius = 49, Shield = 1500, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Ronin },
-		// Frontier Defense Titans
+		// Drivable Titans (dual-faction: both Ally and Enemy mounts)
+		new() { Id = "monarch", Title = "Monarch", Model = "models/titans/medium/titan_medium_vanguard.mdl", Weapon = "mp_titanweapon_xo16_shorty", Health = 10000, Speed = 200, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Monarch, DualFaction = true },
+		new() { Id = "bt7274", Title = "BT-7274", Model = "models/titans/buddy/titan_buddy.mdl", Weapon = "mp_titanweapon_xo16_vanguard", Health = 11000, Speed = 190, Faction = "militia", Height = 284, Radius = 54, Shield = 1750, Titan = true, VoiceProfile = "bt7274", Chassis = Chassis.Monarch, DualFaction = true },
+		new() { Id = "legion", Title = "Legion", Model = "models/titans/heavy/titan_heavy_deadbolt.mdl", Weapon = "mp_titanweapon_predator_cannon", Health = 12500, Speed = 150, Height = 296, Radius = 61, Shield = 2200, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Legion, DualFaction = true },
+		new() { Id = "ion", Title = "Ion", Model = "models/titans/medium/titan_medium_wraith.mdl", Weapon = "mp_titanweapon_particle_accelerator", Health = 10000, Speed = 195, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Ion, DualFaction = true },
+		new() { Id = "tone", Title = "Tone", Model = "models/titans/medium/titan_medium_ajax.mdl", Weapon = "mp_titanweapon_sticky_40mm", Health = 10000, Speed = 185, Height = 284, Radius = 54, Shield = 1600, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Tone, DualFaction = true },
+		new() { Id = "scorch", Title = "Scorch", Model = "models/titans/heavy/titan_heavy_ogre.mdl", Weapon = "mp_titanweapon_meteor", Health = 12500, Speed = 145, Height = 296, Radius = 61, Shield = 2200, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Scorch, DualFaction = true },
+		new() { Id = "northstar", Title = "Northstar", Model = "models/titans/light/titan_light_raptor.mdl", Weapon = "mp_titanweapon_sniper", Health = 7500, Speed = 220, Height = 273, Radius = 49, Shield = 1500, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Northstar, DualFaction = true },
+		new() { Id = "ronin", Title = "Ronin", Model = "models/titans/light/titan_light_locust.mdl", Weapon = "mp_titanweapon_leadwall", Health = 7500, Speed = 235, Height = 273, Radius = 49, Shield = 1500, Titan = true, VoiceProfile = "titan", Chassis = Chassis.Ronin, DualFaction = true },
+		// Frontier Defense Titans (Enemy only)
 		new() { Id = "arc_titan", Title = "Arc Titan", Model = "models/titans/light/titan_light_locust.mdl", Health = 7500, Speed = 218, Height = 273, Radius = 49, Shield = 1500, Titan = true, Role = Titanfall2Npc.FrontierRole.ArcTitan, VoiceProfile = "titan" },
 		new() { Id = "nuke_titan", Title = "Nuke Titan", Model = "models/titans/heavy/titan_heavy_deadbolt.mdl", Weapon = "mp_titanweapon_predator_cannon", Health = 12500, Speed = 171, Height = 296, Radius = 61, Shield = 2200, Titan = true, Role = Titanfall2Npc.FrontierRole.NukeTitan, VoiceProfile = "titan" },
 		new() { Id = "elite_monarch", Title = "Elite Monarch", Model = "models/titans/medium/titan_medium_vanguard.mdl", Weapon = "mp_titanweapon_xo16_vanguard", Health = 12000, Speed = 215, Height = 284, Radius = 54, Shield = 7500, Titan = true, Role = Titanfall2Npc.FrontierRole.EliteMonarch, VoiceProfile = "titan" },
@@ -227,19 +262,74 @@ internal static class Titanfall2GameplayCatalogData
 
 	internal static IReadOnlyList<Titanfall2ActorCatalogEntry> LoadActors( Titanfall2ContentSnapshot snapshot )
 	{
-		if ( !Titanfall2RetailScriptReader.TryReadJsonOverlay<List<Titanfall2ActorCatalogEntry>>( snapshot, ActorsOverlayFile, out var overlay ) || overlay.Count == 0 )
-			return DefaultActors;
-
 		var merged = DefaultActors.ToList();
-		var indexById = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
-		for ( var i = 0; i < merged.Count; i++ ) indexById[merged[i].Id] = i;
-
-		foreach ( var entry in overlay )
+		if ( Titanfall2RetailScriptReader.TryReadJsonOverlay<List<Titanfall2ActorCatalogEntry>>( snapshot, ActorsOverlayFile, out var overlay ) && overlay.Count > 0 )
 		{
-			if ( entry is null || string.IsNullOrWhiteSpace( entry.Id ) || string.IsNullOrWhiteSpace( entry.Model ) ) continue;
-			if ( indexById.TryGetValue( entry.Id, out var existing ) ) merged[existing] = entry;
-			else { indexById[entry.Id] = merged.Count; merged.Add( entry ); }
+			var indexById = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
+			for ( var i = 0; i < merged.Count; i++ ) indexById[merged[i].Id] = i;
+
+			foreach ( var entry in overlay )
+			{
+				if ( entry is null || string.IsNullOrWhiteSpace( entry.Id ) || string.IsNullOrWhiteSpace( entry.Model ) ) continue;
+				if ( indexById.TryGetValue( entry.Id, out var existing ) ) merged[existing] = entry;
+				else { indexById[entry.Id] = merged.Count; merged.Add( entry ); }
+			}
 		}
-		return merged;
+
+		return ExpandActors( merged );
+	}
+
+	static List<Titanfall2ActorCatalogEntry> ExpandActors( List<Titanfall2ActorCatalogEntry> source )
+	{
+		var reservedIds = source.Select( x => x.Id ).ToHashSet( StringComparer.OrdinalIgnoreCase );
+		var expanded = new List<Titanfall2ActorCatalogEntry>( source.Count + 16 );
+
+		foreach ( var entry in source )
+		{
+			expanded.Add( entry with { Title = FormatActorTitle( entry.Title, entry.Faction ) } );
+
+			if ( !entry.DualFaction || Titanfall2Npc.IsNeutralFaction( entry.Faction ) )
+				continue;
+
+			var counterpartIsEnemy = Titanfall2Npc.IsAllyFaction( entry.Faction );
+			var counterpartId = entry.Id + (counterpartIsEnemy ? "_enemy" : "_ally");
+			if ( !reservedIds.Add( counterpartId ) )
+				continue;
+
+			var counterpartFaction = counterpartIsEnemy ? EnemyFaction : AllyFaction;
+			var counterpartVoice = SwapGruntVoice( entry.VoiceProfile, counterpartIsEnemy );
+			var counterpartTitle = FormatActorTitle( StripFactionLabel( entry.Title ), counterpartFaction );
+
+			expanded.Add( entry with
+			{
+				Id = counterpartId,
+				Title = counterpartTitle,
+				Faction = counterpartFaction,
+				VoiceProfile = counterpartVoice,
+				DualFaction = false
+			} );
+		}
+
+		return expanded;
+	}
+
+	static string SwapGruntVoice( string voiceProfile, bool toEnemy ) => voiceProfile switch
+	{
+		"imc_grunt" when !toEnemy => "militia_grunt",
+		"militia_grunt" when toEnemy => "imc_grunt",
+		_ => voiceProfile
+	};
+
+	static string StripFactionLabel( string title )
+	{
+		if ( string.IsNullOrWhiteSpace( title ) ) return title;
+
+		var cleaned = title.Trim();
+		foreach ( var prefix in new[] { AllyTitlePrefix, EnemyTitlePrefix, NeutralTitlePrefix, "IMC ", "Militia " } )
+		{
+			if ( cleaned.StartsWith( prefix, StringComparison.OrdinalIgnoreCase ) )
+				cleaned = cleaned[prefix.Length..].TrimStart();
+		}
+		return cleaned;
 	}
 }

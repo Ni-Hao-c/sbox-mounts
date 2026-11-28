@@ -15,8 +15,14 @@ internal static class Titanfall2PhaseDimension
 	internal const string RealspaceTag = "tf2-realspace";
 
 	static readonly Dictionary<CameraComponent, int> _cameraPhaseRefCount = [];
+	static readonly Dictionary<CameraComponent, (bool Realspace, bool Projectile)> _cameraOriginalExclusions = [];
 
-	internal static void ClearCameraRefs() => _cameraPhaseRefCount.Clear();
+	internal static void ClearCameraRefs()
+	{
+		foreach ( var camera in _cameraPhaseRefCount.Keys ) RestoreCameraExclusions( camera );
+		_cameraPhaseRefCount.Clear();
+		_cameraOriginalExclusions.Clear();
+	}
 
 	/// <summary>
 	/// Ensures physics collision pairs ignore contacts between phased entities and realspace actors/projectiles
@@ -82,13 +88,15 @@ internal static class Titanfall2PhaseDimension
 		if ( active )
 		{
 			var cam = scene?.Camera;
-			if ( !cam.IsValid() ) return;
-			if ( trackedCamera == cam ) return;
+			if ( !cam.IsValid() ) { ReleaseCamera( ref trackedCamera ); return; }
+			if ( trackedCamera == cam && _cameraPhaseRefCount.ContainsKey( cam ) ) return;
 			ReleaseCamera( ref trackedCamera );
 			RefreshRealspaceTags( scene );
 
 			trackedCamera = cam;
 			var count = _cameraPhaseRefCount.GetValueOrDefault( cam ) + 1;
+			if ( count == 1 )
+				_cameraOriginalExclusions[cam] = (cam.RenderExcludeTags.Has( RealspaceTag ), cam.RenderExcludeTags.Has( "projectile" ));
 			_cameraPhaseRefCount[cam] = count;
 			cam.RenderExcludeTags.Add( RealspaceTag );
 			cam.RenderExcludeTags.Add( "projectile" );
@@ -108,20 +116,30 @@ internal static class Titanfall2PhaseDimension
 		if ( !cam.IsValid() )
 		{
 			_cameraPhaseRefCount.Remove( cam );
+			_cameraOriginalExclusions.Remove( cam );
 			return;
 		}
+		// A mount reset already restored and cleared this reference; do not touch host tags.
+		if ( !_cameraPhaseRefCount.TryGetValue( cam, out var count ) ) return;
 
-		var next = Math.Max( 0, _cameraPhaseRefCount.GetValueOrDefault( cam ) - 1 );
+		var next = Math.Max( 0, count - 1 );
 		if ( next == 0 )
 		{
 			_cameraPhaseRefCount.Remove( cam );
-			cam.RenderExcludeTags.Remove( RealspaceTag );
-			cam.RenderExcludeTags.Remove( "projectile" );
+			RestoreCameraExclusions( cam );
+			_cameraOriginalExclusions.Remove( cam );
 		}
 		else
 		{
 			_cameraPhaseRefCount[cam] = next;
 		}
+	}
+
+	static void RestoreCameraExclusions( CameraComponent camera )
+	{
+		if ( !camera.IsValid() || !_cameraOriginalExclusions.TryGetValue( camera, out var original ) ) return;
+		if ( !original.Realspace ) camera.RenderExcludeTags.Remove( RealspaceTag );
+		if ( !original.Projectile ) camera.RenderExcludeTags.Remove( "projectile" );
 	}
 
 	/// <summary>Detaches and destroys any sticky projectiles (Firestar, Arc Star, Satchel) attached to a phasing entity.</summary>

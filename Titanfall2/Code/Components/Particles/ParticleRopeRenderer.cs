@@ -59,6 +59,7 @@ public sealed class Titanfall2ParticleRopeRenderer : ParticleController
 	protected override void OnPreRender()
 	{
 		if ( !_line.IsValid() || _definition is null || !ParticleEffect.IsValid() ) return;
+		_line.Tags.SetFrom( GameObject.Tags );
 		// Controller callbacks are not ordered. Read particles only after all
 		// post-step PCF operators have finished, including endpoint alpha remaps.
 		_ordered.Clear();

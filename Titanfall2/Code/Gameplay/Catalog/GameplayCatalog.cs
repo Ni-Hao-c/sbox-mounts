@@ -34,12 +34,14 @@ public partial class Titanfall2Mount
 				catalog.Add( new( ResourceType.Model, npc.Model + ".infantry", new ModelLoader( source, separateResources: true, infantryAnimations: true ) ) );
 			if ( models.Add( npc.Model + ".preview" ) )
 				catalog.Add( new( ResourceType.Model, npc.Model + ".preview", new ModelLoader( source, separateResources: true, infantryAnimations: true, previewOnly: true ) ) );
+			var side = Titanfall2GameplayCatalogData.ActorSideBucket( npc.Faction );
 			var loader = new Titanfall2ActorPrefabLoader( npc, weapon );
 			loader.Tags.Add( "npc" );
+			loader.Tags.Add( side );
 			if ( npc.Role != Titanfall2Npc.FrontierRole.None ) loader.Tags.Add( "frontier-defense" );
 			if ( npc.Titan ) loader.Tags.Add( "titan" );
 			else if ( npc.Navigation == Titanfall2Npc.Navigation.Ground && npc.Height >= 72 && npc.MeleeDamage == 0 ) loader.Tags.Add( "humanoid" );
-			catalog.Add( new( ResourceType.PrefabFile, $"entities/{(npc.Titan ? "titans" : "npcs")}/{npc.Id}", loader ) );
+			catalog.Add( new( ResourceType.PrefabFile, Titanfall2GameplayCatalogData.ActorPrefabPath( npc ), loader ) );
 		}
 
 		var jumpKitModel = models.Contains( Titanfall2JumpKitItem.DefaultWorldModel ) ? Titanfall2JumpKitItem.DefaultWorldModel
@@ -53,6 +55,41 @@ public partial class Titanfall2Mount
 			kitLoader.Tags.Add( "equipment" );
 			kitLoader.Tags.Add( "pilot" );
 			catalog.Add( new( ResourceType.PrefabFile, "entities/items/pilot_jump_kit", kitLoader ) );
+		}
+
+		// Most retail tacticals have an empty-handed world model. Use a visible retail pack as
+		// their pickup container; the Pulse Blade can use its actual kunai world model.
+		foreach ( var kind in new[] { Titanfall2PilotTacticalKind.Stim, Titanfall2PilotTacticalKind.Grapple,
+			Titanfall2PilotTacticalKind.PhaseShift, Titanfall2PilotTacticalKind.PulseBlade } )
+		{
+			var script = kind switch
+			{
+				Titanfall2PilotTacticalKind.Stim => Titanfall2PilotTacticalSettings.StimScript,
+				Titanfall2PilotTacticalKind.Grapple => Titanfall2PilotTacticalSettings.GrappleScript,
+				Titanfall2PilotTacticalKind.PhaseShift => Titanfall2PilotTacticalSettings.PhaseScript,
+				_ => Titanfall2PilotTacticalSettings.PulseScript
+			};
+			if ( !snapshot.TryGet( script, out _ ) ) continue;
+			var id = kind switch
+			{
+				Titanfall2PilotTacticalKind.Stim => "stim",
+				Titanfall2PilotTacticalKind.Grapple => "grapple",
+				Titanfall2PilotTacticalKind.PhaseShift => "phase",
+				_ => "pulse"
+			};
+			var worldModel = kind == Titanfall2PilotTacticalKind.PulseBlade && models.Contains( "models/weapons/kunai/w_kunai.mdl" )
+				? "models/weapons/kunai/w_kunai.mdl" : packModel;
+			if ( worldModel is null )
+			{
+				warn( $"TF2 Pilot tactical {id} was not registered: no retail pickup model available." );
+				continue;
+			}
+			var loader = new Titanfall2PilotTacticalPrefabLoader( kind, worldModel );
+			loader.Tags.Add( "item" );
+			loader.Tags.Add( "equipment" );
+			loader.Tags.Add( "pilot" );
+			loader.Tags.Add( "tactical" );
+			catalog.Add( new( ResourceType.PrefabFile, $"entities/items/pilot_tactical_{id}", loader ) );
 		}
 
 		void RegisterWeapon( Titanfall2WeaponCatalogEntry entry )
@@ -69,6 +106,8 @@ public partial class Titanfall2Mount
 					return;
 				}
 				if ( !models.Contains( weapon.ViewModel ) ) weapon = weapon with { ViewModel = null };
+				if ( weapon.RechamberSeconds > 0 && weapon.ViewModel is not null )
+					weapon = weapon with { RechamberProfile = Titanfall2RechamberProfile.Read( snapshot, weapon.ViewModel ) };
 				if ( weapon.OrdnanceProfile.Enabled && weapon.ViewModel is not null )
 					weapon = weapon with { OrdnanceProfile = Titanfall2OrdnanceData.WithModelTiming( snapshot, weapon.ViewModel, weapon.OrdnanceProfile ) };
 				if ( weapon.HeatProfile.Valid && weapon.ViewModel is not null )
@@ -102,7 +141,7 @@ public partial class Titanfall2Mount
 							var variant = Titanfall2WeaponData.Read( script, ReadScript, entry.IsTitan, entry.Projectile, entry.IsIntegrated,
 								entry.FallbackSpeed, entry.Tint, entry.IsOrdnance, entry.IsAntiTitan, entry.Behavior, selectedMods: [mod] );
 							if ( variant is not null ) options.Add( Titanfall2WeaponData.ModOption( mod, variant with
-								{ ReloadProfile = variant.ReloadProfile with { EmptyStages = weapon.ReloadProfile.EmptyStages } } ) );
+								{ ReloadProfile = variant.ReloadProfile with { EmptyStages = weapon.ReloadProfile.EmptyStages }, RechamberProfile = weapon.RechamberProfile } ) );
 						}
 						catch ( InvalidDataException error ) { warn( $"TF2 attachment {entry.ScriptName}/{mod} skipped: {error.Message}" ); }
 					}

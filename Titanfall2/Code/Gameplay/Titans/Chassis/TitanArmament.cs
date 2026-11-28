@@ -7,6 +7,7 @@ public sealed class Titanfall2TitanArmament : Component
 	[Property] public string ViewModelPath { get; set; }
 	[Property] public string MountIdent { get; set; }
 	[Property] public string FireSound { get; set; }
+	[Property] public string AiWeaponScript { get; set; }
 	[Property] public Titanfall2WeaponPresentation Presentation { get; set; }
 	[Property] public Titanfall2WeaponAudio Audio { get; set; }
 	[Property] public Titanfall2ProjectileSettings Projectile { get; set; }
@@ -20,6 +21,8 @@ public sealed class Titanfall2TitanArmament : Component
 	[Property] public float ReloadSeconds { get; set; }
 	[Property] public int Pellets { get; set; } = 1;
 	[Property] public float Spread { get; set; }
+	[Property] public float AdsFov { get; set; } = 55f;
+	[Property] public float AdsMoveSpeedScale { get; set; } = 1f;
 	[Property] public float Range { get; set; } = 2800;
 
 	protected override void OnStart()
@@ -52,6 +55,7 @@ public sealed class Titanfall2TitanArmament : Component
 		actor.ViewModelPath = ViewModelPath;
 		actor.MountIdent = string.IsNullOrWhiteSpace( MountIdent ) ? actor.MountIdent ?? "titanfall2" : MountIdent;
 		actor.FireSound = FireSound;
+		actor.AiWeaponScript = AiWeaponScript;
 		actor.WeaponPresentation = Presentation;
 		actor.WeaponAudio = Audio;
 		actor.Projectile = Projectile;
@@ -65,6 +69,8 @@ public sealed class Titanfall2TitanArmament : Component
 		actor.ReloadSeconds = ReloadSeconds;
 		actor.ShotPellets = Pellets;
 		actor.ShotSpread = Spread;
+		actor.AdsFov = float.IsFinite( AdsFov ) && AdsFov > 0f ? Math.Clamp( AdsFov, 15f, 75f ) : 55f;
+		actor.AdsMoveSpeedScale = float.IsFinite( AdsMoveSpeedScale ) ? Math.Clamp( AdsMoveSpeedScale, 0.2f, 1f ) : 1f;
 		actor.AttackRange = Range;
 		actor.GetComponent<Titanfall2TitanCore>()?.ApplyPrimaryPresentation();
 		actor.ReplaceTitanGun();
@@ -85,10 +91,11 @@ public sealed partial class Titanfall2Npc
 {
 	internal void ReplaceTitanGun()
 	{
+		ResetBurstCount();
 		if ( _gun.IsValid() ) _gun.Destroy();
 		_gun = null;
 		_triedGun = false;
-		_gunBone = null;
+		ClearGunBoneBinding();
 		AttachGun();
 		Rounds = 0;
 		Reloading = false;

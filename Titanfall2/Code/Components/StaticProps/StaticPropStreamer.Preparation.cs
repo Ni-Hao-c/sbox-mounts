@@ -124,6 +124,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 				payload,
 				BakedSkyColor,
 				FallbackAnchor,
+				_visiblePvsCells,
 				Active,
 				loadedFromCache: true );
 			if ( aggregate is null )
@@ -139,7 +140,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 			// Spawn only the tiny subset of props that could not be aggregated (e.g. animated or cubemap materials).
 			if ( payload.FallbackPropIndices.Length > 0 && _compiledScene?.Props is { Length: > 0 } allProps )
 			{
-				var fallbackSet = new HashSet<Titanfall2StaticPropSceneData.StreamedProp>();
+				var fallbackSet = new HashSet<Titanfall2StaticPropSceneData.StreamedProp>( Titanfall2StaticPropSceneData.InstanceIdentityComparer );
 				foreach ( var idx in payload.FallbackPropIndices )
 				{
 					if ( (uint)idx < (uint)allProps.Length ) fallbackSet.Add( allProps[idx] );

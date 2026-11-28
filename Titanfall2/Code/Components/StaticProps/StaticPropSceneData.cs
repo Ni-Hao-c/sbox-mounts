@@ -8,11 +8,11 @@ using Titanfall2;
 static class Titanfall2StaticPropSceneData
 {
 	const int DataMagic = 0x32505354; // TSP2
-	internal const int DataVersion = 9;
+	internal const int DataVersion = 10;
 	const int MaximumModelCount = 65536;
 	const int MaximumPropCount = 1_000_000;
 	const int VisibilityMagic = 0x32565354; // TSV2
-	const int VisibilityVersion = 2;
+	const int VisibilityVersion = 3;
 	// Encoded size of one element, used to bound a decoded count by the bytes that are
 	// actually present instead of by a guessed maximum.
 	const int PlaneBytes = 16;  // normal xyz + distance
@@ -39,6 +39,18 @@ static class Titanfall2StaticPropSceneData
 		public int Skin { get; init; }
 		/// <summary>Original fade distance (sprp value, else MDL default); 0 means it never fades.</summary>
 		public float FadeDistance { get; init; }
+		/// <summary>False when the retail sprp entry sets STATIC_PROP_NO_SHADOW (0x10).</summary>
+		public bool CastsShadows { get; init; } = true;
+	}
+
+	// Probe metadata contains packed light IDs whose float bit patterns can be NaN.
+	// Vector equality then makes a prop unequal to itself. Within one compiled scene,
+	// membership must use its dense InstanceId, never lighting/transform value equality.
+	internal static IEqualityComparer<StreamedProp> InstanceIdentityComparer { get; } = new InstanceComparer();
+	sealed class InstanceComparer : IEqualityComparer<StreamedProp>
+	{
+		public bool Equals( StreamedProp x, StreamedProp y ) => x.InstanceId == y.InstanceId;
+		public int GetHashCode( StreamedProp obj ) => obj.InstanceId;
 	}
 
 
@@ -60,9 +72,9 @@ static class Titanfall2StaticPropSceneData
 			writer.Write( usable );
 			if ( usable )
 			{
+				var wordCount = Titanfall2BspReader.VisibilityCellMask.WordCountFor( visibility.CellCount );
 				writer.Write( visibility.CellCount );
-				writer.Write( visibility.AlwaysVisibleCells.Low );
-				writer.Write( visibility.AlwaysVisibleCells.High );
+				visibility.AlwaysVisibleCells.Write( writer, wordCount );
 
 				writer.Write( visibility.Planes.Count );
 				foreach ( var plane in visibility.Planes )
@@ -137,8 +149,10 @@ static class Titanfall2StaticPropSceneData
 		}
 
 		var cellCount = reader.ReadInt32();
-		if ( cellCount <= 0 || cellCount > 128 ) throw new InvalidDataException( "Invalid visibility cell count." );
-		var alwaysVisible = new Titanfall2BspReader.VisibilityCellMask( reader.ReadUInt64(), reader.ReadUInt64() );
+		if ( cellCount <= 0 || cellCount > Titanfall2BspReader.VisibilityCellMask.MaxCellCount )
+			throw new InvalidDataException( "Invalid visibility cell count." );
+		var wordCount = version >= 3 ? Titanfall2BspReader.VisibilityCellMask.WordCountFor( cellCount ) : 2;
+		var alwaysVisible = Titanfall2BspReader.VisibilityCellMask.Read( reader, wordCount );
 
 		// The element counts are validated against the bytes actually left in the payload
 		// rather than against a fixed limit. A fixed limit cannot be right for every map:
@@ -179,7 +193,7 @@ static class Titanfall2StaticPropSceneData
 			Portals = portals
 		};
 		if ( !visibility.IsValid ) throw new InvalidDataException( "Invalid visibility tree." );
-		compiled = version >= 2 ? Titanfall2CompiledVisibility.Read( reader, visibility, PvsPortalDepth )
+		compiled = version >= 2 ? Titanfall2CompiledVisibility.Read( reader, visibility, PvsPortalDepth, wordCount )
 			: Titanfall2CompiledVisibility.Compile( visibility, PvsPortalDepth );
 		if ( version >= 2 ) ReadChecksum( reader, payload );
 		if ( stream.Position != stream.Length ) throw new InvalidDataException( "Trailing visibility data." );
@@ -207,6 +221,8 @@ static class Titanfall2StaticPropSceneData
 			writer.Write( models.Length );
 			foreach ( var model in models ) writer.Write( model );
 			writer.Write( valid.Length );
+			var pvsWordCount = Titanfall2BspReader.VisibilityCellMask.WordCountFor( visibility is { IsValid: true } ? visibility.CellCount : 0 );
+			writer.Write( pvsWordCount );
 			for ( var validIndex = 0; validIndex < valid.Length; validIndex++ )
 			{
 				var prop = valid[validIndex];
@@ -226,8 +242,7 @@ static class Titanfall2StaticPropSceneData
 				writer.Write( 1f );
 				var pvsCells = visibility is { IsValid: true }
 					? visibility.GetPropCellMask( prop.SourceIndex, prop.Origin ) : default;
-				writer.Write( pvsCells.Low );
-				writer.Write( pvsCells.High );
+				pvsCells.Write( writer, pvsWordCount );
 				var probe = Titanfall2ProbeData.FromSource( prop.BakedLightProbe );
 				writer.Write( probe.Metadata.x > 0 );
 				if ( probe.Metadata.x > 0 )
@@ -246,6 +261,7 @@ static class Titanfall2StaticPropSceneData
 				writer.Write( prop.Skin );
 				var fade = fadeDistances is not null && sourceIndex < fadeDistances.Count ? fadeDistances[sourceIndex] : 0f;
 				writer.Write( float.IsFinite( fade ) && fade > 0f ? fade : 0f );
+				writer.Write( prop.CastsShadows );
 			}
 			var layout = Titanfall2CompiledPropLayout.Compile( valid.Select( prop => new Titanfall2CompiledPropLayout.Instance(
 				new Vector3( prop.Origin.X, prop.Origin.Y, prop.Origin.Z ), indices[NormalizeModelPath( prop.ModelPath )], prop.Skin ) ).ToArray() );
@@ -272,6 +288,9 @@ static class Titanfall2StaticPropSceneData
 
 		var propCount = reader.ReadInt32();
 		if ( propCount < 0 || propCount > MaximumPropCount ) throw new InvalidDataException( $"Invalid prop count {propCount}." );
+		var pvsWordCount = version >= 10 ? reader.ReadInt32() : 2;
+		if ( pvsWordCount < 0 || pvsWordCount > Titanfall2BspReader.VisibilityCellMask.WordCount )
+			throw new InvalidDataException( $"Invalid visibility word count {pvsWordCount}." );
 		// Bound allocations by actual bytes as well as format limits. V3 is the smallest record.
 		if ( !HasRoomFor( stream, propCount, 61 ) ) throw new EndOfStreamException( "Truncated static prop records." );
 		var props = new StreamedProp[propCount];
@@ -287,7 +306,7 @@ static class Titanfall2StaticPropSceneData
 				throw new InvalidDataException( "Non-finite static prop transform." );
 			var collidable = reader.ReadBoolean();
 			var probeColor = new Vector3( reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle() );
-			var pvsCells = new Titanfall2BspReader.VisibilityCellMask( reader.ReadUInt64(), reader.ReadUInt64() );
+			var pvsCells = Titanfall2BspReader.VisibilityCellMask.Read( reader, pvsWordCount );
 			var probe = default( Titanfall2ProbeData );
 			if ( version >= 4 && reader.ReadBoolean() )
 			{
@@ -314,9 +333,10 @@ static class Titanfall2StaticPropSceneData
 			// Older payloads carry no fade distance: 0 keeps them on the global render distance.
 			var fadeDistance = version >= 8 ? reader.ReadSingle() : 0f;
 			if ( !float.IsFinite( fadeDistance ) || fadeDistance < 0f ) fadeDistance = 0f;
+			var castsShadows = version < 10 || reader.ReadBoolean();
 			props[index] = new StreamedProp( models[modelIndex], position, rotation, scale, collidable, probeColor, probe, pvsCells,
 				sourceIndex, solidType, reservedCollisionData, collisionFlagsRemove )
-			{ InstanceId = index, Skin = skin, FadeDistance = fadeDistance };
+			{ InstanceId = index, Skin = skin, FadeDistance = fadeDistance, CastsShadows = castsShadows };
 			layoutInstances[index] = new( position, modelIndex, skin );
 		}
 		var layout = version >= 9 ? Titanfall2CompiledPropLayout.Read( reader, layoutInstances )

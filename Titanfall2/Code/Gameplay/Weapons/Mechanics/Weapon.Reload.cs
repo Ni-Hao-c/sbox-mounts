@@ -1,7 +1,42 @@
 public sealed partial class Titanfall2Weapon
 {
-	[Property, Sync( SyncFlags.FromHost )] public Titanfall2ReloadProfile ReloadProfile { get; set; }
-	[Sync( SyncFlags.FromHost )] Titanfall2ReloadSnapshot RetailReload { get; set; }
+	[Property] public Titanfall2ReloadProfile ReloadProfile { get; set; }
+	[Sync( SyncFlags.FromHost )] int RetailReloadSerial { get; set; }
+	[Sync( SyncFlags.FromHost )] bool RetailReloadActive { get; set; }
+	[Sync( SyncFlags.FromHost )] bool RetailReloadStartedEmpty { get; set; }
+	[Sync( SyncFlags.FromHost )] bool RetailReloadSegmented { get; set; }
+	[Sync( SyncFlags.FromHost )] float RetailReloadDuration { get; set; }
+	[Sync( SyncFlags.FromHost )] float RetailReloadLoopDuration { get; set; }
+	[Sync( SyncFlags.FromHost )] float RetailReloadEndDuration { get; set; }
+	[Sync( SyncFlags.FromHost )] double RetailReloadStartedAt { get; set; }
+	[Sync( SyncFlags.FromHost )] int RetailReloadMilestone { get; set; }
+	Titanfall2ReloadSnapshot RetailReload
+	{
+		get => new()
+		{
+			Serial = RetailReloadSerial,
+			Active = RetailReloadActive,
+			StartedEmpty = RetailReloadStartedEmpty,
+			Segmented = RetailReloadSegmented,
+			Duration = RetailReloadDuration,
+			LoopDuration = RetailReloadLoopDuration,
+			EndDuration = RetailReloadEndDuration,
+			StartedAt = RetailReloadStartedAt,
+			Milestone = RetailReloadMilestone
+		};
+		set
+		{
+			RetailReloadSerial = value.Serial;
+			RetailReloadActive = value.Active;
+			RetailReloadStartedEmpty = value.StartedEmpty;
+			RetailReloadSegmented = value.Segmented;
+			RetailReloadDuration = value.Duration;
+			RetailReloadLoopDuration = value.LoopDuration;
+			RetailReloadEndDuration = value.EndDuration;
+			RetailReloadStartedAt = value.StartedAt;
+			RetailReloadMilestone = value.Milestone;
+		}
+	}
 	int _presentedReloadSerial;
 	[Sync( SyncFlags.FromHost )] public int SavedHeatReloadMilestone { get; private set; }
 	double _heatFullReloadStartedAt;
@@ -28,10 +63,8 @@ public sealed partial class Titanfall2Weapon
 		// Do not select from a client's potentially stale magazine or start a local timer.
 		if ( !Networking.IsHost ) { base.Reload(); return; }
 		if ( !CanReload() ) return;
-		StopHeatRun();
-		CancelCharge();
-		ResetSmartAmmo();
-		StopSpinUp();
+		InterruptRechamber();
+		ReloadMechanics();
 		var startedEmpty = Clip1 <= 0;
 		var duration = ReloadProfile.DurationFor( startedEmpty, ReloadTime );
 		var segmented = ReloadProfile.Enabled && ReloadProfile.Segmented && !HeatProfile.Valid;
@@ -98,8 +131,10 @@ public sealed partial class Titanfall2Weapon
 	public override void CancelReload()
 	{
 		if ( Networking.IsHost ) TickHeatReload();
-		base.CancelReload();
+		// IsReloading=false invokes OnReloadFinished synchronously even on cancel.
+		// Revoke completion eligibility before the base changes that property.
 		if ( Networking.IsHost && RetailReload.Active ) RetailReload = RetailReload with { Active = false };
+		base.CancelReload();
 	}
 
 	protected override void OnReloadStarted()
@@ -128,6 +163,7 @@ public sealed partial class Titanfall2Weapon
 
 	protected override void OnReloadFinished()
 	{
+		FinishReloadRechamber();
 		// A frame may cross both FILL and READY before our model-event tick.
 		// Base has already filled the clip in that case; do not retain a stale
 		// milestone that would block regeneration or resume the next overheat.
@@ -141,13 +177,10 @@ public sealed partial class Titanfall2Weapon
 
 	protected override void OnDisabled()
 	{
-		CancelOrdnance();
-		StopHeatRun();
-		CancelCharge();
+		InterruptRechamber();
+		DisableMechanics();
 		StopChargePresentation();
 		StopHeatPresentation();
-		ResetSmartAmmo();
-		StopSpinUp();
 		// Holstering already calls the engine's CancelReload. Disabling the component
 		// must also cancel its pending task so re-enabling cannot complete an old reload.
 		CancelReload();

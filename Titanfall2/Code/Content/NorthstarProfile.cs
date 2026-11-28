@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 
 sealed record Titanfall2NorthstarMod( string Name, string Version, int Priority, string Directory,
-	IReadOnlyList<string> Vpks, IReadOnlyList<string> Rpaks );
+	IReadOnlyList<string> Vpks, IReadOnlyList<string> Rpaks, IReadOnlyList<string> FallbackRpaks );
 
 /// <summary>
 /// Read-only interpretation of NorthstarLauncher-main asset configuration. Script
@@ -118,8 +118,22 @@ sealed class Titanfall2NorthstarProfile
 			// A map-only declaration also supplies this Mod's map context, so RPAK rules that gate
 			// on the same map (for example "mp_nexus.rpak": "^mp_nexus$") stay in step with it.
 			var declaredMaps = mapOnly.Values.Where( value => !string.IsNullOrEmpty( value ) ).Distinct( StringComparer.OrdinalIgnoreCase ).ToArray();
-			var rpaks = SelectRpaks( mod.Directory, string.IsNullOrEmpty( map ) ? declaredMaps : new[] { map }, basePackages, identities, diagnostics, aliasMap );
-			mods.Add( new( mod.Name, mod.Version, mod.Priority, mod.Directory, vpks.AsReadOnly(), rpaks ) );
+			IReadOnlyList<string> fallbackRpaks = Array.Empty<string>();
+			IReadOnlyList<string> rpaks;
+			if ( string.IsNullOrEmpty( map ) && declaredMaps.Length > 0 )
+			{
+				// Browsing all maps must not activate their shared material/texture overrides.
+				// Resolve the global rules independently, including their Postload closure.
+				// Only the extra packages needed by declared maps become fallback sources.
+				var browsingAliases = new Dictionary<string, string>( aliasMap, StringComparer.OrdinalIgnoreCase );
+				var active = SelectRpaks( mod.Directory, Array.Empty<string>(), basePackages, identities, new List<string>(), aliasMap );
+				var browsable = SelectRpaks( mod.Directory, declaredMaps, basePackages, new List<string>(), diagnostics, browsingAliases );
+				fallbackRpaks = Array.AsReadOnly( browsable.Except( active, StringComparer.OrdinalIgnoreCase ).ToArray() );
+				rpaks = Array.AsReadOnly( active.Concat( fallbackRpaks ).ToArray() );
+				foreach ( var path in fallbackRpaks ) diagnostics.Add( $"{mod.Name}: map-only RPAK {Path.GetFileName( path )} indexed after global/retail sources; select NORTHSTAR_MAP to activate its shared asset overrides." );
+			}
+			else rpaks = SelectRpaks( mod.Directory, string.IsNullOrEmpty( map ) ? Array.Empty<string>() : new[] { map }, basePackages, identities, diagnostics, aliasMap );
+			mods.Add( new( mod.Name, mod.Version, mod.Priority, mod.Directory, vpks.AsReadOnly(), rpaks, fallbackRpaks ) );
 		}
 		Mods = mods.AsReadOnly(); Identities = identities.AsReadOnly(); Diagnostics = diagnostics.AsReadOnly();
 	}

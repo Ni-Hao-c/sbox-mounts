@@ -34,6 +34,8 @@ internal sealed class Titanfall2WeaponPrefabLoader( string title, Titanfall2Weap
 			gun.SmartAmmo = data.SmartAmmo;
 			gun.PrimaryAutomatic = data.Automatic;
 			gun.PrimaryDelay = 1 / data.ShotsPerSecond;
+			gun.RechamberTime = data.RechamberSeconds;
+			gun.RechamberProfile = data.RechamberProfile;
 			gun.SpinUp = data.SpinUp;
 			gun.ChargeProfile = data.ChargeProfile;
 			gun.ChargePresentation = data.ChargePresentation;
@@ -49,6 +51,7 @@ internal sealed class Titanfall2WeaponPrefabLoader( string title, Titanfall2Weap
 			gun.IncrementalReloading = data.ReloadProfile.Segmented;
 			gun.ReloadStartTime = data.ReloadProfile.Segmented ? data.ReloadProfile.DurationFor( false, data.ReloadSeconds ) : 0f;
 			gun.ViewKick = data.ViewKick;
+			gun.ViewMotion = data.ViewMotion;
 			gun.UiDisplays = data.UiDisplays;
 			gun.AttachmentBaseTitle = title;
 			gun.AttachmentOptions = data.AttachmentOptions;
@@ -90,6 +93,7 @@ internal sealed class Titanfall2TitanArmamentPrefabLoader( Titanfall2WeaponData 
 			var root = new GameObject( true, name );
 			root.Tags.Add( "titan-weapon" );
 			var gun = root.AddComponent<Titanfall2TitanArmament>();
+			gun.AiWeaponScript = data.ScriptName;
 			gun.ModelPath = model;
 			gun.ViewModelPath = data.ViewModel is null ? null : $"mount://{Host.Ident}/{data.ViewModel}.titanpov.vmdl";
 			gun.MountIdent = Host.Ident;
@@ -107,6 +111,8 @@ internal sealed class Titanfall2TitanArmamentPrefabLoader( Titanfall2WeaponData 
 			gun.ReloadSeconds = data.ReloadSeconds;
 			gun.Pellets = data.Pellets;
 			gun.Spread = data.Spread;
+			gun.AdsFov = data.AdsFov;
+			gun.AdsMoveSpeedScale = data.AdsMoveSpeedScale;
 			gun.Range = MathF.Min( 6000, data.Range );
 		}
 		return _prefab = builder.Create();

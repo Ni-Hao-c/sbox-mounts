@@ -5,6 +5,12 @@ using System.Text;
 internal sealed record Titanfall2TitanAbilityData( Titanfall2ProjectileSettings Projectile, float Damage,
 	float TitanDamage, float Range, int Shots, float Interval, string Sound, string Tracer )
 {
+	internal Titanfall2ProjectileSettings MountedProjectile( string ident ) => Projectile with
+	{
+		MountIdent = ident,
+		ModelPath = Projectile.ModelPath is { Length: > 0 } file ? $"mount://{ident ?? "titanfall2"}/{file}.visual.vmdl" : null
+	};
+
 	internal static string ScriptFor( Titanfall2TitanKit.Chassis kit, bool defense = false )
 	{
 		var profile = Titanfall2TitanChassisCatalog.Get( kit );

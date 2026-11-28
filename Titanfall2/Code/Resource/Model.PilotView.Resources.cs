@@ -41,7 +41,7 @@ partial class ModelLoader
 			var sequence = role switch
 			{
 				Titanfall2PilotAnimationPlayer.IdleDelta => sequences.Idle,
-				Titanfall2PilotAnimationPlayer.FireDelta => sequences.Fire,
+				Titanfall2PilotAnimationPlayer.FireDelta or Titanfall2PilotAnimationPlayer.FireAdsDelta => sequences.Fire,
 				Titanfall2PilotAnimationPlayer.AdsPose => sequences.AdsIn,
 				Titanfall2PilotViewModel.Idle => sequences.Idle,
 				Titanfall2PilotViewModel.Fire => sequences.Fire,
@@ -58,13 +58,31 @@ partial class ModelLoader
 				Titanfall2PilotViewModel.OneHandedIdle => sequences.OneHandedIdle,
 				Titanfall2PilotViewModel.Charge => sequences.Charge,
 				Titanfall2PilotViewModel.Cooldown or Titanfall2PilotViewModel.CooldownAds => sequences.Cooldown,
+				Titanfall2PilotViewModel.Rechamber or Titanfall2PilotViewModel.RechamberAds => sequences.Rechamber,
 				_ => Enumerable.Range( 1, sequences.EmptyReloadLate.Length ).FirstOrDefault( i => Titanfall2PilotViewModel.EmptyReloadLate( i ) == role ) is > 0 and var lateIndex
 					? sequences.EmptyReloadLate[lateIndex - 1] : null
 			};
+			if ( sequence is null && Titanfall2PilotViewModel.IsOrdnanceAction( role ) )
+				sequence = ResolvePilotOrdnanceSequences( model ).Roles().FirstOrDefault( entry => entry.Role == role ).Sequence;
+			var slideDelta = role is Titanfall2PilotAnimationPlayer.SlideFireDelta or Titanfall2PilotAnimationPlayer.SlideFireAdsDelta;
+			var stance = sequence is null ? ResolvePilotStanceSequences( model ) : null;
+			if ( stance is not null )
+				sequence = stance.GetValueOrDefault( slideDelta ? Titanfall2PilotViewModel.SlideFire : role );
 			if ( sequence is null ) return null;
-			var decoded = role == Titanfall2PilotViewModel.CooldownAds && sequence.AnimationIndices.Length == 2
+			var decoded = role is Titanfall2PilotAnimationPlayer.FireAdsDelta or Titanfall2PilotViewModel.RechamberAds
+				? Titanfall2Mdl53AnimationReader.Decode( bytes, model,
+					ResolvePilotAdsAnimationIndex( Titanfall2SequenceRuntimeData.Read( bytes, model, sequence ) ), sequence.Label, sequence.Sequence.Flags )
+				: role == Titanfall2PilotViewModel.CooldownAds && sequence.AnimationIndices.Length == 2
 				? Titanfall2Mdl53AnimationReader.Decode( bytes, model, sequence.AnimationIndices[1], sequence.Label, sequence.Sequence.Flags ) : Decode( sequence );
-			var additive = role is Titanfall2PilotAnimationPlayer.IdleDelta or Titanfall2PilotAnimationPlayer.FireDelta;
+			if ( role == Titanfall2PilotViewModel.SlideIdle ) decoded = PilotSlideIdle( decoded, sequence );
+			if ( slideDelta )
+			{
+				var slideAds = PilotSlideFireAds( bytes, model, sequence, decoded );
+				if ( slideAds is null ) return null;
+				if ( role == Titanfall2PilotAnimationPlayer.SlideFireAdsDelta ) decoded = slideAds;
+			}
+			var additive = slideDelta || role is Titanfall2PilotAnimationPlayer.IdleDelta or Titanfall2PilotAnimationPlayer.FireDelta
+				or Titanfall2PilotAnimationPlayer.FireAdsDelta;
 			if ( additive && !decoded.Delta ) return null;
 			var skeleton = Sandbox.Animation.Skeleton.Load( $"{owner.Path}/pilot/skeleton.skel" );
 			if ( !skeleton.IsValid() ) return null;
@@ -79,7 +97,16 @@ partial class ModelLoader
 					: !draw.Delta && draw.Frames.Length > 0 ? draw.Frames[^1]
 					: throw new InvalidDataException( $"Pilot ready stance unavailable: {owner.Path}" );
 				ready = frame.Select( Pose ).ToArray();
-				if ( role == Titanfall2PilotViewModel.CooldownAds && sequences.AdsIn is { } ads )
+				if ( role == Titanfall2PilotViewModel.SlideFire && stance.TryGetValue( Titanfall2PilotViewModel.SlideIdle, out var slide ) )
+				{
+					var slideIdle = PilotSlideIdle( Decode( slide ), slide );
+					for ( var i = 0; i < ready.Length; ++i )
+					{
+						var pose = Pose( slideIdle.Frames[0][i] );
+						ready[i] = slideIdle.Delta ? new( ready[i].Position + pose.Position, ready[i].Rotation * pose.Rotation, ready[i].Scale * pose.Scale ) : pose;
+					}
+				}
+				if ( role is Titanfall2PilotViewModel.CooldownAds or Titanfall2PilotViewModel.RechamberAds && sequences.AdsIn is { } ads )
 				{
 					var adsPose = Decode( ads ); var last = adsPose.Frames[^1];
 					for ( var i = 0; i < ready.Length; ++i )

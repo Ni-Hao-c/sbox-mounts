@@ -5,7 +5,7 @@
 [Hide]
 public sealed class Titanfall2PulseBlade : Component
 {
-	[Property] public PlayerController OwnerPlayer { get; set; }
+	[Property, Sync( SyncFlags.FromHost )] public PlayerController OwnerPlayer { get; set; }
 	[Property] public string MountIdent { get; set; } = "titanfall2";
 	[Property] public Titanfall2PilotTacticalSettings Settings { get; set; } = Titanfall2PilotTacticalSettings.RetailDefault;
 	public Vector3 Velocity { get; set; }
@@ -17,6 +17,9 @@ public sealed class Titanfall2PulseBlade : Component
 	Transform _stuckLocal;
 	TimeUntil _nextPulse;
 	TimeUntil _expiry;
+	GameObject _trail;
+	GameObject _impactEffect;
+	bool _presentedImpact;
 
 	protected override void OnStart()
 	{
@@ -32,10 +35,27 @@ public sealed class Titanfall2PulseBlade : Component
 			mr.RenderType = ModelRenderer.ShadowRenderType.Off;
 		}
 
-		var light = GameObject.AddComponent<PointLight>();
-		light.LightColor = new Color( 1f, 0.48f, 0.12f ) * 3f;
-		light.Radius = 90f;
-		light.Shadows = false;
+		_trail = Titanfall2PilotTacticalEffects.Spawn( Scene, MountIdent, "wpn_grenade_sonar", WorldPosition );
+	}
+
+	protected override void OnUpdate()
+	{
+		if ( Application.IsHeadless || Application.IsDedicatedServer ) return;
+		if ( Stuck && !_presentedImpact )
+		{
+			_presentedImpact = true;
+			if ( _trail.IsValid() ) _trail.Destroy();
+			_trail = null;
+			_impactEffect = Titanfall2PilotTacticalEffects.Spawn( Scene, MountIdent, "wpn_grenade_sonar_impact", WorldPosition );
+		}
+		if ( _trail.IsValid() ) _trail.WorldTransform = WorldTransform;
+		if ( _impactEffect.IsValid() ) _impactEffect.WorldTransform = WorldTransform;
+	}
+
+	protected override void OnDestroy()
+	{
+		if ( _trail.IsValid() ) _trail.Destroy();
+		if ( _impactEffect.IsValid() ) _impactEffect.Destroy();
 	}
 
 	protected override void OnFixedUpdate()
@@ -90,7 +110,7 @@ public sealed class Titanfall2PulseBlade : Component
 	{
 		Stuck = true;
 		_expiry = MathF.Max( 1f, Settings.PulseSonarDuration );
-		_nextPulse = 0f;
+		_nextPulse = MathF.Max( 0.5f, Settings.PulseIntervalSeconds );
 
 		if ( hit.GameObject.IsValid() )
 		{
@@ -109,7 +129,9 @@ public sealed class Titanfall2PulseBlade : Component
 				Titanfall2HostDamage.Deal( damageable, info );
 			}
 
-			if ( npc is not { Dead: true } )
+			// Retail never parents the blade to human-sized targets.
+			if ( npc is not { Dead: true } && npc is not { IsTitan: false }
+				&& !hit.GameObject.GetComponentInParent<PlayerController>().IsValid() )
 			{
 				_stuckTarget = hit.GameObject;
 				_stuckLocal = _stuckTarget.WorldTransform.ToLocal( WorldTransform );
@@ -130,21 +152,24 @@ public sealed class Titanfall2PulseBlade : Component
 		{
 			if ( !npc.IsValid() || npc.Dead || !npc.IsHostileToFaction( Sandbox.Npcs.Factions.Player ) ) continue;
 			if ( npc.WorldPosition.Distance( WorldPosition ) > radius ) continue;
+			if ( npc.GameObject.Tags.Has( Titanfall2PilotTactical.PhasedTag ) ) continue;
 			registry?.Reveal( npc.GameObject, revealDuration );
+			RevealTargetRpc( npc.GameObject, revealDuration );
 		}
 
-		SpawnPulseWaveRpc( WorldPosition );
+		SpawnPulseWaveRpc( WorldPosition, PulseCount == 1 );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void SpawnPulseWaveRpc( Vector3 origin )
+	void RevealTargetRpc( GameObject target, float duration ) => Scene.GetSystem<Titanfall2SonarRegistry>()?.Reveal( target, duration );
+
+	[Rpc.Broadcast( NetFlags.HostOnly )]
+	void SpawnPulseWaveRpc( Vector3 origin, bool activation )
 	{
 		if ( Application.IsHeadless || Application.IsDedicatedServer || !Scene.IsValid() ) return;
-		var fx = new GameObject( Scene, false, "TF2 Pulse Blade Sonar" ) { WorldPosition = origin };
-		fx.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-		Titanfall2CombatEffects.Burst( fx, new Color( 1f, 0.52f, 0.14f ), 24, 140f, 18f, 0.9f );
-		fx.AddComponent<TemporaryEffect>().DestroyAfterSeconds = 1.1f;
-		fx.Enabled = true;
-		Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent ?? "titanfall2", "Titan_Tone_SonarLock_Fired_ShoulderPod_3P", origin );
+		var firstPerson = OwnerPlayer.IsValid() && !OwnerPlayer.IsProxy && !OwnerPlayer.ThirdPerson;
+		var sound = activation ? (firstPerson ? "Pilot_PulseBlade_Activated_1P" : "Pilot_PulseBlade_Activated_3P")
+			: (firstPerson ? "Pilot_PulseBlade_Sonar_Pulse_1P" : "Pilot_PulseBlade_Sonar_Pulse_3P");
+		Titanfall2SoundEventEmitter.OneShot( Scene, MountIdent, sound, origin, firstPerson );
 	}
 }

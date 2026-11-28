@@ -9,7 +9,9 @@ internal enum Titanfall2WeaponUiDisplayMode
 	DualBar,
 	HeatScreen,
 	ChargeStack,
-	DualNumeric
+	DualNumeric,
+	OpticReticle,
+	OpticFrame
 }
 
 internal readonly record struct Titanfall2WeaponUiBarSpec(
@@ -18,6 +20,9 @@ internal readonly record struct Titanfall2WeaponUiBarSpec(
 	int Rows,
 	bool Vertical,
 	bool ReverseFill = false );
+
+internal readonly record struct Titanfall2WeaponUiImageSpec( string TexturePath, Rect Rect, Color Tint, bool IsReticle = true,
+	float AmmoColorScale = 0, bool FlipX = false, bool FlipY = false );
 
 /// <summary>Verified static fields of a retail weapon ammo/heat/charge RUI layout.</summary>
 internal sealed record Titanfall2WeaponUiLayout(
@@ -31,13 +36,15 @@ internal sealed record Titanfall2WeaponUiLayout(
 	Titanfall2WeaponUiDisplayMode Mode = Titanfall2WeaponUiDisplayMode.Numeric,
 	Titanfall2WeaponUiBarSpec? PrimaryBar = null,
 	Titanfall2WeaponUiBarSpec? SecondaryBar = null,
-	Vector2? SecondaryTextAnchor = null );
+	Vector2? SecondaryTextAnchor = null,
+	Titanfall2WeaponUiImageSpec[] Images = null,
+	float TextWidthScale = 1f );
 
 /// <summary>
 /// Static catalog of verified retail Titanfall 2 weapon display layouts extracted from
 /// the shipping ui*.rpak assets so players never depend on runtime RUI bytecode decoding.
 /// </summary>
-internal static class Titanfall2WeaponUiCatalog
+internal static partial class Titanfall2WeaponUiCatalog
 {
 	static readonly Dictionary<string, Titanfall2WeaponUiLayout> Layouts = new( StringComparer.OrdinalIgnoreCase )
 	{
@@ -56,19 +63,16 @@ internal static class Titanfall2WeaponUiCatalog
 			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 0f, 89.6f, 256f, 12.8f ), 0, 1, false ) ),
 		["ui/b3wing_ammo_counter"] = new( "ui/b3wing_ammo_counter", new( 256, 256 ), 19, 150, new( 128f, 69.1f ), new( 0.5f, 0.5f ), "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.Numeric ),
+		// Retail style 0 sets line height to 190 and independently compresses X by 0.5.
 		["ui/hemlok_bfr_ammo_counter"] = new( "ui/hemlok_bfr_ammo_counter", new( 256, 256 ), 9, 190, new( 150f, 86f ), new( 0.5f, 0.5f ), "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 75f, 156f, 116f, 20f ), 8, 1, false ),
-			new( new( 0f, 228f, 256f, 28f ), 0, 1, false ) ),
+			new( new( 0f, 228f, 256f, 28f ), 0, 1, false ), TextWidthScale: 0.5f ),
 		["ui/mk6_ammo_counter"] = new( "ui/mk6_ammo_counter", new( 256, 256 ), 9, 145, new( 192f, 71.7f ), new( 0.5f, 0.5f ), "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 4f, 51f, 112f, 85f ), 12, 2, false ) ),
-		["ui/doubletake_ammo_counter"] = new( "ui/doubletake_ammo_counter", new( 512, 512 ), 2, 256, new( 384f, 128f ), new( 0.5f, 0.5f ), "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.DualNumeric, SecondaryTextAnchor: new( 128f, 128f ) ),
-		["ui/pulse_lmg_panel2"] = new( "ui/pulse_lmg_panel2", new( 256, 256 ), 9, 220, new( 128f, 140.8f ), new( 0.5f, 0.5f ), "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 24f, 25f, 208f, 28f ), 4, 1, false ) ),
-		["ui/arc_launcher_reticle"] = new( "ui/arc_launcher_reticle", new( 256, 256 ), 9, 15, new( 61.4f, 115.2f ), new( 0.5f, 0.5f ), "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 128f, 12f, 120f, 96f ), 3, 1, false ) ),
-		["ui/hcog_lower"] = new( "ui/hcog_lower", new( 256, 256 ), 9, 20, new( 192f, 120.3f ), new( 0.5f, 0.5f ), "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.NumericWithBar, new( new( 134f, 16f, 116f, 84f ), 0, 1, false ) ),
+		["ui/doubletake_ammo_counter"] = new( "ui/doubletake_ammo_counter", new( 512, 512 ), 2, 180, new( 256f, 128f ), new( 0.5f, 0.5f ), "retail-catalog",
+			Titanfall2WeaponUiDisplayMode.Numeric ),
+		["ui/pulse_lmg_panel2"] = new( "ui/pulse_lmg_panel2", new( 256, 256 ), 9, 185, new( 128f, 134f ), new( 0.5f, 0.5f ), "retail-catalog",
+			Titanfall2WeaponUiDisplayMode.Numeric ),
 
 		// Segmented & multi-row bar-only ammo counters
 		["ui/car_smg_ammo_counter_small"] = new( "ui/car_smg_ammo_counter_small", new( 100, 100 ), 0, 0, default, default, "retail-catalog",
@@ -89,14 +93,16 @@ internal static class Titanfall2WeaponUiCatalog
 			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 4f, 25.6f, 248f, 64f ), 8, 1, false ) ),
 		["ui/w1128_upper_ammo_counter"] = new( "ui/w1128_upper_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.ContinuousBar, new( new( 8f, 8f, 240f, 240f ), 0, 1, true ) ),
+		// EPG upper quad (UV y=0.5..1.0) is the holographic iron sight, not a second ammo bar;
+		// only the lower recessed display (UV y=0..0.4) renders the 5-round segmented plasma counter.
 		["ui/epg_ammo_counter"] = new( "ui/epg_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.DualBar, new( new( 12.8f, 25.6f, 232f, 64f ), 4, 1, false ), new( new( 12f, 140f, 104f, 104f ), 4, 1, false ) ),
+			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 12.8f, 25.6f, 232f, 64f ), 5, 1, false ) ),
 		["ui/kraber_ammo_counter"] = new( "ui/kraber_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 8f, 10f, 240f, 165f ), 4, 1, false ) ),
 		["ui/smr_ammo_counter"] = new( "ui/smr_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.ContinuousBar, new( new( 8f, 16f, 236f, 224f ), 0, 1, false ) ),
 		["ui/softball_ammo_counter"] = new( "ui/softball_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
-			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 6f, 25.6f, 240f, 115.2f ), 6, 1, false ) ),
+			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 18f, 44f, 220f, 78f ), 6, 1, false ) ),
 		["ui/mastiff_ammo_counter"] = new( "ui/mastiff_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
 			Titanfall2WeaponUiDisplayMode.SegmentedBar, new( new( 8f, 12f, 240f, 228f ), 4, 1, false ) ),
 		["ui/sa3_ammo_counter"] = new( "ui/sa3_ammo_counter", new( 256, 256 ), 0, 0, default, default, "retail-catalog",
@@ -113,13 +119,13 @@ internal static class Titanfall2WeaponUiCatalog
 			Titanfall2WeaponUiDisplayMode.ChargeStack, new( new( 5.1f, 10.2f, 102.4f, 236f ), 9, 1, true ), new( new( 134f, 10.2f, 114f, 236f ), 4, 1, true ) )
 	};
 
-	internal static bool IsKnownDisplay( string uiPath ) => !string.IsNullOrWhiteSpace( uiPath ) && Layouts.ContainsKey( uiPath );
+	internal static bool IsKnownDisplay( string uiPath ) => TryGet( uiPath, out _ );
 	internal static bool TryGet( string uiPath, out Titanfall2WeaponUiLayout layout )
 	{
 		layout = null;
-		return !string.IsNullOrWhiteSpace( uiPath ) && Layouts.TryGetValue( uiPath, out layout );
+		return !string.IsNullOrWhiteSpace( uiPath ) && (OpticLayouts.TryGetValue( uiPath, out layout ) || Layouts.TryGetValue( uiPath, out layout ));
 	}
-	internal static IReadOnlyCollection<string> KnownPaths => Layouts.Keys;
+	internal static IReadOnlyCollection<string> KnownPaths => Layouts.Keys.Concat( OpticLayouts.Keys ).Distinct( StringComparer.OrdinalIgnoreCase ).ToArray();
 }
 
 internal static class RpakWeaponUiLayoutReader
@@ -188,7 +194,8 @@ internal static class RpakWeaponUiLayoutReader
 						{
 							var catalogBar = Titanfall2WeaponUiCatalog.TryGet( fullName, out var cat ) ? cat : null;
 							layout = new( fullName, canvas, BitConverter.ToUInt16( style, 30 ), fontSize, anchor * canvas, pivot, archive.FilePath,
-								catalogBar?.Mode ?? Titanfall2WeaponUiDisplayMode.Numeric, catalogBar?.PrimaryBar, catalogBar?.SecondaryBar, catalogBar?.SecondaryTextAnchor );
+								catalogBar?.Mode ?? Titanfall2WeaponUiDisplayMode.Numeric, catalogBar?.PrimaryBar, catalogBar?.SecondaryBar, catalogBar?.SecondaryTextAnchor, catalogBar?.Images,
+								ReadTextWidthScale( style, defaults ) );
 							return true;
 						}
 					}
@@ -204,6 +211,17 @@ internal static class RpakWeaponUiLayoutReader
 			return true;
 		}
 		return false;
+	}
+
+	// The text renderer uses style +42 as an independent X multiplier for
+	// glyph coordinates, advances and kerning; +40 is the line height.
+	internal static float ReadTextWidthScale( ReadOnlySpan<byte> style, ReadOnlySpan<byte> defaults )
+	{
+		if ( style.Length < 44 ) return 1f;
+		var offset = BitConverter.ToUInt16( style[42..] );
+		if ( offset + 4 > defaults.Length ) return 1f;
+		var scale = BitConverter.ToSingle( defaults[offset..] );
+		return float.IsFinite( scale ) && scale is > 0 and <= 8 ? scale : 1f;
 	}
 
 	// The retail layout VM starts derived frames at index 3. Decode opcodes 4 (anchored text),

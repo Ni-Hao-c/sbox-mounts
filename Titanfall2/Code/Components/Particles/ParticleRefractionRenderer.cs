@@ -50,6 +50,7 @@ public sealed class Titanfall2ParticleRefractionRenderer : ParticleRenderer
 		GetComponent<Titanfall2ParticleGeometry>()?.RefreshControlPointLocks(); EnsureObject();
 		if ( !_object.IsValid() || !ParticleEffect.IsValid() ) return;
 		RenderOptions.Apply( _object );
+		_object.Tags.SetFrom( GameObject.Tags );
 		_object.Flags.WantsFrameBufferCopy = true;
 		lock ( _sync )
 		{

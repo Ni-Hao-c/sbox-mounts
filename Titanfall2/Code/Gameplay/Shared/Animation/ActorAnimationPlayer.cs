@@ -58,7 +58,7 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 	bool _aimInitialized;
 	double _lastTick = double.NaN;
 	readonly Graph _graph;
-	readonly Channel _body = new( "body" ), _upper = new( "upper" ), _reload = new( "reload" ), _flinch = new( "flinch" );
+	readonly Channel _body = new( "body" ), _upper = new( "upper" ), _reload = new( "reload" ), _flinch = new( "flinch" ), _action = new( "action" ), _actionAdditive = new( "action_add" );
 	bool _reloadRequested;
 	sealed class Channel( string name )
 	{
@@ -115,10 +115,16 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		var weights = new Dictionary<Channel, GraphBuilder.Node>();
 		var aimParameters = new Dictionary<string, GraphBuilder.Node[]>();
 		var aimNodes = new Dictionary<string, GraphBuilder.Node>();
-		Parameters( _body, _clips.Keys.Where( x => x != ModelLoader.FlinchRole ).OrderBy( x => x == ModelLoader.IdleRole ? 0 : 1 ), false );
+		// The state machine has a 64-state limit and each clip needs two slots.
+		// On rigs with an upper mask the action lane owns these clips exclusively;
+		// duplicating them in the body selector prevented Monarch's graph from loading.
+		Parameters( _body, _clips.Keys.Where( x => x != ModelLoader.FlinchRole
+			&& (!HasUpperMask || !ModelLoader.IsUpperTitanActionRole( x )) ).OrderBy( x => x == ModelLoader.IdleRole ? 0 : 1 ), false );
 		Parameters( _upper, [ModelLoader.FireRole], true );
 		Parameters( _reload, [ModelLoader.ReloadRole], true );
 		Parameters( _flinch, [ModelLoader.FlinchRole], true );
+		Parameters( _action, _clips.Keys.Where( x => SelectUpperActionLane( x, HasUpperMask, _metadata[x].Additive, out var add ) && !add ), true );
+		Parameters( _actionAdditive, _clips.Keys.Where( x => SelectUpperActionLane( x, HasUpperMask, _metadata[x].Additive, out var add ) && add ), true );
 		foreach ( var aim in _aims.Values )
 			aimParameters[aim.Id] = Enumerable.Range( 0, 2 ).Select( axis => builder.AddControlParameter( $"aim_{aim.Id}_{axis}",
 				GraphBuilder.NodeKind.Float, new() { DefaultFloat = 0, Min = -360, Max = 360 } ) ).ToArray();
@@ -128,6 +134,8 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		AddOverlay( _upper );
 		AddOverlay( _reload );
 		AddOverlay( _flinch );
+		AddOverlay( _action );
+		AddOverlay( _actionAdditive );
 		_graph = builder.Create( layers, "Titanfall 2 actor layers" );
 		renderer.Animation.Graph = _graph;
 		renderer.UseAnimGraph = true;
@@ -211,12 +219,28 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		}
 		void AddOverlay( Channel channel )
 		{
-			var role = channel == _flinch ? ModelLoader.FlinchRole : channel == _reload ? ModelLoader.ReloadRole : ModelLoader.FireRole;
+			if ( (channel == _action || channel == _actionAdditive) && !HasUpperMask ) return;
+			var role = channel == _action ? _clips.Keys.FirstOrDefault( x => SelectUpperActionLane( x, HasUpperMask, _metadata[x].Additive, out var add ) && !add )
+				: channel == _actionAdditive ? _clips.Keys.FirstOrDefault( x => SelectUpperActionLane( x, HasUpperMask, _metadata[x].Additive, out var add ) && add )
+				: channel == _flinch ? ModelLoader.FlinchRole : channel == _reload ? ModelLoader.ReloadRole : ModelLoader.FireRole;
+			if ( role is null ) return;
 			var metadata = _metadata.GetValueOrDefault( role );
 			if ( metadata is null ) return;
-			layers.AddLayer( Selector( channel, true ), new() { BlendMode = metadata?.Additive == true ? GraphBuilder.LayerBlendMode.Additive : GraphBuilder.LayerBlendMode.Overlay,
-				Weight = weights[channel], BoneMask = builder.BoneMask( metadata?.BoneMask ?? "tf2_upper" ), IgnoreEvents = true } );
+			var additive = channel == _actionAdditive || (channel != _action && metadata.Additive);
+			layers.AddLayer( Selector( channel, true ), new()
+			{
+				BlendMode = additive ? GraphBuilder.LayerBlendMode.Additive : GraphBuilder.LayerBlendMode.Overlay,
+				Weight = weights[channel],
+				BoneMask = builder.BoneMask( channel == _action || channel == _actionAdditive ? "tf2_upper" : metadata.BoneMask ?? "tf2_upper" ),
+				IgnoreEvents = true
+			} );
 		}
+	}
+
+	internal static bool SelectUpperActionLane( string role, bool hasUpperMask, bool additive, out bool isAdditiveLane )
+	{
+		isAdditiveLane = additive;
+		return hasUpperMask && ModelLoader.IsUpperTitanActionRole( role );
 	}
 
 	public void SetAim( float yaw, float pitch, float maxDegreesPerSecond = Titanfall2ActorPhaseRules.DefaultAimTrackDegreesPerSecond )
@@ -259,7 +283,19 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 		_reloadRequested = active;
 		if ( active ) _upper.Active = false;
 	}
-	public void ClearOverlays() { _upper.Active = false; _reload.Active = false; _flinch.Active = false; _reloadRequested = false; }
+	public bool SetActionOverlay( string role, float cycle, bool restart = false )
+	{
+		if ( !Has( role ) || !_metadata.TryGetValue( role, out var metadata )
+			|| !SelectUpperActionLane( role, HasUpperMask, metadata.Additive, out var additiveLane ) ) return false;
+		var target = additiveLane ? _actionAdditive : _action;
+		var other = additiveLane ? _action : _actionAdditive;
+		other.Active = false;
+		Select( target, role, 0.01f, false, restart );
+		target.Cycles[target.Slot] = Math.Clamp( float.IsFinite( cycle ) ? cycle : 0, 0, 0.9999f );
+		return true;
+	}
+	public void ClearActionOverlay() { _action.Active = false; _actionAdditive.Active = false; }
+	public void ClearOverlays() { _upper.Active = false; _reload.Active = false; _flinch.Active = false; _action.Active = false; _actionAdditive.Active = false; _reloadRequested = false; }
 	void Select( Channel channel, string role, float rate, bool loop, bool restart )
 	{
 		if ( !Has( role ) ) return;
@@ -300,7 +336,7 @@ internal sealed class Titanfall2ActorAnimationPlayer : IDisposable
 				var keys = aim.Sequence.Keys[axis];
 				parameters.TrySet( $"aim_{aim.Id}_{axis}", Math.Clamp( value, keys[0], keys[^1] ) );
 			}
-		foreach ( var channel in new[] { _body, _upper, _reload, _flinch } )
+		foreach ( var channel in new[] { _body, _upper, _reload, _flinch, _action, _actionAdditive } )
 		{
 			var overlay = channel != _body;
 			var remaining = (1 - (float)channel.Cycles[channel.Slot]) * Duration( channel.Clip ) / channel.Rates[channel.Slot];

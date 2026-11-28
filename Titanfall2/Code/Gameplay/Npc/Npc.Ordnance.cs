@@ -47,127 +47,124 @@ internal sealed record Titanfall2NpcGrenadeData( Titanfall2ProjectileSettings Pr
 	}
 }
 
-public sealed partial class Titanfall2Npc
+/// <summary>Composed NPC frag-grenade evaluation, squad spacing, arc validation, and windup/release controller.</summary>
+internal sealed class Titanfall2NpcOrdnanceController
 {
-	[Property] public bool UseGrenades { get; set; } = true;
-	[Property] public int GrenadeCount { get; set; } = 2;
-	[Property] public float GrenadeCooldown { get; set; } = 14;
-	[Sync( SyncFlags.FromHost )] public int GrenadesThrown { get; private set; }
-	[Sync( SyncFlags.FromHost )] public bool ThrowingGrenade { get; private set; }
-	[Sync( SyncFlags.FromHost )] public float GrenadeWindupSeconds { get; private set; } = 0.68f;
-	TimeUntil _grenadeCheck;
-	TimeUntil _grenadeCooldown;
-	TimeUntil _grenadeRelease;
-	TimeUntil _grenadeOpportunity;
-	GameObject _grenadeObservedTarget;
-	Vector3 _grenadeLanding;
-	Titanfall2NpcGrenadeData _pendingGrenade;
+	TimeUntil _check;
+	TimeUntil _cooldown;
+	TimeUntil _release;
+	TimeUntil _opportunity;
+	GameObject _observedTarget;
+	Titanfall2NpcGrenadeData _pending;
+
+	internal Vector3 Landing { get; private set; }
 
 	internal static bool SupportsGrenades( string model ) => model?.Contains( "/humans/grunts/", StringComparison.OrdinalIgnoreCase ) == true
 		|| model?.Contains( "/robots/spectre/", StringComparison.OrdinalIgnoreCase ) == true;
-	bool GrenadeReady => Networking.IsHost && !IsProxy && !Dead && CanFight && UseGrenades && !IsTitan && !MeleeOnly
-		&& NavigationMode == Navigation.Ground && Seat is not { IsOccupied: true } && SupportsGrenades( ModelPath );
-	Vector3 GrenadeHand => Eye + WorldRotation.Forward * (BodyRadius + 8) + WorldRotation.Left * 7;
+
+	static bool IsReady( Titanfall2Npc npc ) => Networking.IsHost && !npc.IsProxy && !npc.Dead && npc.CanFight && npc.UseGrenades && !npc.IsTitan && !npc.MeleeOnly
+		&& npc.NavigationMode == Titanfall2Npc.Navigation.Ground && npc.Seat is not { IsOccupied: true } && SupportsGrenades( npc.ModelPath );
+
+	internal Vector3 GrenadeHand( Titanfall2Npc npc ) => npc.EyePositionInternal + npc.WorldRotation.Forward * (npc.BodyRadius + 8) + npc.WorldRotation.Left * 7;
 
 	// Called before the ordinary fire/movement decisions, including the first tick after losing a contact.
-	bool TickNpcOrdnance()
+	internal bool Tick( Titanfall2Npc npc )
 	{
-		if ( !GrenadeReady || !HasCombatContact || _meleePending ) { CancelNpcOrdnance(); return false; }
-		if ( ThrowingGrenade )
+		if ( !IsReady( npc ) || !npc.HasCombatContact || npc.MeleePending ) { Cancel( npc ); return false; }
+		if ( npc.ThrowingGrenade )
 		{
-			StopCombatMove();
-			if ( _grenadeRelease > 0 ) return true;
-			var profile = _pendingGrenade;
-			CancelNpcOrdnance();
+			npc.StopCombatMove();
+			if ( _release > 0 ) return true;
+			var profile = _pending;
+			Cancel( npc );
 			// Recheck friendly positions and the actual release point. Enemy movement never steers the committed throw.
-			if ( profile is not null && GrenadeAreaSafe( _grenadeLanding, profile.Projectile.SplashRadius )
-				&& TryGrenadeArc( _grenadeLanding, profile, out var velocity ) )
+			if ( profile is not null && AreaSafe( npc, Landing, profile.Projectile.SplashRadius )
+				&& TryArc( npc, Landing, profile, out var velocity ) )
 			{
-				var settings = profile.Projectile with { MountIdent = MountIdent,
-					ModelPath = profile.Projectile.ModelPath is { } model ? $"mount://{MountIdent ?? "titanfall2"}/{model}.vmdl" : null };
-				if ( Titanfall2Projectile.Launch( Scene, new Ray( GrenadeHand, velocity.Normal ), settings, 0, 0, GameObject, GameObject, GameObject ) is not null )
+				var settings = profile.Projectile with { MountIdent = npc.MountIdent,
+					ModelPath = profile.Projectile.ModelPath is { } model ? $"mount://{npc.MountIdent ?? "titanfall2"}/{model}.vmdl" : null };
+				if ( Titanfall2Projectile.Launch( npc.Scene, new Ray( GrenadeHand( npc ), velocity.Normal ), settings, 0, 0, npc.GameObject, npc.GameObject, npc.GameObject ) is not null )
 				{
-					GrenadesThrown++;
-					_grenadeCooldown = Math.Clamp( GrenadeCooldown, 4, 120 );
-					PlayGrenadeThrowSound();
+					npc.IncrementGrenadesThrownHost();
+					_cooldown = Math.Clamp( npc.GrenadeCooldown, 4, 120 );
+					npc.BroadcastGrenadeThrowSound();
 				}
 			}
 			return true;
 		}
-		if ( _seesContact && _grenadeObservedTarget != _target )
+		if ( npc.SeesContact && _observedTarget != npc.CurrentTarget )
 		{
-			_grenadeObservedTarget = _target;
-			_grenadeOpportunity = 1.5f;
+			_observedTarget = npc.CurrentTarget;
+			_opportunity = 1.5f;
 		}
-		if ( _grenadeCheck > 0 || _grenadeCooldown > 0 || _grenadeOpportunity > 0 || _reaction > 0
-			|| Reloading || GrenadesThrown >= Math.Clamp( GrenadeCount, 0, 8 ) || _grenadeObservedTarget != _target ) return false;
-		_grenadeCheck = 0.8f;
+		if ( _check > 0 || _cooldown > 0 || _opportunity > 0 || !npc.ReactionReady
+			|| npc.Reloading || npc.GrenadesThrown >= Math.Clamp( npc.GrenadeCount, 0, 8 ) || _observedTarget != npc.CurrentTarget ) return false;
+		_check = 0.8f;
 		// Recent visual memory is valid for a flush-out throw. Radio reports alone cannot authorize it.
-		if ( !_seesContact && _contactAge > 1.5f ) return false;
-		if ( Sandbox.Mounting.Directory.Get( MountIdent ?? "titanfall2" ) is not Titanfall2Mount mount
+		if ( !npc.SeesContact && npc.VisualContactAgeSeconds > 1.5f ) return false;
+		if ( Sandbox.Mounting.Directory.Get( npc.MountIdent ?? "titanfall2" ) is not Titanfall2Mount mount
 			|| mount.GetNpcGrenadeData() is not { } data ) return false;
-		var position = _lastContact.Value + Vector3.Up * 8;
-		return TryStartGrenade( position, data );
+		var position = npc.LastContactPoint.Value + Vector3.Up * 8;
+		return TryStart( npc, position, data );
 	}
 
-	internal bool TryStartGrenade( Vector3 landing, Titanfall2NpcGrenadeData profile )
+	internal bool TryStart( Titanfall2Npc npc, Vector3 landing, Titanfall2NpcGrenadeData profile )
 	{
-		if ( !GrenadeReady || ThrowingGrenade || profile is null || !landing.IsFinite || _grenadeCooldown > 0
-			|| GrenadesThrown >= Math.Clamp( GrenadeCount, 0, 8 ) || _meleePending ) return false;
-		var distance = landing.Distance( WorldPosition );
-		if ( distance < profile.MinRange || distance > profile.MaxRange || !GrenadeAreaSafe( landing, profile.Projectile.SplashRadius ) ) return false;
-		var live = Scene.GetAllComponents<Titanfall2Projectile>().Count( shot => shot.Settings.Behavior == Titanfall2ProjectileBehavior.FragGrenade );
-		var pending = Scene.GetAllComponents<Titanfall2Npc>().Count( npc => npc.ThrowingGrenade );
+		if ( !IsReady( npc ) || npc.ThrowingGrenade || profile is null || !landing.IsFinite || _cooldown > 0
+			|| npc.GrenadesThrown >= Math.Clamp( npc.GrenadeCount, 0, 8 ) || npc.MeleePending ) return false;
+		var distance = landing.Distance( npc.WorldPosition );
+		if ( distance < profile.MinRange || distance > profile.MaxRange || !AreaSafe( npc, landing, profile.Projectile.SplashRadius ) ) return false;
+		var live = npc.Scene.GetAllComponents<Titanfall2Projectile>().Count( shot => shot.Settings.Behavior == Titanfall2ProjectileBehavior.FragGrenade );
+		var pending = npc.Scene.GetAllComponents<Titanfall2Npc>().Count( other => other.ThrowingGrenade );
 		if ( live + pending >= 6 ) return false;
 		// Avoid multiple squadmates throwing grenades at the exact same spot simultaneously.
-		if ( Scene.GetAllComponents<Titanfall2Npc>().Any( ally => ally != this && ally.ThrowingGrenade
-			&& !IsHostileToFaction( ally.Faction ) && ally._grenadeLanding.Distance( landing ) < 240f ) ) return false;
-		if ( !TryGrenadeArc( landing, profile, out _ ) ) return false;
-		_grenadeLanding = landing;
-		_pendingGrenade = profile;
-		_grenadeRelease = profile.Windup;
-		GrenadeWindupSeconds = profile.Windup;
-		ThrowingGrenade = true;
-		_nextShot = profile.Windup + 0.2f;
-		StopCombatMove();
+		if ( npc.Scene.GetAllComponents<Titanfall2Npc>().Any( ally => ally != npc && ally.ThrowingGrenade
+			&& !npc.IsHostileToFaction( ally.Faction ) && ally.GrenadeLanding.Distance( landing ) < 240f ) ) return false;
+		if ( !TryArc( npc, landing, profile, out _ ) ) return false;
+		Landing = landing;
+		_pending = profile;
+		_release = profile.Windup;
+		npc.SetGrenadeWindupHost( profile.Windup );
+		npc.SetThrowingGrenadeHost( true );
+		npc.SetNextShotDelay( profile.Windup + 0.2f );
+		npc.StopCombatMove();
 		return true;
 	}
 
-	internal void CancelNpcOrdnance()
+	internal void Cancel( Titanfall2Npc npc )
 	{
-		ThrowingGrenade = false;
-		_pendingGrenade = null;
+		npc.SetThrowingGrenadeHost( false );
+		_pending = null;
 	}
 
-	protected override void OnDisabled()
+	internal void OnDisabled( Titanfall2Npc npc )
 	{
-		CancelNpcOrdnance();
-		_grenadeObservedTarget = null;
-		base.OnDisabled();
+		Cancel( npc );
+		_observedTarget = null;
 	}
 
-	bool GrenadeAreaSafe( Vector3 landing, float radius )
+	static bool AreaSafe( Titanfall2Npc npc, Vector3 landing, float radius )
 	{
 		var safeDistance = MathF.Max( 160, radius + 64 );
-		if ( WorldPosition.Distance( landing ) < safeDistance ) return false;
-		foreach ( var ally in Scene.GetAllComponents<BaseNpc>() )
+		if ( npc.WorldPosition.Distance( landing ) < safeDistance ) return false;
+		foreach ( var ally in npc.Scene.GetAllComponents<BaseNpc>() )
 		{
-			if ( ally == this || !ally.IsValid() || ally.Health <= 0 || IsHostileToFaction( ally.Faction ) ) continue;
+			if ( ally == npc || !ally.IsValid() || ally.Health <= 0 || npc.IsHostileToFaction( ally.Faction ) ) continue;
 			if ( ally.WorldPosition.Distance( landing ) < safeDistance ) return false;
 		}
-		if ( Friendly || !AttackPlayers )
-			foreach ( var player in Scene.GetAllComponents<PlayerController>() )
+		if ( npc.Friendly || !npc.AttackPlayers )
+			foreach ( var player in npc.Scene.GetAllComponents<PlayerController>() )
 				if ( player.WorldPosition.Distance( landing ) < safeDistance ) return false;
 		return true;
 	}
 
-	bool TryGrenadeArc( Vector3 landing, Titanfall2NpcGrenadeData profile, out Vector3 result )
+	bool TryArc( Titanfall2Npc npc, Vector3 landing, Titanfall2NpcGrenadeData profile, out Vector3 result )
 	{
 		result = default;
-		var origin = GrenadeHand;
+		var origin = GrenadeHand( npc );
 		var gravity = 800 * profile.Projectile.GravityScale;
-		var start = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( Eye, origin ).Radius( profile.Projectile.Radius )
-			.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade );
+		var start = Titanfall2CollisionQueries.Run( npc.Scene.Trace.Ray( npc.EyePositionInternal, origin ).Radius( profile.Projectile.Radius )
+			.IgnoreGameObjectHierarchy( npc.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade );
 		if ( start.Hit || start.StartedSolid ) return false;
 		for ( var arc = 0; arc < 2; arc++ )
 		{
@@ -180,9 +177,9 @@ public sealed partial class Titanfall2Npc
 			{
 				var time = duration * i / steps;
 				var point = origin + velocity * time + Vector3.Down * (0.5f * gravity * time * time);
-				var trace = Scene.Trace.Ray( previous, point ).Radius( profile.Projectile.Radius ).UseHitPosition()
-					.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile" );
-				if ( _target.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( _target );
+				var trace = npc.Scene.Trace.Ray( previous, point ).Radius( profile.Projectile.Radius ).UseHitPosition()
+					.IgnoreGameObjectHierarchy( npc.GameObject ).WithoutTags( "trigger", "projectile" );
+				if ( npc.CurrentTarget.IsValid() ) trace = trace.IgnoreGameObjectHierarchy( npc.CurrentTarget );
 				var hit = Titanfall2CollisionQueries.Run( trace, Titanfall2TraceMask.Grenade );
 				// A sampled impact is acceptable only at the intended landing patch, with a supporting surface.
 				if ( hit.StartedSolid || (hit.Hit && (hit.HitPosition.Distance( landing ) > 24 || hit.Normal.z < 0.5f)) ) { clear = false; break; }
@@ -194,7 +191,4 @@ public sealed partial class Titanfall2Npc
 		}
 		return false;
 	}
-
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayGrenadeThrowSound() => Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent ?? "titanfall2", "Weapon_FragGrenade_Throw_3P", GrenadeHand );
 }

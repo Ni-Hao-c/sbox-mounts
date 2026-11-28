@@ -8,6 +8,8 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 	internal string ScriptName { get; init; }
 	internal Titanfall2WeaponPresentation Presentation { get; init; }
 	internal Titanfall2ReloadProfile ReloadProfile { get; init; }
+	internal float RechamberSeconds { get; init; }
+	internal float AdsMoveSpeedScale { get; init; } = 1f;
 
 	internal static Titanfall2WeaponData Read( string path, Func<string, string> read, bool titan = false, bool projectile = false, bool integrated = false, float fallbackSpeed = 0, Color? tint = null, bool ordnance = false, bool antiTitan = false, Titanfall2ProjectileBehavior behavior = Titanfall2ProjectileBehavior.Standard, IReadOnlyList<string> selectedMods = null, Action<string> warn = null )
 	{
@@ -46,13 +48,16 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		var primaryCallback = Get( "OnWeaponPrimaryAttack" );
 		var hasPrimaryOverride = Titanfall2WeaponScriptOverrides.TryGetPrimaryAttack( primaryCallback, out var primaryOverride );
 		var pattern = hasPrimaryOverride ? primaryOverride.Pattern : Titanfall2BoltPattern.Default;
+		var attackPressesAds = Get( "attack_button_presses_ads" ) == "1";
 		var firing = new Titanfall2WeaponFiring
 		{
 			Pattern = pattern,
 			AmmoPerShot = (int)Math.Clamp( Number( "ammo_per_shot", 1 ), 1, 250 ),
 			AmmoMinToFire = (int)Math.Clamp( Number( "ammo_min_to_fire", 1 ), 1, 250 ),
 			BoltSpreadHip = hasPrimaryOverride && primaryOverride.BoltSpreadHip is { } hipSpread ? hipSpread : Math.Clamp( Number( "bolt_spread_max" ), 0, 1 ),
-			BoltSpreadAds = hasPrimaryOverride && primaryOverride.BoltSpreadAds is { } adsSpread ? adsSpread : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 )
+			BoltSpreadAds = hasPrimaryOverride && primaryOverride.BoltSpreadAds is { } adsSpread ? adsSpread : Math.Clamp( Number( "bolt_spread_min" ), 0, 1 ),
+			AttackPressesAds = attackPressesAds,
+			RequireFullAdsToFire = attackPressesAds && hasPrimaryOverride && primaryOverride.RequireFullAdsToFire
 		};
 		if ( hasPrimaryOverride && primaryOverride.Pellets is { } overridePellets ) pellets = overridePellets;
 		if ( hasPrimaryOverride && primaryOverride.Speed is { } overrideSpeed ) speed = overrideSpeed;
@@ -86,6 +91,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				SplashDamage = Math.Clamp( Number( "explosion_damage", integrated && impactRadius > 0 ? damage * 0.5f : 0 ), 0, 1000 ),
 				SplashTitanDamage = Math.Clamp( Number( "explosion_damage_heavy_armor", Number( "explosion_damage" ) ), 0, 10000 ),
 				ImpactTable = Get( "impact_effect_table" ) is { Length: > 0 } table ? table : "default",
+				FlightSound = Get( "projectile_flight_sound" ) is { Length: > 0 } flightSound ? flightSound : (hasPrimaryOverride ? primaryOverride.FlightSound : null),
 				TrailEffect = Get( "projectile_trail_effect_0" ),
 				TrailAttachment = Get( "projectile_trail_attachment" ),
 				ScriptTrailEffect = hasPrimaryOverride ? primaryOverride.ScriptTrailEffect : null,
@@ -104,6 +110,24 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				&& !sound.Contains( "casing", StringComparison.OrdinalIgnoreCase ) ).Distinct( StringComparer.OrdinalIgnoreCase ).ToArray();
 		var fireSounds3p = FireSounds( "3p" );
 		var fireSounds1p = FireSounds( "1p" );
+		var audio = ReadAudio( Get, (int)burst );
+		if ( hasPrimaryOverride )
+		{
+			if ( fireSounds1p.Length == 0 && !string.IsNullOrWhiteSpace( primaryOverride.FireSound1P ) )
+			{
+				fireSounds1p = [primaryOverride.FireSound1P];
+				if ( string.IsNullOrWhiteSpace( audio.Player1P.Fire1 ) )
+					audio = audio with { Player1P = audio.Player1P with { Fire1 = primaryOverride.FireSound1P } };
+			}
+			if ( fireSounds3p.Length == 0 && !string.IsNullOrWhiteSpace( primaryOverride.FireSound3P ) )
+			{
+				fireSounds3p = [primaryOverride.FireSound3P];
+				if ( string.IsNullOrWhiteSpace( audio.Player3P.Fire1 ) )
+					audio = audio with { Player3P = audio.Player3P with { Fire1 = primaryOverride.FireSound3P } };
+				if ( string.IsNullOrWhiteSpace( audio.Npc.Fire1 ) )
+					audio = audio with { Npc = audio.Npc with { Fire1 = primaryOverride.FireSound3P } };
+			}
+		}
 		var (crosshairStyle, crosshairBaseSpread) = ReadCrosshair( root, ordnance );
 		var opticReticle = ReadOpticReticle( root, Get );
 		var presentation = new Titanfall2WeaponPresentation
@@ -134,7 +158,7 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 		return new( world, view, mode == "auto", (int)magazine, rate, reload, projectile ? damage : damage / pellets, range,
 			spread.Stand.Hip, fireSounds3p, fireSounds1p, adsFov, hold, (int)pellets, (int)burst, Math.Clamp( Number( "burst_fire_delay", 0.25f ), 0, 5 ),
 			Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) / (projectile ? 1 : pellets), flight )
-			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = ReadAudio( Get, (int)burst ), Firing = firing, SpreadProfile = spread,
+			{ ScriptName = Path.GetFileNameWithoutExtension( path ), Presentation = presentation, Audio = audio, Firing = firing, SpreadProfile = spread,
 				ReloadProfile = new()
 				{
 					Enabled = !charge.Valid && !ordnance,
@@ -154,7 +178,10 @@ internal sealed partial record Titanfall2WeaponData( string WorldModel, string V
 				SmartAmmo = ReadSmartAmmo( Get, Number ),
 				ModCandidates = modCandidates,
 				ViewKick = ordnance ? default : ReadViewKickProfile( Get, Number, read ),
+				ViewMotion = ReadViewMotionProfile( Get, Number ),
 				UiDisplays = ReadUiDisplays( root, Get ),
+				RechamberSeconds = Math.Clamp( Number( "rechamber_time", 0f ), 0f, 10f ),
+				AdsMoveSpeedScale = Math.Clamp( Number( "ads_move_speed_scale", 1f ), 0.2f, 1f ),
 				DamageProfile = ReadDamageProfile( Number, damage, Math.Clamp( Number( "damage_near_value_titanarmor", damage ), 1, 4000 ) ) };
 	}
 

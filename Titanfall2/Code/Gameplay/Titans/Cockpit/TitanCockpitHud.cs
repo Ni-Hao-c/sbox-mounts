@@ -3,13 +3,19 @@ using Sandbox.UI.Construct;
 
 /// <summary>A local-only native HUD. Its state is read from the actor, kit and core.</summary>
 [Hide]
-public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
+public sealed partial class Titanfall2TitanCockpitHud : Titanfall2MountPanelComponent
 {
+	const int DefenseSlot = 0;
+	const int UtilitySlot = 1;
+	const int OffenseSlot = 2;
+	const int SmokeSlot = 3;
+
 	[Property] public Titanfall2TitanSeat Seat { get; set; }
 	Label _name, _link, _tier, _heading, _telemetry, _health, _shield, _ammo, _weapon, _coreName, _coreState, _message, _controls, _target, _dashLabel;
-	Panel _healthFill, _shieldFill, _reticle, _hitmarker, _ionBar, _ionFill, _toneLocks, _embarkBar, _embarkFill, _phaseOverlay;
+	Panel _healthFill, _shieldFill, _reticle, _hitmarker, _ionBar, _ionFill, _toneLocks, _northstarCharge, _legionSpinBar, _legionSpinFill, _embarkBar, _embarkFill, _phaseOverlay;
 	Panel _healthSegments;
 	readonly List<Panel> _tonePips = [];
+	readonly List<Panel> _northstarPips = [];
 	readonly List<Panel> _sonarMarkers = [];
 	readonly List<GameObject> _sonarTargets = [];
 	Titanfall2CoreGauge _coreGauge;
@@ -47,6 +53,7 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_abilityArt.Clear();
 		_requestedArt.Clear();
 		_tonePips.Clear();
+		_northstarPips.Clear();
 		_sonarMarkers.Clear();
 		_artKit = (Titanfall2TitanKit.Chassis)(-1);
 		_artWeapon = "";
@@ -91,6 +98,13 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_ionBar = _reticle.Add.Panel( "ion-energy-reticle" );
 		_ionFill = _ionBar.Add.Panel( "ion-energy-fill" );
 
+		_northstarCharge = _reticle.Add.Panel( "northstar-charge" );
+		for ( var i = 0; i < Titanfall2TitanPrimaryAdsRules.NorthstarMaxChargeLevel; i++ )
+			_northstarPips.Add( _northstarCharge.Add.Panel( "northstar-pip" ) );
+
+		_legionSpinBar = _reticle.Add.Panel( "legion-spin-reticle" );
+		_legionSpinFill = _legionSpinBar.Add.Panel( "legion-spin-fill" );
+
 		_target = Panel.Add.Label( "", "target-state" );
 		_message = Panel.Add.Label( "", "cockpit-message" );
 
@@ -117,13 +131,24 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_weapon = ammunition.Add.Label( "", "eyebrow" );
 		_ammo = ammunition.Add.Label( "", "rounds" );
 
+		// Retail cl_weapon_status.gnut lays out 3 bottom slots (Left=Defense, Center=Utility,
+		// Right=Offense) with Electric Smoke stacked directly above Center (xPos=1, yPos=1).
 		var row = systems.Add.Panel( "abilities" );
-		for ( var i = 0; i < 4; i++ )
+		var leftCol = row.Add.Panel( "ability-col" );
+		var centerCol = row.Add.Panel( "ability-col ability-col-center" );
+		var rightCol = row.Add.Panel( "ability-col" );
+
+		var defenseSlot = AddAbilityCard( leftCol, "ability" );
+		var smokeSlot = AddAbilityCard( centerCol, "ability ability-smoke" );
+		var utilitySlot = AddAbilityCard( centerCol, "ability" );
+		var offenseSlot = AddAbilityCard( rightCol, "ability" );
+
+		(Panel Panel, Image Art, Label Key, Label Name, Label State, Panel Fill)[] orderedSlots =
+			[defenseSlot, utilitySlot, offenseSlot, smokeSlot];
+		foreach ( var slot in orderedSlots )
 		{
-			var card = row.Add.Panel( "ability" );
-			_abilityArt.Add( card.Add.Image( classname: "ability-art" ) );
-			_abilities.Add( (card, card.Add.Label( "", "key" ), card.Add.Label( "", "ability-name" ),
-				card.Add.Label( "", "ability-state" ), AddBar( card, "ability-bar" )) );
+			_abilityArt.Add( slot.Art );
+			_abilities.Add( (slot.Panel, slot.Key, slot.Name, slot.State, slot.Fill) );
 		}
 
 		var dash = Panel.Add.Panel( "dash" );
@@ -131,6 +156,18 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_dashFill = AddBar( dash, "dash-bar" );
 		_dashArt = _dashFill.Add.Image( classname: "dash-art" );
 		_controls = Panel.Add.Label( "", "controls" );
+	}
+
+	(Panel Panel, Image Art, Label Key, Label Name, Label State, Panel Fill) AddAbilityCard( Panel parent, string className )
+	{
+		var card = parent.Add.Panel( className );
+		var iconWrap = card.Add.Panel( "ability-icon-wrap" );
+		var art = iconWrap.Add.Image( classname: "ability-art" );
+		var fill = AddBar( card, "ability-bar" );
+		var key = card.Add.Label( "", "key" );
+		var name = card.Add.Label( "", "ability-name" );
+		var state = card.Add.Label( "", "ability-state" );
+		return (card, art, key, name, state, fill);
 	}
 
 	Panel AddBar( Panel parent, string name, bool retail = false )
@@ -142,7 +179,23 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		if ( retail ) _healthSegments = bar.Add.Panel( "hull-segments" );
 		return fill;
 	}
-	static string Key( string action ) => string.IsNullOrWhiteSpace( action ) ? "未绑定" : Input.GetButtonOrigin( action )?.ToUpperInvariant() ?? "未绑定";
+	internal static string FormatKeyLabel( string origin )
+	{
+		if ( string.IsNullOrWhiteSpace( origin ) ) return "未绑定";
+		return origin.Trim().ToUpperInvariant() switch
+		{
+			"MOUSE1" => "LMB",
+			"MOUSE2" => "RMB",
+			"MOUSE3" => "MMB",
+			"LEFT CTRL" or "LCTRL" => "CTRL",
+			"RIGHT CTRL" or "RCTRL" => "RCTRL",
+			"LEFT SHIFT" or "LSHIFT" => "SHIFT",
+			"RIGHT SHIFT" or "RSHIFT" => "RSHIFT",
+			"LEFT ALT" or "LALT" => "ALT",
+			var other => other
+		};
+	}
+	static string Key( string action ) => string.IsNullOrWhiteSpace( action ) ? "未绑定" : FormatKeyLabel( Input.GetButtonOrigin( action ) );
 	static void Fill( Panel panel, float value ) { if ( panel.IsValid() ) panel.Style.Width = Length.Percent( Math.Clamp( value, 0, 1 ) * 100 ); }
 	internal static string Remaining( float seconds ) => seconds <= 0 ? "就绪" : $"{MathF.Ceiling( seconds )}s";
 
@@ -196,40 +249,40 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		{
 			if ( kit.Kit == Titanfall2TitanKit.Chassis.Ion )
 			{
-				SetAbility( 0, Seat.OffenseAction, AbilityName( kit.OffenseName ), kit.OffenseRemaining, 1,
+				SetAbility( OffenseSlot, Seat.OffenseAction, AbilityName( kit.OffenseName ), kit.OffenseRemaining, 1,
 					$"能量 {kit.SharedEnergy}/{kit.SharedEnergyMaximum}", kit.CanIonLaser );
-				SetAbility( 1, Seat.DefenseAction, AbilityName( kit.DefenseName ), 0, 1,
+				SetAbility( DefenseSlot, Seat.DefenseAction, AbilityName( kit.DefenseName ), 0, 1,
 					kit.IonVortexActive ? $"反射 · {kit.CapturedAmmo} 发" : "按住吸收", kit.SharedEnergy >= 100 );
-				SetAbility( 2, Seat.UtilityAction, AbilityName( kit.UtilityName ), kit.UtilityRemaining, kit.UtilityCooldownSeconds,
+				SetAbility( UtilitySlot, Seat.UtilityAction, AbilityName( kit.UtilityName ), kit.UtilityRemaining, kit.UtilityCooldownSeconds,
 					kit.SharedEnergy < 350 ? "能量不足" : null, kit.CanUseUtility );
-				Fill( _abilities[0].Fill, (float)kit.SharedEnergy / kit.SharedEnergyMaximum );
-				Fill( _abilities[1].Fill, (float)kit.SharedEnergy / kit.SharedEnergyMaximum );
+				Fill( _abilities[OffenseSlot].Fill, (float)kit.SharedEnergy / kit.SharedEnergyMaximum );
+				Fill( _abilities[DefenseSlot].Fill, (float)kit.SharedEnergy / kit.SharedEnergyMaximum );
 			}
 			else
 			{
 				var offenseExtra = kit.Kit == Titanfall2TitanKit.Chassis.Tone ? $"标记 {kit.TrackerMarks}/3"
 					: kit.Kit == Titanfall2TitanKit.Chassis.Legion ? (kit.LegionLongRangeMode ? "远距·穿甲" : "近距·霰弹")
 					: null;
-				SetAbility( 0, Seat.OffenseAction, AbilityName( kit.OffenseName ), kit.OffenseRemaining,
+				SetAbility( OffenseSlot, Seat.OffenseAction, AbilityName( kit.OffenseName ), kit.OffenseRemaining,
 					kit.OffenseCooldown, offenseExtra,
 					kit.Kit != Titanfall2TitanKit.Chassis.Tone || kit.HasTrackerLock );
 
 				if ( kit.Kit == Titanfall2TitanKit.Chassis.Scorch )
 				{
 					var pct = (int)MathF.Round( kit.ThermalShieldMeter * 100f );
-					SetAbility( 1, "attack2", AbilityName( kit.DefenseName ), 0, 1,
+					SetAbility( DefenseSlot, Seat.DefenseAction, AbilityName( kit.DefenseName ), 0, 1,
 						kit.GuardRemaining > 0 ? $"灼烧 · {pct}%" : $"按住 · {pct}%", kit.ThermalShieldMeter > 0.05f );
-					Fill( _abilities[1].Fill, kit.ThermalShieldMeter );
+					Fill( _abilities[DefenseSlot].Fill, kit.ThermalShieldMeter );
 				}
 				else if ( kit.Kit == Titanfall2TitanKit.Chassis.Ronin )
 				{
-					SetAbility( 1, "attack2", AbilityName( kit.DefenseName ), 0, 1,
+					SetAbility( DefenseSlot, Seat.DefenseAction, AbilityName( kit.DefenseName ), 0, 1,
 						kit.RoninBlocking ? "格挡中" : "按住格挡", !kit.IsPhasing );
-					Fill( _abilities[1].Fill, kit.RoninBlocking ? 1f : 0.7f );
+					Fill( _abilities[DefenseSlot].Fill, kit.RoninBlocking ? 1f : 0.7f );
 				}
 				else
 				{
-					SetAbility( 1, "attack2", AbilityName( kit.DefenseName ), kit.DefenseRemaining,
+					SetAbility( DefenseSlot, Seat.DefenseAction, AbilityName( kit.DefenseName ), kit.DefenseRemaining,
 						kit.Kit == Titanfall2TitanKit.Chassis.Northstar ? Titanfall2TetherRules.RecoverySeconds
 							: kit.Kit == Titanfall2TitanKit.Chassis.Tone ? 14f : kit.DefenseCooldown,
 						kit.GuardRemaining > 0 ? $"生效 {kit.GuardRemaining:0.0}s" : null );
@@ -239,17 +292,17 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 					: kit.IsPhasing ? $"相位 {kit.PhaseRemaining:0.0}s"
 					: kit.Kit == Titanfall2TitanKit.Chassis.Legion ? (kit.LegionLongRangeMode ? "远距" : "近距")
 					: null;
-				SetAbility( 2, Seat.UtilityAction, AbilityName( kit.UtilityName ), kit.UtilityRemaining,
+				SetAbility( UtilitySlot, Seat.UtilityAction, AbilityName( kit.UtilityName ), kit.UtilityRemaining,
 					kit.UtilityCooldownSeconds, utilityExtra, kit.CanUseUtility );
 			}
 
-			SetAbility( 3, Seat.SmokeAction, AbilityName( kit.SmokeName ), kit.SmokeRemaining, kit.SmokeCooldown );
+			SetAbility( SmokeSlot, Seat.SmokeAction, AbilityName( kit.SmokeName ), kit.SmokeRemaining, kit.SmokeCooldown );
 
 			var maxDashes = Math.Max( 1, kit.MaxDashCharges );
 			var dashReady = kit.DashCharges > 0;
 			_dashLabel.Text = maxDashes > 1
-				? (dashReady ? $"[{Key( "run" )}] 推进 {kit.DashCharges}/{maxDashes}" : $"推进充能 0/{maxDashes} · {kit.DashRemaining:0.0}s")
-				: (dashReady ? $"[{Key( "run" )}] 推进就绪" : $"推进充能 {kit.DashRemaining:0.0}s");
+				? (dashReady ? $"[{Key( Seat.DashAction )}] 推进 {kit.DashCharges}/{maxDashes}" : $"推进充能 0/{maxDashes} · {kit.DashRemaining:0.0}s")
+				: (dashReady ? $"[{Key( Seat.DashAction )}] 推进就绪" : $"推进充能 {kit.DashRemaining:0.0}s");
 			_dashLabel.SetClass( "ready", dashReady );
 			var dashFill = (kit.DashCharges + (kit.DashCharges < maxDashes ? kit.DashRechargeProgress : 0f)) / maxDashes;
 			Fill( _dashFill, dashFill );
@@ -270,9 +323,17 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 			core is { CanActivate: true } or { IsActive: true }, supported );
 		Panel.SetClass( "core-ready", core is { CanActivate: true } );
 		Panel.SetClass( "core-active", core is { IsActive: true } );
-		_message.Text = Seat.StatusMessage ?? (actor.IsDoomed ? $"警告 · 泰坦已进入危急状态   [{Key( Seat.EjectAction )}] 弹射" : actor.Health <= actor.MaxHealth * 0.25f ? "警告 · 机体受损严重" : "");
-		_controls.Text = $"[{Key( "attack1" )}] 开火   [{Key( "reload" )}] 装填   [{Key( Seat.MeleeAction )}] 近战   [{Key( "run" )}] 冲刺   [{Key( "use" )}] 离舱   [{Key( Seat.EjectAction )}] 弹射   [{Key( "spawnmenu" )}] 菜单";
-		if ( kit?.Kit == Titanfall2TitanKit.Chassis.Ion ) _controls.Text += $"   [{Key( "attack2" )}] 分裂射击";
+		_message.Text = Seat.StatusMessage ?? (actor.IsDoomed ? $"警告 · 泰坦已进入危急状态   [{Key( Seat.EjectAction )}] 自爆弹射" : actor.Health <= actor.MaxHealth * 0.25f ? "警告 · 机体受损严重" : "");
+		var adsLabel = kit?.Kit switch
+		{
+			Titanfall2TitanKit.Chassis.Ion => "瞄准/分裂射击",
+			Titanfall2TitanKit.Chassis.Northstar => "蓄力瞄准",
+			Titanfall2TitanKit.Chassis.Scorch => "弹道瞄准",
+			Titanfall2TitanKit.Chassis.Legion => "预热瞄准",
+			Titanfall2TitanKit.Chassis.Ronin => "收束瞄准",
+			_ => "瞄准"
+		};
+		_controls.Text = $"[{Key( "attack1" )}] 开火   [{Key( "attack2" )}] {adsLabel}   [{Key( "reload" )}] 装填   [{Key( Seat.MeleeAction )}] 近战   [{Key( Seat.DashAction )}] 冲刺   [{Key( "use" )}] 离舱   [{Key( Seat.EjectAction )}] 自爆弹射   [{Key( "spawnmenu" )}] 菜单";
 		UpdateTarget( actor, kit );
 		UpdateCockpitSonarMarkers();
 	}
@@ -317,8 +378,8 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		_lastHitSerial = actor.HitMarkerSerial;
 
 		var moveSpread = Math.Clamp( Seat.DriveVelocity.WithZ( 0 ).Length / 260f, 0f, 1f ) * 4f;
-		var ionTighten = kit is { Kit: Titanfall2TitanKit.Chassis.Ion } ? kit.IonZoomFraction * 8f : 0f;
-		_reticleSpread = MathX.Lerp( _reticleSpread, MathF.Max( 0f, moveSpread - ionTighten ), Math.Clamp( Time.Delta * 12f, 0f, 1f ) );
+		var adsTighten = kit.IsValid() ? kit.PrimaryZoomFraction * 10f : 0f;
+		_reticleSpread = MathX.Lerp( _reticleSpread, MathF.Max( 0f, moveSpread - adsTighten ), Math.Clamp( Time.Delta * 12f, 0f, 1f ) );
 
 		var offset = 26f + _reticleSpread;
 		if ( _reticleArt.IsValid() ) _reticleArt.Style.Left = Length.Pixels( -offset );
@@ -355,6 +416,32 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 				_ionBar.SetClass( "ads", kit.IonZoomFraction > 0.5f );
 			}
 		}
+
+		var isNorthstar = kit is { Kit: Titanfall2TitanKit.Chassis.Northstar };
+		if ( _northstarCharge.IsValid() )
+		{
+			var showCharge = isNorthstar && (kit.PrimaryZoomFraction > 0.1f || kit.NorthstarChargeFraction > 0.01f);
+			_northstarCharge.Style.Display = showCharge ? DisplayMode.Flex : DisplayMode.None;
+			if ( showCharge )
+			{
+				var level = kit.NorthstarChargeLevel;
+				_northstarCharge.SetClass( "full", level >= Titanfall2TitanPrimaryAdsRules.NorthstarMaxChargeLevel );
+				for ( var i = 0; i < _northstarPips.Count; i++ )
+					_northstarPips[i].SetClass( "filled", i < level );
+			}
+		}
+
+		var isLegion = kit is { Kit: Titanfall2TitanKit.Chassis.Legion };
+		if ( _legionSpinBar.IsValid() )
+		{
+			var showSpin = isLegion && kit.LegionSpinFraction > 0.01f;
+			_legionSpinBar.Style.Display = showSpin ? DisplayMode.Flex : DisplayMode.None;
+			if ( showSpin )
+			{
+				Fill( _legionSpinFill, kit.LegionSpinFraction );
+				_legionSpinBar.SetClass( "ready", kit.LegionSpinReady );
+			}
+		}
 	}
 
 	void SetAbility( int index, string action, string name, float remaining, float recharge, string extra = null, bool canUse = true )
@@ -364,7 +451,7 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		card.Key.Text = Key( action );
 		card.Name.Text = name;
 		card.State.Text = extra is null ? Remaining( remaining ) : remaining > 0 ? $"{extra} · {Remaining( remaining )}" : extra;
-		if ( !canUse && remaining <= 0 ) card.State.Text = $"{extra} · 未就绪";
+		if ( !canUse && remaining <= 0 ) card.State.Text = string.IsNullOrEmpty( extra ) ? "未就绪" : $"{extra} · 未就绪";
 		card.Panel.SetClass( "ready", remaining <= 0 && canUse );
 		Fill( card.Fill, 1 - remaining / MathF.Max( 0.1f, recharge ) );
 	}
@@ -399,7 +486,7 @@ public sealed partial class Titanfall2TitanCockpitHud : PanelComponent
 		"Firewall" => "火墙", "Cluster Missile" => "集束导弹", "Arc Wave" => "电弧波", "Vortex Guard" => "涡旋护盾",
 		"Gun Shield" => "枪盾", "Particle Guard" => "粒子护盾", "Thermal Shield" => "热能护盾", "Electric Smoke" => "电子烟幕",
 		"Sword Block" => "剑格挡", "Tether Trap" => "绊索陷阱", "Energy Siphon" => "能量虹吸",
-		"Rearm" => "重新装填", "Laser Tripwire" => "激光绊雷", "Close-Range" => "近距模式", "Long-Range" => "远距模式",
+		"Rearm" => "重备武装", "Laser Tripwire" => "激光绊雷", "Close-Range" => "近距模式", "Long-Range" => "远距模式",
 		"Sonar Lock" => "声呐脉冲", "Incendiary Trap" => "燃烧罐", "VTOL Hover" => "垂直悬停", "Phase Dash" => "相位冲刺",
 		"Broad Sword" => "宽刃剑", "Titan Melee" => "泰坦近战",
 		"Upgrade Core" => "升级核心", "Laser Core" => "激光核心",

@@ -11,6 +11,12 @@ public sealed partial class Titanfall2Weapon
 
 	[Property] public Titanfall2WeaponUiDisplay[] UiDisplays { get; set; } = [];
 	Titanfall2WeaponAmmoDisplay _ammoDisplay;
+	Texture _wingmanArc;
+	Texture _wingmanDot;
+	bool _wingmanTexturesRequested;
+	int _wingmanTextureGeneration;
+	internal bool HasRetailWingmanArtwork => _wingmanArc is { IsValid: true, IsError: false }
+		&& _wingmanDot is { IsValid: true, IsError: false };
 	internal bool HasLocalFirstPersonHud => Active && !Application.IsDedicatedServer && !Application.IsHeadless
 		&& !IsProxy && IsHeld && IsActive && Owner.IsValid() && Owner is { IsProxy: false, ThirdPerson: false, Active: true }
 		&& Inventory.IsValid() && ViewModel.IsValid() && ViewModel.Enabled;
@@ -35,12 +41,20 @@ public sealed partial class Titanfall2Weapon
 			_ammoDisplay.Weapon = this;
 		}
 		_ammoDisplay.SetVisible( ScopeOpacity < 1 );
+		if ( Presentation.CrosshairStyle == Titanfall2CrosshairStyle.Wingman && !_wingmanTexturesRequested )
+		{
+			_wingmanTexturesRequested = true;
+			_ = LoadWingmanCrosshairAsync( MountIdent ?? "titanfall2", _wingmanTextureGeneration );
+		}
 	}
 
 	void DestroyWeaponHud()
 	{
 		if ( _ammoDisplay.IsValid() ) _ammoDisplay.Destroy();
 		_ammoDisplay = null;
+		_wingmanArc = _wingmanDot = null;
+		_wingmanTexturesRequested = false;
+		_wingmanTextureGeneration++;
 	}
 
 	public override void DrawCrosshair( Painter painter, Vector2 center )
@@ -50,12 +64,19 @@ public sealed partial class Titanfall2Weapon
 
 		var opacity = Math.Clamp( 1 - _adsBlend / 0.8f, 0, 1 );
 		var dotOpacity = Math.Clamp( (_adsBlend - 0.15f) / 0.65f, 0, 1 );
+		// Authored optic RUI surfaces own their aim mark once their artwork is ready.
+		// Keep the HUD fallback while loading or if an optic surface could not be built.
+		if ( _ammoDisplay.IsValid() && _ammoDisplay.HasOpticReticleSurface ) dotOpacity = 0;
 		var camera = Scene.Camera;
 		var size = camera.IsValid() ? camera.ScreenRect.Size : new Vector2( 1920, 1080 );
 		var scale = Math.Clamp( size.y / 1080f, 0.5f, 2.5f );
 		var cone = MathF.Max( MathF.Abs( CurrentSpread.x ), MathF.Abs( CurrentSpread.y ) );
-		var fov = float.Lerp( camera.IsValid() ? camera.FieldOfView : 90f, AdsFov, _adsBlend );
-		var radius = CrosshairRadius( cone, fov, size.x, scale );
+		var cameraFov = camera.IsValid() ? ResolveHorizontalFieldOfView( camera.FieldOfView, camera.FovAxis, size ) : 90f;
+		var adsFov = camera.IsValid() ? ResolveHorizontalFieldOfView( ResolveAdsFieldOfView( AdsFov, camera.FovAxis ), camera.FovAxis, size ) : AdsFov;
+		var fov = float.Lerp( cameraFov, adsFov, _adsBlend );
+		var radius = Presentation.CrosshairStyle == Titanfall2CrosshairStyle.Wingman
+			? WingmanCrosshairOffset( cone, Presentation.CrosshairBaseSpread, fov, size.x, scale )
+			: CrosshairRadius( cone, fov, size.x, scale );
 		var color = HasRoundAmmo() ? Color.White : CrosshairLowAmmo;
 
 		using var state = painter.Scope();
@@ -184,18 +205,15 @@ public sealed partial class Titanfall2Weapon
 				break;
 
 			case Titanfall2CrosshairStyle.Wingman:
-				// B3 Wingman: compact pistol side brackets + bottom tick + center dot.
-				var wg = MathF.Max( radius, 8f * scale );
-				DrawCrosshairBracket( painter, center + new Vector2( -wg, 0 ), 3.5f * scale, 10f * scale, leftSide: true, thick, color, scale );
-				DrawCrosshairBracket( painter, center + new Vector2( wg, 0 ), 3.5f * scale, 10f * scale, leftSide: false, thick, color, scale );
-				DrawCrosshairBar( painter, new Rect( center.x - thick * 0.5f, center.y + wg * 0.85f, thick, 4.5f * scale ), color, scale );
-				DrawCrosshairDot( painter, center, 1.5f * scale, color, scale );
+				DrawWingmanCrosshair( painter, center, radius, scale, color );
 				break;
 
 			case Titanfall2CrosshairStyle.WingmanElite:
-				// Wingman Elite: pinpoint accurate center dot + tight diamond corner ticks.
-				DrawCrosshairDiamond( painter, center, 7f * scale, color.WithAlpha( 0.75f ), scale );
-				DrawCrosshairDot( painter, center, 1.8f * scale, CrosshairCyan, scale );
+				// ui/crosshair_wingman_n draws a 3px white square over a 6px black square.
+				painter.Fill = CrosshairShadow;
+				painter.Rect( new Rect( center - 3f * scale, new Vector2( 6f * scale, 6f * scale ) ) );
+				painter.Fill = color;
+				painter.Rect( new Rect( center - 1.5f * scale, new Vector2( 3f * scale, 3f * scale ) ) );
 				break;
 
 			case Titanfall2CrosshairStyle.SmartPistol:
@@ -390,6 +408,64 @@ public sealed partial class Titanfall2Weapon
 				DrawCrosshairDot( painter, center, 1.35f * scale, baseColor, scale );
 				break;
 		}
+	}
+
+	void DrawWingmanCrosshair( Painter painter, Vector2 center, float offset, float scale, Color color )
+	{
+		if ( _wingmanArc is { IsValid: true, IsError: false, Width: > 1, Height: > 1 }
+			&& _wingmanDot is { IsValid: true, IsError: false, Width: > 1, Height: > 1 } )
+		{
+			// Retail ui/crosshair_wingman uses four fixed 32px arc images. Spread
+			// moves their centres, rather than scaling their stroke or replacing them
+			// with pistol brackets. The atlas arc points into the bottom-left quadrant.
+			for ( var quadrant = 0; quadrant < 4; quadrant++ )
+			{
+				using var scope = painter.Scope();
+				var x = quadrant is 0 or 1 ? -offset : offset;
+				var y = quadrant is 0 or 3 ? offset : -offset;
+				painter.Translate( center + new Vector2( x, y ) );
+				painter.Rotate( quadrant * 90f );
+				painter.Texture( _wingmanArc, new Rect( -16f * scale, -16f * scale, 32f * scale, 32f * scale ), color );
+			}
+			painter.Texture( _wingmanDot, new Rect( center - 4f * scale, new Vector2( 8f * scale, 8f * scale ) ), color );
+			return;
+		}
+
+		// Keep the same silhouette when the retail UI atlas is unavailable.
+		DrawCrosshairSegmentedRing( painter, center, offset + 13f * scale, 4, 76f, 4f * scale, CrosshairShadow, scale );
+		DrawCrosshairSegmentedRing( painter, center, offset + 13f * scale, 4, 76f, 2f * scale, color, scale );
+		DrawCrosshairBar( painter, new Rect( center - 1.5f * scale, new Vector2( 3f * scale, 3f * scale ) ), color, scale );
+	}
+
+	async Task LoadWingmanCrosshairAsync( string mountIdent, int generation )
+	{
+		try
+		{
+			// Resource loading belongs to update/preparation, never to the painter.
+			// These are borrowed mount resources, so weapon teardown only drops references.
+			var arc = await Texture.LoadAsync( $"mount://{mountIdent}/rui/hud/crosshairs/crosshair_arc.vtex" );
+			if ( !this.IsValid() || generation != _wingmanTextureGeneration || (MountIdent ?? "titanfall2") != mountIdent ) return;
+			var dot = await Texture.LoadAsync( $"mount://{mountIdent}/rui/hud/crosshairs/crosshair_dot.vtex" );
+			if ( !this.IsValid() || generation != _wingmanTextureGeneration || (MountIdent ?? "titanfall2") != mountIdent ) return;
+			_wingmanArc = arc;
+			_wingmanDot = dot;
+		}
+		catch ( Exception exception )
+		{
+			Titanfall2Log.Warning( $"Cannot prepare Wingman crosshair artwork: {exception.Message}" );
+		}
+	}
+
+	// Crosshair base_spread is visual only: never feed this adjusted cone back
+	// into the weapon's firing profile. Wingman ships -0.25 degrees here.
+	internal static float WingmanCrosshairOffset( float coneDegrees, float baseSpread, float fov, float width, float scale )
+	{
+		if ( !float.IsFinite( coneDegrees ) || !float.IsFinite( baseSpread ) || !float.IsFinite( fov )
+			|| !float.IsFinite( width ) || !float.IsFinite( scale ) ) return 0;
+		var cone = Math.Clamp( coneDegrees + baseSpread, 0f, 45f );
+		var pixels = MathF.Tan( cone * MathF.PI / 180f )
+			/ MathF.Tan( Math.Clamp( fov, 15f, 150f ) * MathF.PI / 360f ) * MathF.Max( 1f, width ) * 0.5f;
+		return Math.Clamp( pixels, 0f, 35f * MathF.Max( 0f, scale ) );
 	}
 
 	static void DrawCrosshairBar( Painter painter, Rect rect, Color color, float scale )

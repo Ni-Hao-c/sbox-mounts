@@ -18,6 +18,10 @@ partial class ModelLoader
 	internal const string MeleeRole = "tf2_melee";
 	internal const string GrenadeRole = "tf2_grenade";
 	internal const string DeathRole = "tf2_death";
+	internal const string JumpRole = "tf2_traverse_jump";
+	internal const string DropRole = "tf2_traverse_drop";
+	internal const string ClimbRole = "tf2_traverse_climb";
+	internal const string LandRole = "tf2_traverse_land";
 	internal const string MortarDeployRole = "tf2_mortar_deploy";
 	internal const string MortarAttackRole = "tf2_mortar_attack";
 	internal const string MortarRecoverRole = "tf2_mortar_recover";
@@ -44,9 +48,13 @@ partial class ModelLoader
 
 		var execRank = TitanExecutionAnimationRank( label, modelPath );
 		if ( execRank.Role is not null ) return execRank;
+		var titanAction = TitanActionAnimationRank( label, modelPath );
+		if ( titanAction.Role is not null ) return titanAction;
 
 		if ( label.StartsWith( "add_", StringComparison.Ordinal ) || label.StartsWith( "gest_", StringComparison.Ordinal )
 			|| label.StartsWith( "aim_", StringComparison.Ordinal ) || label.Contains( "synced", StringComparison.Ordinal ) ) return default;
+		var traversal = label.Contains( "flight_core", StringComparison.Ordinal ) ? default : TraversalAnimationRank( act );
+		if ( traversal.Role is not null ) return traversal;
 
 		return label switch
 		{
@@ -140,6 +148,72 @@ partial class ModelLoader
 	internal static string InfantryAnimationRole( string name, string activity ) => InfantryAnimationRank( name, activity ).Role;
 	internal static bool IsLocomotionRole( string role ) => role == MoveRole || role?.StartsWith( "tf2_walk_", StringComparison.Ordinal ) == true
 		|| role?.StartsWith( "tf2_run_", StringComparison.Ordinal ) == true;
+	internal static bool IsTraversalRole( string role ) => role?.StartsWith( "tf2_traverse_", StringComparison.Ordinal ) == true;
+	internal static bool HasExternalRootMotion( string role ) => IsTraversalRole( role ) || role is "ai_northstar_core" or "ai_northstar_utility";
+	internal static bool IsTitanActionRole( string role ) => role?.StartsWith( "ai_", StringComparison.Ordinal ) == true;
+	internal static bool IsUpperTitanActionRole( string role ) => IsTitanActionRole( role )
+		&& !role.Contains( "_core", StringComparison.Ordinal ) && !role.StartsWith( "ai_ronin_offense", StringComparison.Ordinal )
+		&& !role.StartsWith( "ai_legion_offense", StringComparison.Ordinal ) && role != "ai_northstar_utility";
+	// Exact labels verified against retail MDL include sequences; no ACT_OFFHAND catch-all across incompatible kits.
+	internal static (string Role, int Score) TitanActionAnimationRank( string label, string modelPath )
+	{
+		var path = modelPath?.ToLowerInvariant() ?? "";
+		var kit = path.Contains( "wraith", StringComparison.Ordinal ) ? "ion"
+			: path.Contains( "locust", StringComparison.Ordinal ) ? "ronin"
+			: path.Contains( "deadbolt", StringComparison.Ordinal ) ? "legion"
+			: path.Contains( "raptor", StringComparison.Ordinal ) ? "northstar"
+			: path.Contains( "ajax", StringComparison.Ordinal ) ? "tone"
+			: path.Contains( "vanguard", StringComparison.Ordinal ) || path.Contains( "buddy", StringComparison.Ordinal ) ? "monarch" : null;
+		var role = (kit, label) switch
+		{
+			("ion", "mt_laserlite_out_alt_") => "ai_ion_offense_prepare",
+			("ion", "mt_laserlite_fire") => "ai_ion_offense",
+			("ion", "mt_laserlite_in") => "ai_ion_offense_recover",
+			("ion", "mp_vortex_ion_add") => "ai_ion_defense",
+			("ion", "mt_chest_laser_forward_loop") => "ai_ion_core",
+			("ion", "mt_chest_laser_start") => "ai_ion_core_prepare",
+			("ion", "mt_chest_laser_end") => "ai_ion_core_recover",
+			("ronin", "lt_ai_arcwave_swing_anim") => "ai_ronin_offense",
+			("ronin", "lt_mp_arcwave_pullout") => "ai_ronin_offense_prepare",
+			("ronin", "lt_mp_player_walk_sword_block_00") => "ai_ronin_defense",
+			("legion", "htlegion_stand_powershot_ai") => "ai_legion_offense",
+			("legion", "htgat_vortex_pose_mp") => "ai_legion_defense",
+			("legion", "mp_htlegion_gunmode_stand") => "ai_legion_utility",
+			("northstar", "lt_npc_flight_core") => "ai_northstar_core",
+			("northstar", "lt_npc_jump_hover") => "ai_northstar_utility",
+			("tone", "mt_sonarpulse_out_alt") => "ai_tone_utility_prepare",
+			("tone", "mt_sonarpulse_fire") => "ai_tone_utility",
+			("tone", "mt_sonarpulse_in") => "ai_tone_utility_recover",
+			("tone", "mt_salvo_core") => "ai_tone_core",
+			("tone", "mt_salvo_core_start") => "ai_tone_core_prepare",
+			("tone", "mt_salvo_core_end") => "ai_tone_core_recover",
+			("monarch", "mt_laserstun_fire") => "ai_monarch_defense",
+			("monarch", "mt_rearm_charge") => "ai_monarch_utility",
+			("monarch", "mt_rearm_out") => "ai_monarch_utility_prepare",
+			("monarch", "mt_rearm_in") => "ai_monarch_utility_recover",
+			_ => null
+		};
+		return role is null ? default : (role, 180);
+	}
+	internal static (string Role, int Score) TraversalAnimationRank( string activity )
+	{
+		var act = activity?.ToUpperInvariant() ?? "";
+		if ( act.StartsWith( "ACT_TRAVERSE_", StringComparison.Ordinal ) )
+		{
+			if ( act.Contains( "CLIMB", StringComparison.Ordinal ) ) return (ClimbRole, act.Contains( "256", StringComparison.Ordinal ) ? 120 : 95);
+			if ( act.Contains( "DOWN", StringComparison.Ordinal ) && !act.Contains( "UP", StringComparison.Ordinal ) ) return (DropRole, 110);
+			return (JumpRole, act.Contains( "128", StringComparison.Ordinal ) ? 120 : 100);
+		}
+		return act switch
+		{
+			"ACT_JUMP" => (JumpRole, 90),
+			"ACT_MP_JUMP_START" or "ACT_MP_JUMP" => (JumpRole, 60),
+			"ACT_CLIMB_UP" or "ACT_CLIMB_DOWN" => (ClimbRole, 80),
+			"ACT_LAND" or "ACT_MP_JUMP_LAND" => (LandRole, 90),
+			"ACT_GLIDE" or "ACT_MP_JUMP_FLOAT" => (DropRole, 60),
+			_ => default
+		};
+	}
 
 	internal static (string Role, int Score) InfantryLocomotionRank( string name, string activity )
 	{
@@ -176,7 +250,7 @@ partial class ModelLoader
 
 	internal static bool IsInfantryFrameCount( string role, int frames )
 		// BT's genuine idle loops have 601/1001 frames; do not replace them with bind poses.
-		=> frames > 1 && frames <= (role == IdleRole ? 1200 : 240);
+		=> frames > 1 && frames <= (role == IdleRole || IsTitanActionRole( role ) ? 1200 : 240);
 
 	internal static bool IsSmallFlinchPose( int sequenceFlags, int animationFlags, int cells, int autoLayers ) =>
 		(sequenceFlags & 4) != 0 && (animationFlags & 4) != 0 && ((sequenceFlags | animationFlags) & 1) == 0
@@ -233,7 +307,7 @@ partial class ModelLoader
 					}
 					else if ( (combined & 4) != 0 ) return;
 					var loop = (combined & 1) != 0;
-					if ( (role == IdleRole || IsLocomotionRole( role )) ? !loop : loop && role != ReloadRole && role != MortarAttackRole ) return;
+					if ( (role == IdleRole || IsLocomotionRole( role )) ? !loop : loop && role != ReloadRole && role != MortarAttackRole && !IsTraversalRole( role ) && !IsTitanActionRole( role ) ) return;
 					candidates.Add( new( source, remap, index, sequenceIndex, flags, role, rank * 1000 + Math.Min( matched, 500 ) - Math.Min( cell, 100 ) ) );
 				}
 			}
@@ -265,6 +339,17 @@ partial class ModelLoader
 							Additive = decoded.Delta, Looping = decoded.Looping,
 							Duration = Math.Max( 0, desc.FrameCount - 1 ) / MathF.Max( 0.001f, decoded.FramesPerSecond ) };
 						AddActorSequenceData( clip, c, skeleton, sources, decoded );
+						if ( HasExternalRootMotion( c.Role ) )
+						{
+							var root = Array.FindIndex( c.Source.Model.Bones, bone => bone.Bone.Parent < 0 );
+							if ( root >= 0 )
+							{
+								var first = decoded.Frames[0][root];
+								var firstYaw = ToSandbox( first.Rotation ).Angles().yaw;
+								clip.RootMotion = decoded.Frames.Select( f => ToSandbox( f[root].Position - first.Position ) ).ToArray();
+								clip.RootYaw = decoded.Frames.Select( f => MathX.DeltaDegrees( ToSandbox( f[root].Rotation ).Angles().yaw, firstYaw ) ).ToArray();
+							}
+						}
 						clips.Add( clip );
 					} );
 				if ( names.Contains( role.Key ) ) break;
@@ -314,6 +399,9 @@ public sealed class Titanfall2ActorAnimationData
 		public Titanfall2SequenceRuntimeData Sequence { get; set; }
 		public AimLayer[] AimLayers { get; set; } = [];
 		public EventBonePose[] EventBonePoses { get; set; } = [];
+		/// <summary>Authored root travel before actor clips are made in-place. Used to time fitted link motion.</summary>
+		public Vector3[] RootMotion { get; set; } = [];
+		public float[] RootYaw { get; set; } = [];
 	}
 	public sealed class EventBonePose
 	{

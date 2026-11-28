@@ -12,6 +12,7 @@ public record struct Titanfall2WeaponModOption
 	public float ZoomOut { get; set; }
 	public float AdsFov { get; set; }
 	public Titanfall2WeaponPresentation Presentation { get; set; }
+	public Titanfall2ViewMotionProfile ViewMotion { get; set; }
 	public Titanfall2WeaponUiDisplay[] UiDisplays { get; set; }
 }
 
@@ -28,7 +29,8 @@ internal sealed partial record Titanfall2WeaponData
 			"pas_fast_ads" => Titanfall2WeaponModSlot.Ads, _ => Titanfall2WeaponModSlot.Optic },
 		Magazine = variant.Magazine, Reload = variant.ReloadProfile,
 		ZoomIn = variant.SpreadProfile.ZoomIn, ZoomOut = variant.SpreadProfile.ZoomOut,
-		AdsFov = variant.AdsFov, Presentation = variant.Presentation, UiDisplays = variant.UiDisplays
+		AdsFov = variant.AdsFov, Presentation = variant.Presentation, UiDisplays = variant.UiDisplays,
+		ViewMotion = variant.ViewMotion
 	};
 }
 
@@ -84,7 +86,7 @@ public sealed partial class Titanfall2Weapon
 					break;
 				case Titanfall2WeaponModSlot.Reload:
 					// This immutable choice is derived from the host-owned selection on every peer.
-					if ( Networking.IsHost ) ReloadProfile = option.Reload;
+					ReloadProfile = option.Reload;
 					IncrementalReloading = option.Reload.Segmented;
 					ReloadStartTime = option.Reload.Segmented ? option.Reload.DurationFor( false, option.Reload.NormalSeconds ) : 0f;
 					ReloadTime = option.Reload.Segmented ? option.Reload.LoopDurationFor( option.Reload.NormalSeconds ) : option.Reload.NormalSeconds;
@@ -94,6 +96,7 @@ public sealed partial class Titanfall2Weapon
 					break;
 				case Titanfall2WeaponModSlot.Optic:
 					Presentation = option.Presentation;
+					ViewMotion = option.ViewMotion;
 					UiDisplays = option.UiDisplays;
 					AdsFov = option.AdsFov;
 					break;

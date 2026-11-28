@@ -25,6 +25,7 @@ public partial class Titanfall2Mount
 		internal int Width, Height;
 	}
 	readonly Dictionary<string, Titanfall2WeaponPrewarmItem[]> _weaponPrewarmedParticles = new( StringComparer.OrdinalIgnoreCase );
+	readonly Dictionary<string, string> _weaponPrewarmMissingSounds = new( StringComparer.OrdinalIgnoreCase );
 
 	Task<WeaponPreparedItem> BeginWeaponPreparedItem( Titanfall2WeaponPrewarmItem item, CancellationToken cancellation ) => item.Kind switch
 	{
@@ -81,7 +82,10 @@ public partial class Titanfall2Mount
 		var key = NormalizeSoundKey( item.Name );
 		var cacheKey = "exact|" + key + (item.Loop ? "|loop" : "");
 		lock ( _soundCacheLock )
+		{
 			if ( _soundFileCache.ContainsKey( cacheKey ) ) return Task.FromResult( new WeaponPreparedItem { Cached = true } );
+			if ( _weaponPrewarmMissingSounds.TryGetValue( cacheKey, out var missing ) ) return Task.FromResult( new WeaponPreparedItem { CacheKey = cacheKey, Error = missing } );
+		}
 		var nativeName = $"titanfall2/{_contentFingerprint ?? "unversioned"}/exact/{(item.Loop ? "loop" : "oneshot")}/{key}.vsnd";
 		// Capture immutable sources on the engine thread. Workers do not consult the
 		// mutable mount dictionaries and never call SoundFile or another native API.
@@ -214,6 +218,8 @@ public partial class Titanfall2Mount
 		if ( item.Kind == Titanfall2WeaponPrewarmKind.Sound )
 		{
 			if ( prepared.Cached ) { request.SoundsReady++; return true; }
+			if ( prepared.CacheKey is not null && error?.StartsWith( "Exact sound unavailable:", StringComparison.Ordinal ) == true )
+				_weaponPrewarmMissingSounds[prepared.CacheKey] = error;
 			if ( prepared.Bytes is null || error is not null ) return false;
 			lock ( _soundCacheLock )
 			{

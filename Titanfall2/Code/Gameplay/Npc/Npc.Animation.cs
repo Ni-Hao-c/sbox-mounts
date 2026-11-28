@@ -53,182 +53,184 @@ internal sealed class Titanfall2LocomotionSelector
 	}
 }
 
-public sealed partial class Titanfall2Npc
+/// <summary>Composed NPC/Titan layered locomotion, aim-grid, termination-lock, and gun-bone pose controller.</summary>
+internal sealed class Titanfall2NpcAnimationController
 {
 	HashSet<string> _actorClips;
 	string _attackClip;
 	TimeSince _sinceAttackCue;
-	BoneCollection.Bone _gunBone;
-	Transform _gunBindInverse;
-	Titanfall2ActorAnimationData _actorAnimationData;
-	Vector3 _lastAnimationPosition;
-	Vector3 _animationVelocity;
-	Titanfall2ActorAnimationPlayer _layeredAnimation;
+	Vector3 _lastPosition;
+	Vector3 _velocity;
 	readonly Titanfall2LocomotionSelector _locomotionSelector = new();
 	bool _attackPending;
-	[Sync( SyncFlags.FromHost )] public Vector2 ActorAimAngles { get; private set; }
-	[Sync( SyncFlags.FromHost )] public bool IsInTermination { get; private set; }
-	[Sync( SyncFlags.FromHost )] public string TerminationClipRole { get; private set; }
+	int _titanActionSerial;
 
-	internal float GetActorClipDuration( string role ) =>
-		_actorAnimationData?.Clips?.FirstOrDefault( c => string.Equals( c.Role, role, StringComparison.OrdinalIgnoreCase ) ) is { Duration: > 0.1f } clip
+	internal BoneCollection.Bone GunBone { get; private set; }
+	internal Transform GunBindInverse { get; private set; }
+	internal Titanfall2ActorAnimationData AnimationData { get; private set; }
+	internal Titanfall2ActorAnimationPlayer LayeredAnimation;
+
+	internal void SetGunBoneBinding( BoneCollection.Bone bone, Transform bindInverse ) { GunBone = bone; GunBindInverse = bindInverse; }
+	internal void ClearGunBoneBinding() => GunBone = null;
+	internal bool HasClip( string role ) => _actorClips?.Contains( role ) == true;
+
+	internal float GetClipDuration( string role ) =>
+		AnimationData?.Clips?.FirstOrDefault( c => string.Equals( c.Role, role, StringComparison.OrdinalIgnoreCase ) ) is { Duration: > 0.1f } clip
 			? clip.Duration
 			: 0f;
 
-	internal void BeginTerminationLock( bool isAttacker, string clipRole )
+	internal void BeginTerminationLock( Titanfall2Npc npc, bool isAttacker, string clipRole )
 	{
 		if ( !Networking.IsHost ) return;
-		IsInTermination = true;
-		TerminationClipRole = clipRole;
-		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
-		GetComponent<Titanfall2TitanCore>()?.CancelForTitanLife();
-		Reloading = false;
-		Moving = false;
-		Movement?.Stop();
-		if ( Movement.IsValid() ) Movement.Enabled = false;
-		Agent?.Stop();
-		if ( Agent.IsValid() ) Agent.Enabled = false;
-		EndCurrentSchedule();
+		npc.SetTerminationHost( true, clipRole );
+		npc.CancelNpcActions( "termination" );
+		npc.GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
+		npc.GetComponent<Titanfall2TitanCore>()?.CancelForTitanLife();
+		npc.SetReloadingHost( false );
+		npc.SetMovingHost( false );
+		npc.Movement?.Stop();
+		if ( npc.Movement.IsValid() ) npc.Movement.Enabled = false;
+		npc.Agent?.Stop();
+		if ( npc.Agent.IsValid() ) npc.Agent.Enabled = false;
+		npc.EndCurrentScheduleInternal();
 	}
 
-	internal void EndTerminationLock()
+	internal void EndTerminationLock( Titanfall2Npc npc )
 	{
 		if ( !Networking.IsHost ) return;
-		IsInTermination = false;
-		TerminationClipRole = null;
-		if ( !Dead && Seat is not { IsOccupied: true } && NavigationMode == Navigation.Ground && MoveSpeed > 0 )
+		npc.SetTerminationHost( false, null );
+		if ( !npc.Dead && npc.Seat is not { IsOccupied: true } && npc.NavigationMode == Titanfall2Npc.Navigation.Ground && npc.MoveSpeed > 0 )
 		{
-			if ( Agent.IsValid() ) Agent.Enabled = true;
-			if ( Movement.IsValid() && UsesEngineSchedules ) Movement.Enabled = true;
+			if ( npc.Agent.IsValid() ) npc.Agent.Enabled = true;
+			if ( npc.Movement.IsValid() && npc.UsesEngineSchedules ) npc.Movement.Enabled = true;
 		}
 	}
 
-	internal void StartTerminationAnimation( string clipRole )
+	internal void StartTerminationAnimation( Titanfall2Npc npc, string clipRole )
 	{
-		if ( string.IsNullOrWhiteSpace( clipRole ) || !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
+		if ( string.IsNullOrWhiteSpace( clipRole ) || !npc.Renderer.IsValid() || !npc.Renderer.SceneModel.IsValid() ) return;
 		// Full-body paired execution replaces layered locomotion/aim while active.
-		if ( _actorClips?.Contains( clipRole ) != true ) return;
-		ReleaseActorAnimation();
-		PlaySequence( clipRole, looping: false, restart: true );
+		if ( !HasClip( clipRole ) ) return;
+		Release();
+		PlaySequence( npc, clipRole, looping: false, restart: true );
 	}
 
-	internal void SetAnimationAimDirection( Vector3 direction )
+	internal void SetAimDirection( Titanfall2Npc npc, Vector3 direction )
 	{
-		if ( !Networking.IsHost || IsProxy || direction.LengthSquared < 0.0001f ) return;
-		var local = WorldRotation.Inverse * direction.Normal;
+		if ( !Networking.IsHost || npc.IsProxy || direction.LengthSquared < 0.0001f ) return;
+		var local = npc.WorldRotation.Inverse * direction.Normal;
 		var yaw = MathF.Atan2( local.y, local.x ) * (180f / MathF.PI);
 		var pitch = -MathF.Atan2( local.z, MathF.Sqrt( local.x * local.x + local.y * local.y ) ) * (180f / MathF.PI);
-		if ( float.IsFinite( yaw ) && float.IsFinite( pitch ) ) ActorAimAngles = new( yaw, pitch );
+		if ( float.IsFinite( yaw ) && float.IsFinite( pitch ) ) npc.SetActorAimAnglesHost( new( yaw, pitch ) );
 	}
 
-	void UpdateActorAim()
+	void UpdateAim( Titanfall2Npc npc )
 	{
-		if ( Networking.IsHost && !IsProxy && Seat is not { IsOccupied: true } )
+		if ( Networking.IsHost && !npc.IsProxy && npc.Seat is not { IsOccupied: true } )
 		{
 			// The native-schedule path owns a last-known contact snapshot. Do not
 			// read a hidden enemy's current transform just to drive presentation.
-			if ( UsesEngineSchedules && HasCombatContact ) SetAnimationAimDirection( _lastAimPoint - Eye );
-			else if ( !UsesEngineSchedules && CanTarget( _target ) ) SetAnimationAimDirection( AimAt( _target ) - Eye );
-			else ActorAimAngles = Vector2.Zero;
+			if ( npc.UsesEngineSchedules && npc.HasCombatContact ) SetAimDirection( npc, npc.LastAimPoint - npc.EyePositionInternal );
+			else if ( !npc.UsesEngineSchedules && npc.CanTarget( npc.CurrentTarget ) ) SetAimDirection( npc, Titanfall2Npc.AimAtInternal( npc.CurrentTarget ) - npc.EyePositionInternal );
+			else npc.SetActorAimAnglesHost( Vector2.Zero );
 		}
-		_layeredAnimation?.SetAim( ActorAimAngles.x, ActorAimAngles.y, IsTitan ? 280f : 480f );
+		LayeredAnimation?.SetAim( npc.ActorAimAngles.x, npc.ActorAimAngles.y, npc.IsTitan ? 280f : 480f );
 	}
 
-	void UpdateGunPose()
+	internal void UpdateGunPose( Titanfall2Npc npc )
 	{
-		if ( _gunBone is not null && _gun.IsValid() && Renderer.IsValid() && Renderer.TryGetBoneTransform( _gunBone, out var pose ) )
-			_gun.WorldTransform = pose.ToWorld( _gunBindInverse );
+		if ( GunBone is not null && npc.GunObject.IsValid() && npc.Renderer.IsValid() && npc.Renderer.TryGetBoneTransform( GunBone, out var pose ) )
+			npc.GunObject.WorldTransform = pose.ToWorld( GunBindInverse );
 	}
 
-	protected override void OnPreRender()
+	internal void Initialize( Titanfall2Npc npc, Model model )
 	{
-		if ( !Dead ) UpdateGunPose();
-	}
-
-	void InitializeAnimation( Model model )
-	{
-		_layeredAnimation?.Dispose();
-		_layeredAnimation = null;
+		Release();
 		_actorClips = new( model.AnimationNames, StringComparer.OrdinalIgnoreCase );
-		_actorAnimationData = model.GetData<Titanfall2ActorAnimationData>();
-		_lastAnimationPosition = WorldPosition;
-		Renderer.UseAnimGraph = false;
+		AnimationData = model.GetData<Titanfall2ActorAnimationData>();
+		_lastPosition = npc.WorldPosition;
+		npc.Renderer.UseAnimGraph = false;
 		// Keep Agent/seat motion authoritative; the legacy clip supplies the pose only.
-		Renderer.Sequence.Blending = true;
-		if ( !Application.IsDedicatedServer && !string.IsNullOrEmpty( _actorAnimationData?.Skeleton ) )
+		npc.Renderer.Sequence.Blending = true;
+		if ( !Application.IsDedicatedServer && !string.IsNullOrEmpty( AnimationData?.Skeleton ) )
 		{
-			try { _layeredAnimation = new( Renderer, _actorAnimationData ); }
-			catch ( Exception error ) { Titanfall2Log.Warning( $"TF2 layered animation unavailable for '{ModelPath}': {error.Message}" ); }
+			try { LayeredAnimation = new( npc.Renderer, AnimationData ); }
+			catch ( Exception error ) { Titanfall2Log.Warning( $"TF2 layered animation unavailable for '{npc.ModelPath}': {error.Message}" ); }
 		}
-		PlayLocomotion();
+		PlayLocomotion( npc );
 	}
 
-	void CueActorAttack( bool melee )
+	internal void CueAttack( bool melee )
 	{
 		_attackClip = melee ? ModelLoader.MeleeRole : ModelLoader.FireRole;
 		_sinceAttackCue = 0;
 		_attackPending = true;
 	}
 
-	float EffectiveReloadSeconds => MathF.Max( 0.1f, ReloadSeconds * (GetComponent<Titanfall2TitanCore>()?.ReloadMultiplier ?? 1f) );
+	static float EffectiveReloadSeconds( Titanfall2Npc npc ) =>
+		MathF.Max( 0.1f, npc.ReloadSeconds * (npc.GetComponent<Titanfall2TitanCore>()?.ReloadMultiplier ?? 1f) );
 
-	void PlayLocomotion()
+	internal void PlayLocomotion( Titanfall2Npc npc )
 	{
-		if ( IsInTermination )
+		// The paired interaction graph owns the renderer until commit/cancellation.
+		if ( npc.Seat is { IsTransitioning: true } ) return;
+		if ( npc.IsInTermination )
 		{
-			if ( !string.IsNullOrEmpty( TerminationClipRole ) && _actorClips?.Contains( TerminationClipRole ) == true )
-				PlaySequence( TerminationClipRole, looping: false );
+			if ( !string.IsNullOrEmpty( npc.TerminationClipRole ) && HasClip( npc.TerminationClipRole ) )
+				PlaySequence( npc, npc.TerminationClipRole, looping: false );
 			return;
 		}
-		UpdateActorAim();
-		if ( _actorClips is null || !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
-		if ( TryPlayMortarAnimation() ) return;
-		var velocity = Seat is { IsOccupied: true }
-			? Seat.DriveVelocity
-			: (WorldPosition - _lastAnimationPosition) / MathF.Max( Time.Delta, 0.001f );
-		_lastAnimationPosition = WorldPosition;
-		if ( Seat is not { IsOccupied: true } && NavigationMode == Navigation.Ground && Agent.IsValid() && Agent.Velocity.LengthSquared > 1 )
-			velocity = Agent.Velocity;
-		if ( velocity.Length > MathF.Max( 900, MoveSpeed * 5 ) ) velocity = Vector3.Zero;
-		_animationVelocity = Vector3.Lerp( _animationVelocity, velocity.WithZ( 0 ), Math.Clamp( Time.Delta * 14, 0, 1 ) );
-		var speed = _animationVelocity.Length;
-		var local = WorldRotation.Inverse * _animationVelocity;
+		UpdateAim( npc );
+		if ( _actorClips is null || !npc.Renderer.IsValid() || !npc.Renderer.SceneModel.IsValid() ) return;
+		if ( npc.TryPlayMortarAnimation() ) return;
+		if ( npc.TryPlayTraversalAnimation() ) return;
+		if ( TryPlayTitanAction( npc ) ) return;
+		var velocity = npc.Seat is { IsOccupied: true }
+			? npc.Seat.DriveVelocity
+			: (npc.WorldPosition - _lastPosition) / MathF.Max( Time.Delta, 0.001f );
+		_lastPosition = npc.WorldPosition;
+		if ( npc.Seat is not { IsOccupied: true } && npc.NavigationMode == Titanfall2Npc.Navigation.Ground && npc.Agent.IsValid() && npc.Agent.Velocity.LengthSquared > 1 )
+			velocity = npc.Agent.Velocity;
+		if ( velocity.Length > MathF.Max( 900, npc.MoveSpeed * 5 ) ) velocity = Vector3.Zero;
+		_velocity = Vector3.Lerp( _velocity, velocity.WithZ( 0 ), Math.Clamp( Time.Delta * 14, 0, 1 ) );
+		var speed = _velocity.Length;
+		var local = npc.WorldRotation.Inverse * _velocity;
 		var (moving, direction, running) = _locomotionSelector.Evaluate( local, speed,
-			ClipSpeed( "tf2_walk_" + _locomotionSelector.Direction, MoveSpeed * 0.65f ),
-			ClipSpeed( "tf2_run_" + _locomotionSelector.Direction, MoveSpeed ) );
+			ClipSpeed( "tf2_walk_" + _locomotionSelector.Direction, npc.MoveSpeed * 0.65f ),
+			ClipSpeed( "tf2_run_" + _locomotionSelector.Direction, npc.MoveSpeed ) );
 
-		if ( _layeredAnimation is not null ) { PlayLayeredLocomotion( speed, moving, direction, running ); return; }
-		if ( ThrowingGrenade && _actorClips.Contains( ModelLoader.GrenadeRole ) )
+		if ( LayeredAnimation is not null ) { PlayLayeredLocomotion( npc, speed, moving, direction, running ); return; }
+		if ( npc.ThrowingGrenade && _actorClips.Contains( ModelLoader.GrenadeRole ) )
 		{
-			if ( PlaySequence( ModelLoader.GrenadeRole, looping: false ) )
-				Renderer.Sequence.PlaybackRate = Math.Clamp( Renderer.Sequence.Duration / MathF.Max( 0.2f, GrenadeWindupSeconds ), 0.35f, 8 );
+			if ( PlaySequence( npc, ModelLoader.GrenadeRole, looping: false ) )
+				npc.Renderer.Sequence.PlaybackRate = Math.Clamp( npc.Renderer.Sequence.Duration / MathF.Max( 0.2f, npc.GrenadeWindupSeconds ), 0.35f, 8 );
 			return;
 		}
 		if ( _attackClip == ModelLoader.MeleeRole && _actorClips.Contains( _attackClip ) )
 		{
-			var same = Renderer.Sequence.Name == _attackClip;
-			if ( same && !Renderer.Sequence.IsFinished ) return;
+			var same = npc.Renderer.Sequence.Name == _attackClip;
+			if ( same && !npc.Renderer.Sequence.IsFinished ) return;
 			if ( _sinceAttackCue < 0.22f )
 			{
-				PlaySequence( _attackClip, looping: false, restart: same );
-				Renderer.Sequence.PlaybackRate = Renderer.Sequence.Duration / MathF.Max( 0.2f, MeleeInterval * 0.85f );
+				PlaySequence( npc, _attackClip, looping: false, restart: same );
+				npc.Renderer.Sequence.PlaybackRate = npc.Renderer.Sequence.Duration / MathF.Max( 0.2f, npc.MeleeInterval * 0.85f );
 				return;
 			}
 			_attackClip = null;
 		}
-		if ( Reloading && !moving && _actorClips.Contains( ModelLoader.ReloadRole ) )
+		if ( npc.Reloading && !moving && _actorClips.Contains( ModelLoader.ReloadRole ) )
 		{
-			if ( PlaySequence( ModelLoader.ReloadRole, looping: false ) )
-				Renderer.Sequence.PlaybackRate = Math.Clamp( Renderer.Sequence.Duration / EffectiveReloadSeconds, 0.35f, 3f );
+			if ( PlaySequence( npc, ModelLoader.ReloadRole, looping: false ) )
+				npc.Renderer.Sequence.PlaybackRate = Math.Clamp( npc.Renderer.Sequence.Duration / EffectiveReloadSeconds( npc ), 0.35f, 3f );
 			return;
 		}
 		if ( !moving && _attackClip is not null && _actorClips.Contains( _attackClip ) )
 		{
-			var same = Renderer.Sequence.Name == _attackClip;
-			if ( same && !Renderer.Sequence.IsFinished ) return;
+			var same = npc.Renderer.Sequence.Name == _attackClip;
+			if ( same && !npc.Renderer.Sequence.IsFinished ) return;
 			if ( _sinceAttackCue < 0.22f )
 			{
-				PlaySequence( _attackClip, looping: false, restart: same );
+				PlaySequence( npc, _attackClip, looping: false, restart: same );
 				return;
 			}
 			_attackClip = null;
@@ -239,28 +241,66 @@ public sealed partial class Titanfall2Npc
 			var run = "tf2_run_" + direction;
 			var clip = running ? run : walk;
 			if ( !_actorClips.Contains( clip ) ) clip = _actorClips.Contains( walk ) ? walk : _actorClips.Contains( run ) ? run : ModelLoader.MoveRole;
-			var phase = ModelLoader.IsLocomotionRole( Renderer.Sequence.Name ) ? Renderer.Sequence.TimeNormalized : 0;
-			if ( PlaySequence( clip, looping: true ) ) Renderer.Sequence.TimeNormalized = (float)Titanfall2ActorPhaseRules.NormalizePhase( phase );
-			Renderer.Sequence.PlaybackRate = Math.Clamp( speed / MathF.Max( 1, ClipSpeed( clip, MoveSpeed ) ), 0.2f, 2.2f );
+			var phase = ModelLoader.IsLocomotionRole( npc.Renderer.Sequence.Name ) ? npc.Renderer.Sequence.TimeNormalized : 0;
+			if ( PlaySequence( npc, clip, looping: true ) ) npc.Renderer.Sequence.TimeNormalized = (float)Titanfall2ActorPhaseRules.NormalizePhase( phase );
+			npc.Renderer.Sequence.PlaybackRate = Math.Clamp( speed / MathF.Max( 1, ClipSpeed( clip, npc.MoveSpeed ) ), 0.2f, 2.2f );
 			return;
 		}
-		PlaySequence( ModelLoader.IdleRole, looping: true );
+		PlaySequence( npc, ModelLoader.IdleRole, looping: true );
 	}
 
-	float ClipSpeed( string role, float fallback ) => _actorAnimationData?.Clips?.FirstOrDefault( x => x.Role == role ) is { Speed: > 1 } clip ? clip.Speed : fallback;
+	float ClipSpeed( string role, float fallback ) => AnimationData?.Clips?.FirstOrDefault( x => x.Role == role ) is { Speed: > 1 } clip ? clip.Speed : fallback;
 
-	void PlayLayeredLocomotion( float speed, bool moving, string direction, bool running )
+	bool TryPlayTitanAction( Titanfall2Npc npc )
 	{
-		var animation = _layeredAnimation;
-		if ( ThrowingGrenade && animation.Has( ModelLoader.GrenadeRole ) )
+		var kit = npc.GetComponent<Titanfall2TitanKit>();
+		var rearm = Titanfall2RearmPresentation.Sample( kit?.RearmVisualElapsed ?? float.PositiveInfinity, firstPerson: false );
+		var role = rearm.Clip ?? (kit is { AiPhase: not Titanfall2TitanAiPhase.Idle } ? kit.AiAnimationRole : null);
+		if ( string.IsNullOrEmpty( role ) || !HasClip( role ) )
+		{
+			LayeredAnimation?.ClearActionOverlay();
+			return false;
+		}
+		var restart = _titanActionSerial != kit.AiActionSerial;
+		_titanActionSerial = kit.AiActionSerial;
+		var cycle = rearm.Clip is null ? Math.Clamp( kit.AiActionProgress, 0, 1 ) : rearm.Cycle;
+		if ( LayeredAnimation is { } layered && layered.Has( role ) )
+		{
+			if ( layered.SetActionOverlay( role, cycle, restart ) ) return false;
+			layered.ClearActionOverlay();
+			if ( kit.AiBlocksPrimary ) layered.ClearOverlays();
+			else
+			{
+				if ( _attackPending && _attackClip == ModelLoader.FireRole && !npc.Reloading ) layered.Fire( restart: true );
+				layered.Reload( npc.Reloading, EffectiveReloadSeconds( npc ) );
+			}
+			layered.Play( role, restart: restart );
+			layered.SetCycle( cycle );
+			layered.Tick();
+			_attackPending = false;
+		}
+		else
+		{
+			PlaySequence( npc, role, looping: false, restart: restart );
+			npc.Renderer.Sequence.PlaybackRate = 0;
+			npc.Renderer.Sequence.TimeNormalized = cycle;
+		}
+		return true;
+	}
+
+	void PlayLayeredLocomotion( Titanfall2Npc npc, float speed, bool moving, string direction, bool running )
+	{
+		var animation = LayeredAnimation;
+		var reloadSeconds = EffectiveReloadSeconds( npc );
+		if ( npc.ThrowingGrenade && animation.Has( ModelLoader.GrenadeRole ) )
 		{
 			animation.ClearOverlays();
-			animation.Play( ModelLoader.GrenadeRole, animation.Duration( ModelLoader.GrenadeRole ) / MathF.Max( 0.2f, GrenadeWindupSeconds ) );
+			animation.Play( ModelLoader.GrenadeRole, animation.Duration( ModelLoader.GrenadeRole ) / MathF.Max( 0.2f, npc.GrenadeWindupSeconds ) );
 		}
 		else if ( _attackPending && _attackClip == ModelLoader.MeleeRole && animation.Has( _attackClip ) )
 		{
 			animation.ClearOverlays();
-			animation.Play( _attackClip, animation.Duration( _attackClip ) / MathF.Max( 0.2f, MeleeInterval * 0.85f ), restart: true );
+			animation.Play( _attackClip, animation.Duration( _attackClip ) / MathF.Max( 0.2f, npc.MeleeInterval * 0.85f ), restart: true );
 			_attackPending = false;
 		}
 		else if ( animation.Current != ModelLoader.MeleeRole || animation.Finished )
@@ -273,27 +313,26 @@ public sealed partial class Titanfall2Npc
 				role = running ? run : walk;
 				if ( !animation.Has( role ) ) role = animation.Has( walk ) ? walk : animation.Has( run ) ? run : ModelLoader.MoveRole;
 			}
-			if ( !animation.HasUpperMask && Reloading && animation.Has( ModelLoader.ReloadRole ) )
-				animation.Play( ModelLoader.ReloadRole, animation.Duration( ModelLoader.ReloadRole ) / EffectiveReloadSeconds );
+			if ( !animation.HasUpperMask && npc.Reloading && animation.Has( ModelLoader.ReloadRole ) )
+				animation.Play( ModelLoader.ReloadRole, animation.Duration( ModelLoader.ReloadRole ) / reloadSeconds );
 			else if ( !animation.HasUpperMask && _attackPending && animation.Has( _attackClip ) )
 				animation.Play( _attackClip, restart: true );
 			else if ( animation.HasUpperMask || animation.Current != ModelLoader.FireRole || animation.Finished )
-				animation.Play( role, moving ? Math.Clamp( speed / MathF.Max( 1, ClipSpeed( role, MoveSpeed ) ), 0.2f, 2.2f ) : 1, loop: true );
-			if ( _attackPending && _attackClip == ModelLoader.FireRole && !Reloading ) animation.Fire( restart: true );
-			animation.Reload( Reloading, EffectiveReloadSeconds );
+				animation.Play( role, moving ? Math.Clamp( speed / MathF.Max( 1, ClipSpeed( role, npc.MoveSpeed ) ), 0.2f, 2.2f ) : 1, loop: true );
+			if ( _attackPending && _attackClip == ModelLoader.FireRole && !npc.Reloading ) animation.Fire( restart: true );
+			animation.Reload( npc.Reloading, reloadSeconds );
 			_attackPending = false;
 		}
 		animation.Tick();
 	}
 
-	void ReleaseActorAnimation() { _layeredAnimation?.Dispose(); _layeredAnimation = null; }
-	protected override void OnDestroy() { ReleaseActorAnimation(); base.OnDestroy(); }
+	internal void Release() { LayeredAnimation?.Dispose(); LayeredAnimation = null; }
 
-	bool PlaySequence( string name, bool looping, bool restart = false )
+	internal bool PlaySequence( Titanfall2Npc npc, string name, bool looping, bool restart = false )
 	{
-		if ( name == ModelLoader.DeathRole ) ReleaseActorAnimation();
-		if ( _actorClips?.Contains( name ) != true || !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return false;
-		var seq = Renderer.Sequence;
+		if ( name == ModelLoader.DeathRole ) Release();
+		if ( _actorClips?.Contains( name ) != true || !npc.Renderer.IsValid() || !npc.Renderer.SceneModel.IsValid() ) return false;
+		var seq = npc.Renderer.Sequence;
 		if ( !restart && seq.Name == name ) return false;
 		seq.PlaybackRate = 1;
 		seq.Name = name;

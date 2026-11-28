@@ -731,6 +731,9 @@ public sealed class Titanfall2PilotCombat : Component
 		}
 	}
 
+	// Boarding and rodeo own the Pilot's hands and movement until their session releases.
+	internal void CancelForTitanInteraction() => CancelAllCombatState();
+
 	void UpdatePresentation()
 	{
 		var dt = Math.Clamp( Time.Delta, 0f, 0.05f );

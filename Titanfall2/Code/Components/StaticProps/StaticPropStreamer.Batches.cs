@@ -71,7 +71,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 						var probeColor = pendingBatch.ProbeColors[index];
 						fallback.ColorTint = new Color( probeColor.x, probeColor.y, probeColor.z, 1f );
 						pendingBatch.Probes[index].Apply( fallback, BakedSkyColor );
-						fallback.Flags.CastShadows = ShouldCastShadows( pendingBatch.Radii[index] );
+						fallback.Flags.CastShadows = ShouldCastShadows( pendingBatch.Radii[index], pendingBatch.Sources[index].CastsShadows );
 						fallback.RenderingEnabled = Active && pendingBatch.RenderingEnabled;
 						pendingBatch.FallbackObjects.Add( fallback );
 					}
@@ -105,7 +105,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 		var fullyResidualBatchedInstances = new List<PropInstance>();
 		var mixedResidualKeptInstances = new List<(PropInstance Instance, ulong ResidualMask, bool ResidualHasOpaque)>();
 		var nonOpaqueShadowInstances = new List<PropInstance>();
-		var fallbackProps = new HashSet<Titanfall2StaticPropSceneData.StreamedProp>();
+		var fallbackProps = new HashSet<Titanfall2StaticPropSceneData.StreamedProp>( Titanfall2StaticPropSceneData.InstanceIdentityComparer );
 		var mixedPropCount = 0;
 
 		foreach ( var cluster in _clusters.Values )
@@ -131,7 +131,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 						radius,
 						src.FadeDistance,
 						src.Collidable,
-						ShouldAggregateCastShadows( radius ),
+						ShouldAggregateCastShadows( radius, src.CastsShadows ),
 						pendingBatch.Probes[index],
 						src.PvsCells ) );
 				}
@@ -157,7 +157,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 							instance.Radius,
 							prop.FadeDistance,
 							prop.Collidable,
-							ShouldAggregateCastShadows( instance.Radius ),
+							ShouldAggregateCastShadows( instance.Radius, prop.CastsShadows ),
 							prop.Probe,
 							prop.PvsCells ) );
 
@@ -166,7 +166,8 @@ public sealed partial class Titanfall2StaticPropStreamer
 							residualEntries.Add( new Titanfall2StaticPropAggregate.ResidualEntry(
 								mixedGeometry.ResidualMeshes,
 								transform,
-								ShouldAggregateCastShadows( instance.Radius ) && mixedGeometry.ResidualHasOpaque ) );
+								ShouldAggregateCastShadows( instance.Radius, prop.CastsShadows ) && mixedGeometry.ResidualHasOpaque,
+								prop.PvsCells ) );
 							fullyResidualBatchedInstances.Add( instance );
 						}
 						else
@@ -182,7 +183,8 @@ public sealed partial class Titanfall2StaticPropStreamer
 						residualEntries.Add( new Titanfall2StaticPropAggregate.ResidualEntry(
 							pureSpecialGeometry.ResidualMeshes,
 							transform,
-							ShouldAggregateCastShadows( instance.Radius ) && pureSpecialGeometry.ResidualHasOpaque ) );
+							ShouldAggregateCastShadows( instance.Radius, prop.CastsShadows ) && pureSpecialGeometry.ResidualHasOpaque,
+							prop.PvsCells ) );
 						fullyResidualBatchedInstances.Add( instance );
 					}
 					else
@@ -227,6 +229,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 				payload,
 				BakedSkyColor,
 				anchor,
+				_visiblePvsCells,
 				Active,
 				loadedFromCache: false,
 				liveMaterials );
@@ -280,8 +283,10 @@ public sealed partial class Titanfall2StaticPropStreamer
 		}
 	}
 
-	static bool ShouldAggregateCastShadows( float radius )
-		=> Titanfall2StreamingSettings.PropShadows && radius >= Titanfall2StaticPropAggregate.AggregateShadowMinimumRadius;
+	static bool ShouldAggregateCastShadows( float radius, bool authoredCastsShadows )
+		=> Titanfall2StreamingSettings.PropShadows
+			&& authoredCastsShadows
+			&& radius >= Titanfall2StaticPropAggregate.AggregateShadowMinimumRadius;
 
 	static bool HasOpaqueShadowMaterial( Model model )
 	{
@@ -320,8 +325,8 @@ public sealed partial class Titanfall2StaticPropStreamer
 			+ $"(SBOX_TITANFALL2_PROP_LOD_SCALE {Titanfall2StreamingSettings.PropLodDistanceScale:0.00}) ({MapPath})." );
 	}
 
-	static bool ShouldCastShadows( float radius )
-		=> Titanfall2StreamingSettings.PropShadows && radius >= ShadowMinimumRadius;
+	static bool ShouldCastShadows( float radius, bool authoredCastsShadows )
+		=> Titanfall2StreamingSettings.PropShadows && authoredCastsShadows && radius >= ShadowMinimumRadius;
 
 	/// <summary>
 	/// Clears borrowed batch/instance references for one cluster. The render owner deletes

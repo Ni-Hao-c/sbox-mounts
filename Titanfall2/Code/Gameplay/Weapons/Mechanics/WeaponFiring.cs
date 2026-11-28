@@ -8,6 +8,8 @@ public record struct Titanfall2WeaponFiring
 	public Titanfall2BoltPattern Pattern { get; set; }
 	public float BoltSpreadHip { get; set; }
 	public float BoltSpreadAds { get; set; }
+	public bool AttackPressesAds { get; set; }
+	public bool RequireFullAdsToFire { get; set; }
 	internal readonly int Cost => Math.Clamp( AmmoPerShot, 1, 250 );
 	internal readonly int Minimum => Math.Max( Cost, Math.Clamp( AmmoMinToFire, 1, 250 ) );
 	internal readonly bool HasPattern => Pattern is Titanfall2BoltPattern.DoubleTake or Titanfall2BoltPattern.Mastiff or Titanfall2BoltPattern.Mozambique;
@@ -69,5 +71,5 @@ public sealed partial class Titanfall2Weapon
 	bool HasAmmoFor( int amount ) => !IsHeld || !UsesAmmo || (UsesRetailCharge ? AvailableChargeAmmo
 		: UsesPrimaryClip ? Clip1 : PrimaryAmmoType is not null ? Ammo1 : int.MaxValue) >= amount;
 	public override bool HasPrimaryAmmo() => HasAmmoFor( _burstRemaining > 0
-		|| HeatProfile.Valid && (Networking.IsHost ? _hostHeat.FiringRun : _ownerHeatRun) ? Firing.Cost : Firing.Minimum );
+		|| HeatProfile.Valid && _heat.IsFiringRun( this ) ? Firing.Cost : Firing.Minimum );
 }

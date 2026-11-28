@@ -12,7 +12,11 @@ internal static class Titanfall2WeaponScriptOverrides
 		float? BoltSpreadHip = null,
 		float? BoltSpreadAds = null,
 		float? GravityScale = null,
-		string ScriptTrailEffect = null );
+		string ScriptTrailEffect = null,
+		bool RequireFullAdsToFire = false,
+		string FireSound1P = null,
+		string FireSound3P = null,
+		string FlightSound = null );
 
 	internal readonly record struct AnimEventOverride(
 		Titanfall2WeaponMuzzleLayer[] MuzzleLayers,
@@ -31,7 +35,18 @@ internal static class Titanfall2WeaponScriptOverrides
 		// This active client callback adds an ABSORIGIN_FOLLOW effect in addition to projectile_trail_effect_0.
 		["OnWeaponPrimaryAttack_weapon_sniper"] = new(
 			Titanfall2BoltPattern.Default,
-			ScriptTrailEffect: "Rocket_Smoke_SMR_Glow" )
+			ScriptTrailEffect: "Rocket_Smoke_SMR_Glow" ),
+		// Retail mp_weapon_rocket_launcher.nut:123 requires zoomFrac >= 1 before launching.
+		["OnWeaponPrimaryAttack_weapon_rocket_launcher"] = new(
+			Titanfall2BoltPattern.Default,
+			RequireFullAdsToFire: true ),
+		// Retail mp_weapon_arc_launcher.nut:11,39 requires zoomFrac >= 1 and emits fire/flight sounds in script.
+		["OnWeaponPrimaryAttack_weapon_arc_launcher"] = new(
+			Titanfall2BoltPattern.Default,
+			RequireFullAdsToFire: true,
+			FireSound1P: "Weapon_ArcLauncher_Fire_1P",
+			FireSound3P: "Weapon_ArcLauncher_Fire_3P",
+			FlightSound: "weapon_epg_projectile_loop" )
 	};
 
 	static readonly Dictionary<string, AnimEventOverride> ClientAnimEventOverrides = new( StringComparer.Ordinal )

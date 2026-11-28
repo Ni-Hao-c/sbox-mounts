@@ -24,7 +24,7 @@ public record struct Titanfall2SpreadProfile
 	public float DecayRate { get; set; }
 	public float ZoomIn { get; set; }
 	public float ZoomOut { get; set; }
-	// Preserved for future continuous-fire ramp support; not a per-shot kick.
+	// Descriptor 0x1809459A0 defaults to zero; positive values replace per-shot kick.
 	public float TimeToMax { get; set; }
 
 	internal readonly Titanfall2SpreadStance Stance( bool grounded, bool crouched ) => !grounded ? Air : crouched ? Crouch : Stand;
@@ -99,11 +99,15 @@ internal sealed partial record Titanfall2WeaponData
 public sealed partial class Titanfall2Weapon
 {
 	[Property] public Titanfall2SpreadProfile SpreadProfile { get; set; }
-	Vector2 _spreadKick;
-	TimeSince _spreadShot;
-	bool _hasSpreadShot;
+	Titanfall2SpreadState _spreadState;
+	bool _spreadInputHeld;
+	bool _sentSpreadInput;
+	float _lastSpreadZoom;
+	double _lastSpreadAccepted;
+	int _spreadBurstRemaining;
 
-	Vector2 RetailKick => _hasSpreadShot ? SpreadProfile.Decay( _spreadKick, _spreadShot ) : Vector2.Zero;
+	Titanfall2SpreadStance CurrentSpreadStance => SpreadProfile.Stance( !Owner.IsValid() || Owner.IsOnGround, Owner.IsValid() && Owner.IsDucking );
+	Vector2 RetailKick => _spreadState.Sample( SpreadProfile, CurrentSpreadStance, _lastSpreadZoom, Time.NowDouble );
 
 	Vector2 RetailSpread( float zoom )
 	{
@@ -112,6 +116,7 @@ public sealed partial class Titanfall2Weapon
 		var crouched = owner.IsValid() && owner.IsDucking;
 		var movement = owner.IsValid() ? owner.Velocity.WithZ( 0 ).Length / MathF.Max( owner.WalkSpeed, 1 ) : 0;
 		var cone = SpreadProfile.BaseCone( grounded, crouched, movement, IsSprinting, zoom, _parkourPose.IsWallrunning || MathF.Abs( _parkourPose.WallrunSide ) > 0.1f );
+		_lastSpreadZoom = zoom;
 		var kick = RetailKick;
 		return Vector2.One * ((cone + float.Lerp( kick.x, kick.y, zoom )) * SpreadScale);
 	}
@@ -119,11 +124,42 @@ public sealed partial class Titanfall2Weapon
 	void RecordSpreadShot( float zoom )
 	{
 		if ( !SpreadProfile.Enabled ) return;
-		var owner = Owner;
-		_spreadKick = SpreadProfile.AddShot( RetailKick,
-			SpreadProfile.Stance( !owner.IsValid() || owner.IsOnGround, owner.IsValid() && owner.IsDucking ), zoom );
-		_spreadShot = 0;
-		_hasSpreadShot = true;
+		_lastSpreadZoom = zoom;
+		_lastSpreadAccepted = Time.NowDouble;
+		if ( _spreadBurstRemaining > 0 ) _spreadBurstRemaining--;
+		else _spreadBurstRemaining = Math.Max( 0, BurstCount - 1 );
+		_spreadState.AcceptShot( SpreadProfile, CurrentSpreadStance, zoom, Time.NowDouble );
+	}
+
+	void TickSpreadRun()
+	{
+		if ( !SpreadProfile.Enabled || SpreadProfile.TimeToMax <= 0 ) return;
+		if ( !IsProxy && Owner is { UseInputControls: true } )
+		{
+			var held = IsHeld && IsActive && !IsReloading && Input.Down( "attack1" );
+			_spreadInputHeld = held;
+			if ( held != _sentSpreadInput ) { _sentSpreadInput = held; SetSpreadTrigger( held ); }
+		}
+		var interrupted = !IsHeld || !IsActive || IsReloading || !HasRoundAmmo() || HeatVenting || IsRechambering;
+		// A queued burst keeps its firing run after the trigger is released. Semi-auto
+		// leaves ACT_VM_PRIMARYATTACK once its initial fire interval has finished.
+		if ( Titanfall2SpreadState.ShouldStop( interrupted, _spreadInputHeld, _spreadBurstRemaining, PrimaryAutomatic,
+			Time.NowDouble - _lastSpreadAccepted, PrimaryDelay ) ) StopSpreadRun();
+		else _spreadState.Sample( SpreadProfile, CurrentSpreadStance, _lastSpreadZoom, Time.NowDouble );
+	}
+
+	[Rpc.Host( NetFlags.OwnerOnly )]
+	void SetSpreadTrigger( bool held )
+	{
+		if ( !Networking.IsHost ) return;
+		_spreadInputHeld = held && IsHeld && IsActive && !IsReloading;
+		if ( !_spreadInputHeld && _spreadBurstRemaining == 0 ) StopSpreadRun();
+	}
+
+	void StopSpreadRun()
+	{
+		_spreadState.Stop( SpreadProfile, CurrentSpreadStance, _lastSpreadZoom, Time.NowDouble );
+		_spreadBurstRemaining = 0;
 	}
 }
 
@@ -132,7 +168,13 @@ public sealed partial class Titanfall2Npc
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2SpreadProfile SpreadProfile { get; set; }
 	/// <summary>Host difficulty/proficiency tuning. Retail proficiency patterns are not yet simulated.</summary>
 	[Property] public float ShotSpreadScale { get; set; } = 1;
-	internal float FiringSpread( bool piloted ) => SpreadProfile.Enabled
-		? MathF.Max( 0, (piloted ? ShotSpread : SpreadProfile.NpcCone) * (piloted ? 1 : ShotSpreadScale) )
-		: ShotSpread * (piloted ? 1 : 1.5f);
+	internal float FiringSpread( bool piloted, float zoom = 0f )
+	{
+		var clampedZoom = float.IsFinite( zoom ) ? Math.Clamp( zoom, 0f, 1f ) : 0f;
+		if ( !SpreadProfile.Enabled )
+			return MathF.Max( 0f, ShotSpread * (piloted ? float.Lerp( 1f, 0.45f, clampedZoom ) : 1.5f) );
+		if ( !piloted )
+			return MathF.Max( 0f, SpreadProfile.NpcCone * ShotSpreadScale );
+		return MathF.Max( 0f, float.Lerp( SpreadProfile.Stand.Hip, SpreadProfile.Stand.Ads, clampedZoom ) );
+	}
 }

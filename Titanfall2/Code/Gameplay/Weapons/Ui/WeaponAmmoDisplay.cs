@@ -13,8 +13,27 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 	bool _pendingSurfaces;
 	bool _visible;
 	internal int ScreenCount => _surfaces.Count;
+	internal bool HasOpticReticleSurface => _visible && _surfaces.Any( surface => surface.IsReticle
+		&& surface.Object.IsValid() && surface.Object.Enabled && surface.Counter.HasOpticArtwork );
 	internal Titanfall2WeaponPrewarmStatus UiPreparationStatus => _uiRequest?.Status ?? default;
 	internal string[] UiPreparationErrors => _uiRequest?.Errors.ToArray() ?? [];
+	internal object GetOpticDiagnostics() => new
+	{
+		Visible = _visible, PendingSurfaces = _pendingSurfaces, ScreenCount, HasOpticReticleSurface,
+		Bindings = _bindings, UiPreparationStatus, UiPreparationErrors,
+		ModelScreens = _model?.GetData<Titanfall2WeaponScreenData>(),
+		Surfaces = _surfaces.Select( surface => new
+		{
+			surface.MeshName, surface.IsReticle, Enabled = surface.Object.IsValid() && surface.Object.Enabled,
+			Layout = surface.Counter.DisplayLayout, surface.Counter.HasOpticArtwork,
+			surface.Counter.ArtworkPending, surface.Counter.ArtworkError,
+			Images = surface.Counter.Artwork.Select( image => new
+			{
+				image.Spec.TexturePath, Valid = image.Texture?.IsValid, Error = image.Texture?.IsError,
+				Width = image.Texture?.Width, Height = image.Texture?.Height
+			} ).ToArray()
+		} ).ToArray()
+	};
 	internal Titanfall2WeaponAmmoObservation[] ObserveScreens() => _surfaces.Where( surface => surface.Object.IsValid() )
 		.Select( surface => new Titanfall2WeaponAmmoObservation( surface.Slot, surface.MeshName, surface.Bone.Name,
 			surface.Counter.ActualText, Weapon?.DisplayAmmo ?? 0, Weapon?.DisplayAmmoCapacity ?? 0, surface.Object.Enabled && _visible,
@@ -35,6 +54,7 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 		internal int Slot;
 		internal string MeshName;
 		internal float CornerError;
+		internal bool IsReticle;
 	}
 
 	internal void SetVisible( bool visible )
@@ -116,9 +136,12 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 				counter.TextAnchor = layout.TextAnchor;
 				counter.TextPivot = layout.TextPivot;
 				counter.DisplayLayout = layout;
+				counter.FadeWithZoom = binding.FadeWithZoom;
+				var window = new Rect( mesh.UvStart * layout.CanvasSize, (mesh.UvEnd - mesh.UvStart) * layout.CanvasSize );
 				_surfaces.Add( new() { Object = go, Panel = panel, Counter = counter, Bone = bone, BoneChain = chain.ToArray(), Slot = binding.Slot, MeshName = binding.MeshName,
 					Origin = mesh.Origin, Right = mesh.Right, Down = mesh.Down, Width = mesh.Width, Height = mesh.Height,
-					WindowPixels = panel.PanelSize } );
+					WindowPixels = panel.PanelSize, IsReticle = layout.Mode == Titanfall2WeaponUiDisplayMode.OpticReticle
+						&& layout.Images?.Any( image => image.IsReticle && Intersects( window, image.Rect ) ) == true } );
 			}
 		}
 		UpdatePoses();
@@ -208,26 +231,23 @@ public sealed class Titanfall2WeaponAmmoDisplay : Component
 		_surfaces.Clear();
 	}
 
-	static bool OverlapsRenderedContent( Titanfall2WeaponUiLayout layout, Vector2 uvStart, Vector2 uvEnd )
+	internal static bool OverlapsRenderedContent( Titanfall2WeaponUiLayout layout, Vector2 uvStart, Vector2 uvEnd )
 	{
 		var window = new Rect( uvStart * layout.CanvasSize, (uvEnd - uvStart) * layout.CanvasSize );
-		static bool Intersects( Rect a, Rect b ) => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
+		if ( layout.Mode == Titanfall2WeaponUiDisplayMode.OpticFrame ) return true;
+		// Reticle artwork can span several MDL UV windows. Its centre need not
+		// lie on every visible piece (unlike a numeric text anchor).
+		if ( layout.Images?.Any( image => Intersects( window, image.Rect ) ) == true ) return true;
 		if ( layout.PrimaryBar is { } primary && Intersects( window, primary.Rect ) ) return true;
 		if ( layout.SecondaryBar is { } secondary && Intersects( window, secondary.Rect ) ) return true;
 		if ( layout.FontSize > 0 )
 		{
-			var textBox = new Rect( layout.TextAnchor - new Vector2( layout.FontSize, layout.FontSize ) * layout.TextPivot,
-				new Vector2( layout.FontSize * 1.5f, layout.FontSize ) );
-			if ( Intersects( window, textBox ) ) return true;
-			if ( layout.SecondaryTextAnchor is { } second )
-			{
-				var secondBox = new Rect( second - new Vector2( layout.FontSize, layout.FontSize ) * layout.TextPivot,
-					new Vector2( layout.FontSize * 1.5f, layout.FontSize ) );
-				if ( Intersects( window, secondBox ) ) return true;
-			}
+			if ( window.IsInside( layout.TextAnchor ) ) return true;
+			if ( layout.SecondaryTextAnchor is { } second && window.IsInside( second ) ) return true;
 		}
 		return false;
 	}
+	static bool Intersects( Rect a, Rect b ) => a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
 	protected override void OnDisabled() { ClearSurfaces(); _uiRequest = null; _uiMount = null; _pendingSurfaces = false; }
 	protected override void OnEnabled() { _model = null; _bindings = null; _uiRequest = null; }
 	protected override void OnDestroy() => ClearSurfaces();

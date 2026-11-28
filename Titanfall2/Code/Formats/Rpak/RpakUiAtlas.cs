@@ -2,8 +2,19 @@ using System.Buffers.Binary;
 using System.Text;
 
 /// <summary>A named image inside a retail UI atlas. UVs belong to the paired TXTR, not a fixed game revision.</summary>
-readonly record struct Titanfall2UiAtlasImage( string Name, float U, float V, float SizeU, float SizeV, int DisplayWidth, int DisplayHeight )
+readonly record struct Titanfall2UiAtlasImage( string Name, float U, float V, float SizeU, float SizeV, int DisplayWidth, int DisplayHeight,
+	int TrimX = 0, int TrimY = 0, bool HasTrimTransform = false )
 {
+	internal bool TryGetCanvasPlacement( int cropWidth, int cropHeight, out (int X, int Y, int Width, int Height) placement )
+	{
+		placement = default;
+		if ( !HasTrimTransform || DisplayWidth is < 1 or > 4096 || DisplayHeight is < 1 or > 4096
+			|| TrimX < 0 || TrimY < 0 || cropWidth <= 0 || cropHeight <= 0
+			|| TrimX > DisplayWidth - cropWidth || TrimY > DisplayHeight - cropHeight ) return false;
+		placement = (TrimX, TrimY, DisplayWidth, DisplayHeight);
+		return true;
+	}
+
 	internal bool TryGetCrop( int width, int height, out (int X, int Y, int Width, int Height) crop )
 	{
 		crop = default;
@@ -61,6 +72,13 @@ static class RpakUiAtlasReader
 			if ( bounds?.Length != count * 16 || dimensions?.Length != count * 4 || hashes?.Length != count * hashSize )
 				throw new InvalidDataException( "UI atlas arrays are truncated." );
 			var namesPointer = Pointer( header, 48 );
+			// Each image has two float4 transforms at header+16. The second maps
+			// full authored UVs into the trimmed atlas rectangle. Its offset includes
+			// the half-texel centre; recovering that origin restores transparent padding.
+			byte[] transforms = null;
+			var transformPointer = Pointer( header, 16 );
+			if ( transformPointer.Index > 0 || transformPointer.Offset > 0 )
+				read( transformPointer, checked(count * 32), out transforms, out _ );
 			var images = new List<Titanfall2UiAtlasImage>( count );
 			var names = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 			for ( var index = 0; index < count; index++ )
@@ -69,10 +87,19 @@ static class RpakUiAtlasReader
 				if ( pathOffset < 0 || namesPointer.Index < 0 || namesPointer.Offset < 0 || pathOffset > int.MaxValue - namesPointer.Offset ) continue;
 				if ( !TryReadName( namesPointer with { Offset = namesPointer.Offset + pathOffset }, read, out var name ) ) continue;
 				var offset = index * 16;
+				var displayWidth = U16( dimensions, index * 4 );
+				var displayHeight = U16( dimensions, index * 4 + 2 );
+				var trimX = 0; var trimY = 0; var hasTrim = false;
+				if ( transforms?.Length == count * 32 )
+				{
+					var transform = index * 32 + 16;
+					hasTrim = TryGetTrimOrigin( BitConverter.ToSingle( transforms, transform ), BitConverter.ToSingle( transforms, transform + 8 ), displayWidth, out trimX )
+						&& TryGetTrimOrigin( BitConverter.ToSingle( transforms, transform + 4 ), BitConverter.ToSingle( transforms, transform + 12 ), displayHeight, out trimY );
+				}
 				var image = new Titanfall2UiAtlasImage( name,
 					BitConverter.ToSingle( bounds, offset ), BitConverter.ToSingle( bounds, offset + 4 ),
 					BitConverter.ToSingle( bounds, offset + 8 ), BitConverter.ToSingle( bounds, offset + 12 ),
-					U16( dimensions, index * 4 ), U16( dimensions, index * 4 + 2 ) );
+					displayWidth, displayHeight, trimX, trimY, hasTrim );
 				// An empty/invalid glyph must not poison the other images in a valid atlas.
 				if ( image.TryGetCrop( width, height, out _ ) && image.DisplayWidth > 0 && image.DisplayHeight > 0 && names.Add( name ) ) images.Add( image );
 			}
@@ -85,6 +112,18 @@ static class RpakUiAtlasReader
 			error = exception.Message;
 			return false;
 		}
+	}
+
+	internal static bool TryGetTrimOrigin( float offset, float scale, int originalSize, out int origin )
+	{
+		origin = 0;
+		if ( !float.IsFinite( offset ) || !float.IsFinite( scale ) || scale <= 0 || originalSize <= 0 ) return false;
+		// Untrimmed axes retain the identity transform (no half-texel correction).
+		if ( offset == 0 && scale == 1 ) return true;
+		var pixel = -offset * originalSize / scale - .5f;
+		if ( !float.IsFinite( pixel ) || pixel < -.01f || pixel > originalSize || MathF.Abs( pixel - MathF.Round( pixel ) ) > .01f ) return false;
+		origin = (int)MathF.Round( pixel );
+		return true;
 	}
 
 	static bool TryReadName( RpakPagePointer pointer, Titanfall2UiAtlasPageReader read, out string name )

@@ -60,6 +60,18 @@ float3 T2SurfaceNormalWs( PixelInput i, float2 uv, float3 normal )
 	float2 tx = ddx( uv ), ty = ddy( uv );
 	float determinant = tx.x * ty.y - tx.y * ty.x;
 	if ( abs( determinant ) < 0.00000001 ) return n * side;
+#if defined( S_T2_FAST_NORMAL ) && S_T2_FAST_NORMAL
+	// Normalization cancels the magnitude of 1/determinant. Keep its sign for
+	// mirrored UVs and scale the degeneracy threshold by determinant squared.
+	// Project before normalization exactly as in the reference path below.
+	float3 t = px * ty.y - py * tx.y;
+	float3 b = py * tx.x - px * ty.x;
+	t -= n * dot( n, t );
+	b -= n * dot( n, b );
+	if ( min( dot( t, t ), dot( b, b ) ) < 0.00000001 * determinant * determinant ) return n * side;
+	float uvSign = determinant < 0.0 ? -1.0 : 1.0;
+	return normalize( normalize( t ) * (normal.x * uvSign) + normalize( b ) * (normal.y * uvSign) + n * normal.z ) * side;
+#else
 	float3 t = (px * ty.y - py * tx.y) / determinant;
 	float3 b = (py * tx.x - px * ty.x) / determinant;
 	t -= n * dot( n, t );
@@ -67,5 +79,6 @@ float3 T2SurfaceNormalWs( PixelInput i, float2 uv, float3 normal )
 	if ( min( dot( t, t ), dot( b, b ) ) < 0.00000001 ) return n * side;
 	// The whole perturbed normal flips: a bump that rises out of the front sinks into the back.
 	return normalize( normalize( t ) * normal.x + normalize( b ) * normal.y + n * normal.z ) * side;
+#endif
 }
 

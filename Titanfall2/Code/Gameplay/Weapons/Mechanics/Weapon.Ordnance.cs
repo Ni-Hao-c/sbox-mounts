@@ -1,192 +1,200 @@
-public sealed partial class Titanfall2Weapon
+/// <summary>
+/// Composed Pilot ordnance cooking, toss timing, drop-on-cancel, and charge recovery controller.
+/// </summary>
+internal sealed class Titanfall2WeaponOrdnanceController : ITitanfall2WeaponMechanic
 {
-	[Property] public Titanfall2OrdnanceProfile OrdnanceProfile { get; set; }
-	[Sync( SyncFlags.FromHost )] public bool OrdnanceBusy { get; private set; }
-	[Sync( SyncFlags.FromHost )] public int OrdnanceThrowSerial { get; private set; }
-	[Sync( SyncFlags.FromHost )] public double OrdnanceReadyAt { get; private set; }
-	internal bool UsesOrdnance => OrdnanceProfile.Enabled;
-	internal bool CanBeginOrdnance => OrdnanceProfile.Valid && Projectile.Enabled && Active && IsHeld && IsActive
-		&& !IsReloading && !OrdnanceBusy && !_ordnanceLocalHeld && Time.NowDouble >= OrdnanceReadyAt && Clip1 >= Firing.Minimum;
-	internal int OrdnanceCharges => Math.Max( 0, Clip1 ) / Firing.Cost;
-	internal int OrdnanceMaximumCharges => Math.Max( 0, ClipMaxSize ) / Firing.Cost;
-	Titanfall2OrdnanceRecovery _ordnanceRecovery;
-	Titanfall2OrdnanceProfile _pendingOrdnance;
-	Titanfall2ProjectileSettings _pendingOrdnanceFlight;
-	Titanfall2OrdnanceInventory _ordnanceInventory;
-	PlayerController _ordnanceOwner;
-	bool _ordnanceLocalHeld, _ordnanceHostHeld, _ordnanceReleased, _ordnanceLaunched, _ordnanceTossPresented;
-	int _ordnanceInputSerial, _ordnanceLastInputSerial, _ordnanceCost;
-	double _ordnancePreparedAt, _ordnanceTossAt, _ordnanceLaunchAt, _ordnanceHostTick = double.NaN;
+	Titanfall2OrdnanceRecovery _recovery;
+	Titanfall2OrdnanceProfile _pendingProfile;
+	Titanfall2ProjectileSettings _pendingFlight;
+	Titanfall2OrdnanceInventory _inventory;
+	PlayerController _owner;
+	bool _localHeld;
+	bool _hostHeld;
+	bool _released;
+	bool _launched;
+	bool _tossPresented;
+	int _inputSerial;
+	int _lastInputSerial;
+	int _cost;
+	double _preparedAt;
+	double _tossAt;
+	double _launchAt;
+	double _hostTick = double.NaN;
 
-	void RegisterOrdnanceInventory()
+	internal bool CanBegin( Titanfall2Weapon w ) => w.OrdnanceProfile.Valid && w.Projectile.Enabled && w.Active && w.IsHeld && w.IsActive
+		&& !w.IsReloading && !w.OrdnanceBusy && !w.DetonationBusy && !_localHeld && Time.NowDouble >= w.OrdnanceReadyAt && w.Clip1 >= w.Firing.Minimum;
+	internal bool AwaitingRelease( Titanfall2Weapon w ) => w.OrdnanceBusy && !_launched;
+
+	public void OnStart( Titanfall2Weapon w ) => RegisterInventory( w );
+	public void OnAdded( Titanfall2Weapon w ) => RegisterInventory( w );
+	public void OnHolster( Titanfall2Weapon w ) => Cancel( w );
+	public void OnDisabled( Titanfall2Weapon w ) => Cancel( w );
+
+	public void OnRemoved( Titanfall2Weapon w )
 	{
-		if ( !UsesOrdnance ) return;
-		AutoReload = false;
-		if ( !Networking.IsHost || !Inventory.IsValid() ) return;
-		var pump = Inventory.GameObject.GetOrAddComponent<Titanfall2OrdnanceInventory>();
-		if ( _ordnanceInventory == pump ) return;
-		_ordnanceInventory?.Remove( this ); _ordnanceInventory = pump; pump.Add( this );
+		Cancel( w );
+		_inventory?.Remove( w );
+		_inventory = null;
+		_recovery.Recovering = false;
 	}
 
-	void BeginOrdnanceAttack()
+	void RegisterInventory( Titanfall2Weapon w )
 	{
-		if ( IsProxy || !CanBeginOrdnance ) return;
-		BindOrdnanceOwner();
+		if ( !w.UsesOrdnance ) return;
+		w.AutoReload = false;
+		if ( !Networking.IsHost || !w.Inventory.IsValid() ) return;
+		var pump = w.Inventory.GameObject.GetOrAddComponent<Titanfall2OrdnanceInventory>();
+		if ( _inventory == pump ) return;
+		_inventory?.Remove( w ); _inventory = pump; pump.Add( w );
+	}
+
+	internal void BeginAttack( Titanfall2Weapon w )
+	{
+		if ( w.IsProxy || !CanBegin( w ) ) return;
+		BindOwner( w );
 		// Base FirePrimary's generic shot delay must not delay prep or cook.
-		SetNextPrimaryFire( 0 );
-		SetOrdnanceInput( true );
+		w.SetNextPrimaryFire( 0 );
+		SetInput( w, true );
 	}
 
-	internal void ReleaseOrdnance() => SetOrdnanceInput( false );
-	void SetOrdnanceInput( bool held )
+	internal void SetInput( Titanfall2Weapon w, bool held )
 	{
-		if ( !UsesOrdnance || IsProxy || _ordnanceLocalHeld == held ) return;
-		_ordnanceLocalHeld = held;
-		_ordnanceInputSerial = _ordnanceInputSerial == int.MaxValue ? 1 : _ordnanceInputSerial + 1;
-		if ( Networking.IsHost ) ApplyOrdnanceInput( _ordnanceInputSerial, held );
-		else RequestOrdnanceInput( _ordnanceInputSerial, held );
+		if ( !w.UsesOrdnance || w.IsProxy || _localHeld == held ) return;
+		_localHeld = held;
+		_inputSerial = _inputSerial == int.MaxValue ? 1 : _inputSerial + 1;
+		if ( Networking.IsHost ) ApplyInput( w, _inputSerial, held );
+		else w.SendOrdnanceInputRpc( _inputSerial, held );
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestOrdnanceInput( int serial, bool held ) => ApplyOrdnanceInput( serial, held );
-	void ApplyOrdnanceInput( int serial, bool held )
+	internal void ApplyInput( Titanfall2Weapon w, int serial, bool held )
 	{
-		if ( !Networking.IsHost || !OrdnanceProfile.Valid || !Owner.IsValid() ) return;
-		BindOrdnanceOwner();
-		if ( serial <= _ordnanceLastInputSerial ) return;
-		_ordnanceLastInputSerial = serial;
+		if ( !Networking.IsHost || !w.OrdnanceProfile.Valid || !w.Owner.IsValid() ) return;
+		BindOwner( w );
+		if ( serial <= _lastInputSerial ) return;
+		_lastInputSerial = serial;
 		if ( !held )
 		{
-			_ordnanceHostHeld = false;
-			if ( OrdnanceBusy && !_ordnanceReleased ) ScheduleOrdnanceToss( Time.NowDouble );
+			_hostHeld = false;
+			if ( w.OrdnanceBusy && !_released ) ScheduleToss( w, Time.NowDouble );
 			return;
 		}
-		if ( !Active || !IsHeld || !IsActive || Inventory?.ActiveItem != this || !Owner.Active || IsReloading
-			|| OrdnanceBusy || _ordnanceHostHeld || NextPrimaryFire > 0 || Time.NowDouble < OrdnanceReadyAt || Clip1 < Firing.Minimum ) return;
-		_ordnanceHostHeld = true; OrdnanceBusy = true;
-		_ordnanceReleased = _ordnanceLaunched = _ordnanceTossPresented = false;
-		_ordnancePreparedAt = Time.NowDouble;
-		_ordnanceTossAt = _ordnanceLaunchAt = double.PositiveInfinity;
-		_ordnanceCost = Firing.Cost; _pendingOrdnance = OrdnanceProfile; _pendingOrdnanceFlight = Projectile;
-		PlayOrdnanceSound( false );
+		if ( !w.Active || !w.IsHeld || !w.IsActive || w.Inventory?.ActiveItem != w || !w.Owner.Active || w.IsReloading
+			|| w.OrdnanceBusy || w.DetonationBusy || _hostHeld || w.NextPrimaryFireTimer > 0 || Time.NowDouble < w.OrdnanceReadyAt || w.Clip1 < w.Firing.Minimum ) return;
+		_hostHeld = true; w.SetOrdnanceBusyHost( true );
+		_released = _launched = _tossPresented = false;
+		_preparedAt = Time.NowDouble;
+		_tossAt = _launchAt = double.PositiveInfinity;
+		_cost = w.Firing.Cost; _pendingProfile = w.OrdnanceProfile; _pendingFlight = w.Projectile;
+		if ( _pendingFlight.Behavior == Titanfall2ProjectileBehavior.RemoteCharge )
+			w.BroadcastOrdnancePrep( _pendingProfile.PulloutSeconds );
+		w.BroadcastOrdnanceSound( false );
 	}
 
-	void BindOrdnanceOwner()
+	void BindOwner( Titanfall2Weapon w )
 	{
-		if ( _ordnanceOwner == Owner ) return;
-		if ( Networking.IsHost ) CancelHostOrdnance();
-		_ordnanceOwner = Owner;
-		_ordnanceLocalHeld = _ordnanceHostHeld = false;
-		_ordnanceLastInputSerial = _ordnanceInputSerial = 0;
+		if ( _owner == w.Owner ) return;
+		if ( Networking.IsHost ) CancelHost( w );
+		_owner = w.Owner;
+		_localHeld = _hostHeld = false;
+		_lastInputSerial = _inputSerial = 0;
 	}
 
-	void ScheduleOrdnanceToss( double now )
+	void ScheduleToss( Titanfall2Weapon w, double now )
 	{
-		if ( _ordnanceReleased ) return;
-		_ordnanceReleased = true;
-		_ordnanceTossAt = Math.Max( now, _ordnancePreparedAt + _pendingOrdnance.PulloutSeconds );
-		_ordnanceLaunchAt = _ordnanceTossAt + _pendingOrdnance.ThrowSeconds * _pendingOrdnance.ReleaseCycle;
-		OrdnanceReadyAt = _ordnanceTossAt + Math.Max( PrimaryDelay, _pendingOrdnance.ThrowSeconds * _pendingOrdnance.ReadyCycle );
+		if ( _released ) return;
+		_released = true;
+		_tossAt = Math.Max( now, _preparedAt + _pendingProfile.PulloutSeconds );
+		_launchAt = _tossAt + _pendingProfile.ThrowSeconds * _pendingProfile.ReleaseCycle;
+		w.SetOrdnanceReadyAtHost( _tossAt + Math.Max( w.PrimaryDelay, _pendingProfile.ThrowSeconds * _pendingProfile.ReadyCycle ) );
 	}
 
-	void TickOrdnance()
+	public void Tick( Titanfall2Weapon w )
 	{
-		if ( !UsesOrdnance ) return;
-		RegisterOrdnanceInventory();
-		if ( !IsProxy && _ordnanceLocalHeld && Owner is { UseInputControls: true } && !Input.Down( "attack1" ) ) ReleaseOrdnance();
-		if ( Networking.IsHost ) TickOrdnanceHost();
-	}
-
-	internal void TickOrdnanceHost()
-	{
-		if ( !Networking.IsHost || !UsesOrdnance || _ordnanceHostTick == Time.NowDouble ) return;
-		_ordnanceHostTick = Time.NowDouble;
-		BindOrdnanceOwner();
-		if ( OrdnanceBusy )
+		if ( !w.UsesOrdnance )
 		{
-			if ( !Active || !IsHeld || !IsActive || !Owner.IsValid() || !Owner.Active || IsReloading ) CancelHostOrdnance();
+			if ( Networking.IsHost && w.DetonationBusy ) w.TickDetonationHost();
+			return;
+		}
+		RegisterInventory( w );
+		if ( !w.IsProxy && _localHeld && w.Owner is { UseInputControls: true } && !Input.Down( "attack1" ) ) SetInput( w, false );
+		if ( Networking.IsHost ) TickHost( w );
+	}
+
+	internal void TickHost( Titanfall2Weapon w )
+	{
+		if ( !Networking.IsHost || !w.UsesOrdnance || _hostTick == Time.NowDouble ) return;
+		_hostTick = Time.NowDouble;
+		BindOwner( w );
+		w.TickDetonationHost();
+		if ( w.OrdnanceBusy )
+		{
+			if ( !w.Active || !w.IsHeld || !w.IsActive || !w.Owner.IsValid() || !w.Owner.Active || w.IsReloading ) CancelHost( w );
 			else
 			{
-				if ( !_ordnanceReleased && _pendingOrdnance.MaxCookSeconds > 0
-					&& Time.NowDouble >= _ordnancePreparedAt + _pendingOrdnance.MaxCookSeconds )
-					ScheduleOrdnanceToss( _ordnancePreparedAt + _pendingOrdnance.MaxCookSeconds );
-				if ( _ordnanceReleased && !_ordnanceTossPresented && Time.NowDouble >= _ordnanceTossAt )
+				if ( !_released && _pendingProfile.MaxCookSeconds > 0
+					&& Time.NowDouble >= _preparedAt + _pendingProfile.MaxCookSeconds )
+					ScheduleToss( w, _preparedAt + _pendingProfile.MaxCookSeconds );
+				if ( _released && !_tossPresented && Time.NowDouble >= _tossAt )
 				{
-					_ordnanceTossPresented = true;
-					PlayOrdnanceToss();
+					_tossPresented = true;
+					w.BroadcastOrdnanceToss( _pendingProfile.ThrowSeconds, _tossAt );
 				}
-				if ( _ordnanceReleased && !_ordnanceLaunched && Time.NowDouble >= _ordnanceLaunchAt ) CommitOrdnance( false );
-				if ( _ordnanceLaunched && Time.NowDouble >= OrdnanceReadyAt ) OrdnanceBusy = false;
+				if ( _released && !_launched && Time.NowDouble >= _launchAt ) Commit( w, false );
+				if ( _launched && Time.NowDouble >= w.OrdnanceReadyAt ) w.SetOrdnanceBusyHost( false );
 			}
 		}
-		if ( IsHeld && Inventory.IsValid() )
-			Clip1 = _ordnanceRecovery.Recover( OrdnanceProfile, Clip1, ClipMaxSize, Time.NowDouble, Time.Delta );
-		else _ordnanceRecovery.Recovering = false;
+		if ( w.IsHeld && w.Inventory.IsValid() )
+			w.Clip1 = _recovery.Recover( w.OrdnanceProfile, w.Clip1, w.ClipMaxSize, Time.NowDouble, Time.Delta );
+		else _recovery.Recovering = false;
 	}
 
-	void CommitOrdnance( bool drop )
+	void Commit( Titanfall2Weapon w, bool drop )
 	{
-		if ( !Networking.IsHost || _ordnanceLaunched || !_ordnanceOwner.IsValid() || Clip1 < _ordnanceCost ) return;
-		var owner = _ordnanceOwner;
+		if ( !Networking.IsHost || _launched || !_owner.IsValid() || w.Clip1 < _cost ) return;
+		var owner = _owner;
 		var aim = owner.EyeTransform.ForwardRay;
 		if ( !aim.Position.IsFinite || !aim.Forward.IsFinite ) return;
-		var direction = _pendingOrdnance.ThrowDirection( aim.Forward );
+		var direction = _pendingProfile.ThrowDirection( aim.Forward );
 		// Satchel's script offsets its release point 15 units forward; other
 		// offhands use the attack position. Sweep this offset so it cannot cross cover.
 		var origin = aim.Position;
-		if ( _pendingOrdnanceFlight.Behavior == Titanfall2ProjectileBehavior.RemoteCharge )
+		if ( _pendingFlight.Behavior == Titanfall2ProjectileBehavior.RemoteCharge )
 		{
-			var clearance = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( origin, origin + aim.Forward * 15 )
-				.Radius( Math.Clamp( _pendingOrdnanceFlight.Radius, 0, 12 ) ).IgnoreGameObjectHierarchy( owner.GameObject )
-				.IgnoreGameObjectHierarchy( GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade );
+			var clearance = Titanfall2CollisionQueries.Run( w.Scene.Trace.Ray( origin, origin + aim.Forward * 15 )
+				.Radius( Math.Clamp( _pendingFlight.Radius, 0, 12 ) ).IgnoreGameObjectHierarchy( owner.GameObject )
+				.IgnoreGameObjectHierarchy( w.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade );
 			if ( !clearance.StartedSolid ) origin = clearance.EndPosition;
 		}
-		var settings = _pendingOrdnanceFlight with { FuseSeconds = _pendingOrdnance.RemainingFuse( _ordnancePreparedAt, Time.NowDouble ) };
-		var shot = Titanfall2Projectile.Launch( Scene, new Ray( origin, direction ), settings,
-			Ballistics.Damage, TitanDamage, owner.GameObject, GameObject, owner.GameObject, DamageProfile );
+		var settings = _pendingFlight with { FuseSeconds = _pendingProfile.RemainingFuse( _preparedAt, Time.NowDouble ) };
+		var shot = Titanfall2Projectile.Launch( w.Scene, new Ray( origin, direction ), settings,
+			w.Ballistics.Damage, w.TitanDamage, owner.GameObject, w.GameObject, owner.GameObject, w.DamageProfile );
 		if ( !shot.IsValid() ) return;
-		shot.SetHostVelocity( direction * settings.Speed * (drop ? 0.2f : 1) + owner.Velocity * _pendingOrdnance.InheritVelocity );
-		Clip1 -= _ordnanceCost;
-		_ordnanceLaunched = true;
-		_ordnanceRecovery.Used( _ordnanceReleased ? _ordnanceTossAt : Time.NowDouble );
-		OrdnanceThrowSerial = OrdnanceThrowSerial == int.MaxValue ? 1 : OrdnanceThrowSerial + 1;
-		TimeSinceShoot = 0;
-		if ( !drop ) SetNextPrimaryFire( (float)Math.Max( 0, OrdnanceReadyAt - Time.NowDouble ) );
-		PlayOrdnanceSound( true );
+		shot.SetHostVelocity( direction * settings.Speed * (drop ? 0.2f : 1) + owner.Velocity * _pendingProfile.InheritVelocity );
+		w.Clip1 -= _cost;
+		_launched = true;
+		_recovery.Used( _released ? _tossAt : Time.NowDouble );
+		w.AdvanceOrdnanceThrowSerialHost();
+		w.ResetShootTimer();
+		if ( !drop ) w.SetNextPrimaryFire( (float)Math.Max( 0, w.OrdnanceReadyAt - Time.NowDouble ) );
+		w.BroadcastOrdnanceSound( true );
 	}
 
-	void CancelOrdnance()
+	internal void Cancel( Titanfall2Weapon w )
 	{
-		_ordnanceLocalHeld = false;
-		if ( Networking.IsHost ) CancelHostOrdnance();
-		else if ( UsesOrdnance && !IsProxy ) RequestCancelOrdnance();
+		_localHeld = false;
+		if ( Networking.IsHost ) CancelHost( w );
+		else if ( w.UsesOrdnance && !w.IsProxy ) w.SendCancelOrdnanceRpc();
 	}
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestCancelOrdnance() { if ( Networking.IsHost ) CancelHostOrdnance(); }
-	void CancelHostOrdnance()
+
+	internal void CancelHost( Titanfall2Weapon w )
 	{
 		if ( !Networking.IsHost ) return;
-		if ( OrdnanceBusy && !_ordnanceLaunched && _pendingOrdnance.DropOnCancel ) CommitOrdnance( true );
-		OrdnanceBusy = false; _ordnanceHostHeld = false;
-		_ordnanceReleased = _ordnanceLaunched = _ordnanceTossPresented = false;
-	}
-	void RemoveOrdnanceInventory()
-	{
-		CancelOrdnance(); _ordnanceInventory?.Remove( this ); _ordnanceInventory = null;
-		_ordnanceRecovery.Recovering = false;
-	}
-
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayOrdnanceToss() => WeaponModel?.OnAttack();
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayOrdnanceSound( bool thrown )
-	{
-		if ( Application.IsHeadless || Application.IsDedicatedServer ) return;
-		var firstPerson = StateEffectsFirstPerson;
-		var sound = thrown ? firstPerson ? OrdnanceProfile.ThrowSound1P : OrdnanceProfile.ThrowSound3P
-			: firstPerson ? OrdnanceProfile.PrepSound1P : OrdnanceProfile.PrepSound3P;
-		if ( firstPerson ) Titanfall2GameplayVisuals.PlayViewSound( Scene, MountIdent, sound, WorldPosition );
-		else Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, sound, WorldPosition );
+		var wasPlaying = (w.OrdnanceBusy && _pendingFlight.Behavior == Titanfall2ProjectileBehavior.RemoteCharge) || w.DetonationBusy;
+		if ( w.OrdnanceBusy && !_launched && _pendingProfile.DropOnCancel ) Commit( w, true );
+		w.CancelDetonationHost();
+		w.SetOrdnanceBusyHost( false ); _hostHeld = false;
+		_released = _launched = _tossPresented = false;
+		if ( wasPlaying ) w.BroadcastOrdnanceCancel();
 	}
 }
 

@@ -11,7 +11,7 @@ public sealed partial class Titanfall2Npc
 		if ( !Networking.IsHost || IsProxy || Dead || Health <= 0 || damage.Cancelled
 			|| !float.IsFinite( damage.AcceptedDamage ) || damage.AcceptedDamage <= 0
 			|| Time.NowDouble < _actorFlinchUntil ) return;
-		var clip = _actorAnimationData?.Clips?.FirstOrDefault( clip => clip.Role == ModelLoader.FlinchRole );
+		var clip = AnimationData?.Clips?.FirstOrDefault( clip => clip.Role == ModelLoader.FlinchRole );
 		if ( clip is not { Additive: true, Duration: > 0 } || string.IsNullOrEmpty( clip.BoneMask ) ) return;
 		// One authored gesture is allowed to finish before another starts; repeated
 		// impacts must not pin the pose at its first frame. Retail's broader flinch
@@ -25,6 +25,6 @@ public sealed partial class Titanfall2Npc
 	void PlayActorFlinch()
 	{
 		if ( Dead || Health <= 0 ) return;
-		_layeredAnimation?.Flinch();
+		LayeredAnimation?.Flinch();
 	}
 }

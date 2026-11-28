@@ -14,6 +14,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	[Sync( SyncFlags.FromHost )] public float DefenseRemaining { get; private set; }
 	[Sync( SyncFlags.FromHost )] public float SmokeRemaining { get; private set; }
 	[Sync( SyncFlags.FromHost )] public float MeleeRemaining { get; private set; }
+	public string LastMeleeFailure { get; private set; }
 	[Sync( SyncFlags.FromHost )] public float GuardRemaining { get; private set; }
 	[Sync( SyncFlags.FromHost )] public float DashRemaining { get; private set; }
 	[Sync( SyncFlags.FromHost )] public int DashCharges { get; private set; } = 1;
@@ -35,17 +36,20 @@ public sealed partial class Titanfall2TitanKit : Component
 	TimeUntil _heatStep;
 	Ray _volleyAim;
 	GameObject _volleyAttacker;
-	GameObject _guardVisual;
 	bool Ready => Networking.IsHost && !IsProxy && Actor is { IsTitan: true, CanFight: true, TitanCanAct: true }
-		&& Kit != Chassis.None;
+		&& !Actor.IsInTermination && Actor.Seat is not { IsEmbarking: true } && Kit != Chassis.None;
 
 	protected override void OnUpdate()
 	{
-		UpdateGuardVisual();
+		UpdateDefensePresentation();
 		UpdatePhaseVisual();
+		UpdateRearmPresentation();
+		UpdateUtilityPresentation();
 		if ( !Networking.IsHost || IsProxy ) return;
 		EnsureDashInitialized();
-		if ( !Ready ) { _rockets = 0; GuardRemaining = 0; ClearUtilityState(); ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); ClearHoldDefenseInput(); return; }
+		if ( !Ready ) { CancelAiActions( "actor-unavailable" ); _rockets = 0; GuardRemaining = 0; ClearUtilityState(); ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); ClearPrimaryAdsInput(); ClearHoldDefenseInput(); return; }
+		TickAiMotion();
+		TickAiSession();
 		TickTrackers();
 		OffenseRemaining = MathF.Max( 0, OffenseRemaining - Time.Delta );
 		DefenseRemaining = MathF.Max( 0, DefenseRemaining - Time.Delta );
@@ -56,6 +60,7 @@ public sealed partial class Titanfall2TitanKit : Component
 			|| (Kit is Chassis.Scorch or Chassis.Ronin && _holdDefenseHeld && _holdDefensePilot.IsValid());
 		if ( !heldGuard ) GuardRemaining = MathF.Max( 0, GuardRemaining - Time.Delta );
 		TickIonEnergy();
+		TickPrimaryAds();
 		TickDefenseVolume();
 		TickDashCharges();
 		if ( _rockets > 0 && _volleyStep <= 0 )
@@ -125,74 +130,6 @@ public sealed partial class Titanfall2TitanKit : Component
 		DashRechargeProgress = 1f;
 	}
 
-	void TickAiAbilities()
-	{
-		var healthFrac = Actor.MaxHealth > 0 ? Math.Clamp( Actor.Health / Actor.MaxHealth, 0f, 1f ) : 1f;
-		var shieldFrac = Actor.MaxShield > 0 ? Math.Clamp( Actor.Shield / Actor.MaxShield, 0f, 1f ) : 0f;
-		var hazardNear = Actor.TryFindNearbyHazard( out var hazardOrigin, out _ );
-
-		var target = Actor.CombatTarget;
-		var hasTarget = target.IsValid() && Actor.HasLineOfSight( target );
-		var targetDist = hasTarget ? target.WorldPosition.Distance( Actor.WorldPosition ) : float.MaxValue;
-		var preferredRange = Titanfall2TacticsRules.PreferredRange( true, Kit, Actor.CombatStyle, Actor.AttackRange );
-
-		if ( DashRemaining <= 0 )
-		{
-			var dashIntent = Titanfall2TacticsRules.ChooseAiDash( Kit, healthFrac, shieldFrac, Actor.IsUnderFire, hazardNear, targetDist, preferredRange );
-			if ( dashIntent != Titanfall2AiDashIntent.None )
-			{
-				Vector3 dashDir = dashIntent switch
-				{
-					Titanfall2AiDashIntent.EvadeHazard => (Actor.WorldPosition - hazardOrigin).WithZ( 0 ),
-					Titanfall2AiDashIntent.KiteBack when hasTarget => (Actor.WorldPosition - target.WorldPosition).WithZ( 0 ),
-					Titanfall2AiDashIntent.CloseIn when hasTarget => (target.WorldPosition - Actor.WorldPosition).WithZ( 0 ),
-					Titanfall2AiDashIntent.LateralStrafe when hasTarget =>
-						Vector3.Cross( (target.WorldPosition - Actor.WorldPosition).WithZ( 0 ).Normal, Vector3.Up )
-						* (Random.Shared.NextSingle() < 0.5f ? 1f : -1f),
-					_ => Vector3.Zero
-				};
-				if ( dashDir.LengthSquared > 1f ) TryAiDash( dashDir.Normal );
-			}
-		}
-
-		if ( !hasTarget ) return;
-		var aimPoint = target.GetBounds().Center;
-		var aim = new Ray( Eye, (aimPoint - Eye).Normal );
-		var targetGrounded = MathF.Abs( target.WorldPosition.z - Actor.WorldPosition.z ) < 160f;
-
-		if ( Titanfall2TacticsRules.ShouldUseTitanDefense( Kit, healthFrac, shieldFrac, Actor.IsUnderFire, targetDist, SharedEnergy, GuardRemaining > 0 ) )
-			TryDefense( aim, Actor.GameObject );
-
-		if ( Titanfall2TacticsRules.ShouldUseTitanOffense( Kit, targetDist, Actor.AttackRange, targetGrounded, HasTrackerLock, SharedEnergy, Actor.IsUnderFire ) )
-			TryOffense( aim, Actor.GameObject );
-	}
-
-	internal bool TryAiDash( Vector3 direction )
-	{
-		if ( !Ready || DashRemaining > 0 || Actor.Seat is { IsOccupied: true } || direction.WithZ( 0 ).LengthSquared < 0.01f ) return false;
-		var flatDir = direction.WithZ( 0 ).Normal;
-		var dashDist = Kit is Chassis.Ronin or Chassis.Northstar ? 240f : Kit is Chassis.Legion or Chassis.Scorch ? 160f : 200f;
-		var radius = MathF.Max( 8f, Actor.BodyRadius - 2f );
-		var hull = new BBox( new Vector3( -radius, -radius, 4f ), new Vector3( radius, radius, MathF.Max( 24f, Actor.BodyHeight - 2f ) ) );
-		var origin = Actor.WorldPosition + Vector3.Up * 16f;
-		const Titanfall2TraceMask mask = (Titanfall2TraceMask)((uint)Titanfall2TraceMask.NpcSolid | (uint)Titanfall2Contents.TitanClip);
-		var sweep = Titanfall2CollisionQueries.Run( Scene.Trace.Box( hull, origin, origin + flatDir * dashDist )
-			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile", "tether-trap" ), mask );
-		if ( sweep.StartedSolid || (sweep.EndPosition - origin).WithZ( 0 ).Length < 48f ) return false;
-		var ground = Titanfall2CollisionQueries.Run( Scene.Trace.Box( hull, sweep.EndPosition, sweep.EndPosition - Vector3.Up * 56f )
-			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile", "tether-trap" ), mask );
-		if ( !ground.Hit || ground.StartedSolid || ground.Normal.z < Titanfall2TitanDriveRules.WalkableNormalZ ) return false;
-
-		var destination = Scene.NavMesh.IsEnabled ? Scene.NavMesh.GetClosestPoint( ground.EndPosition ) ?? ground.EndPosition : ground.EndPosition;
-		if ( destination.Distance( ground.EndPosition ) > 80f ) return false;
-
-		DashRemaining = DashRechargeSeconds;
-		var wasAgentEnabled = Actor.Agent.IsValid() && Actor.Agent.Enabled;
-		if ( wasAgentEnabled ) Actor.Agent.Enabled = false;
-		Actor.WorldPosition = destination;
-		if ( wasAgentEnabled ) Actor.Agent.Enabled = true;
-		return true;
-	}
 
 	Vector3 Eye => Actor.WorldPosition + Vector3.Up * (Actor.BodyHeight * 0.79f);
 	bool ValidAim( Ray aim ) => aim.Position.IsFinite && aim.Forward.IsFinite && aim.Forward.LengthSquared is > 0.25f and < 4f
@@ -202,7 +139,7 @@ public sealed partial class Titanfall2TitanKit : Component
 	public bool TryOffense( Ray aim, GameObject attacker )
 	{
 		LastOffenseFailure = null;
-		if ( !Ready || IsPhasing || !ValidAim( aim ) ) { LastOffenseFailure = "机体无法使用攻击技能"; return false; }
+		if ( !Ready || IsPhasing || !ValidAim( aim ) || !CanActivateOffhand( Titanfall2TitanAiAction.Offense ) ) { LastOffenseFailure = "机体无法使用攻击技能"; return false; }
 		if ( OffenseRemaining > 0 || _rockets > 0 ) { LastOffenseFailure = "攻击技能冷却中"; return false; }
 		var data = AbilityData();
 		if ( Titanfall2TitanAbilityData.ScriptFor( Kit ) is not null && data is null )
@@ -210,6 +147,8 @@ public sealed partial class Titanfall2TitanKit : Component
 			LastOffenseFailure = "缺少原版技能武器配置";
 			return false;
 		}
+		if ( Kit == Chassis.Legion && !Actor.TryConsumeTitanAbilityRounds( LegionLongRangeMode ? 2 : 1 ) )
+		{ LastOffenseFailure = "主武器换弹或弹药不足"; return false; }
 		if ( Kit == Chassis.Tone )
 		{
 			_volleyTarget = FindTrackerLock( aim );
@@ -221,13 +160,17 @@ public sealed partial class Titanfall2TitanKit : Component
 		{
 			if ( DefenseVolumeActive || Actor.GetComponent<Titanfall2TitanCore>() is { BlocksPrimary: true } )
 			{ LastOffenseFailure = "涡旋护盾或核心正在使用"; return false; }
-			if ( IonData() is not { } ion || !_ionEnergy.Spend( ion.LaserCost ) )
+			var ion = IonData();
+			var npcProfile = AiAutonomous ? AiProfile : null;
+			var cost = npcProfile?.Offense is { Available: true } offense
+				? (int)offense.Number( "shared_energy_cost", ion?.LaserCost ?? 550 ) : ion?.LaserCost ?? 550;
+			if ( ion is null || !_ionEnergy.Spend( cost, npcProfile?.SharedEnergyRegenDelay ?? Titanfall2IonEnergy.RegenDelay ) )
 			{ LastOffenseFailure = "共享能量不足"; return false; }
 			SharedEnergy = _ionEnergy.Count;
 			OffenseRemaining = ion.LaserRecovery;
 		}
 		else OffenseRemaining = Math.Clamp( OffenseCooldown, 0.5f, 120 );
-		PlayActivation( false );
+		PresentAcceptedOffenseFire( attacker );
 		if ( Kit == Chassis.Legion ) FireLegionPowerShot( aim, attacker );
 		else if ( Kit == Chassis.Ion ) Beam( aim, attacker, siphon: false, data );
 		else
@@ -244,14 +187,13 @@ public sealed partial class Titanfall2TitanKit : Component
 	/// <summary>Activate a chassis defense. Siphon restores shield only after hitting a hostile.</summary>
 	public bool TryDefense( Ray aim, GameObject attacker )
 	{
-		if ( !Ready || !ValidAim( aim ) ) return false;
+		if ( !Ready || !ValidAim( aim ) || !CanActivateOffhand( Titanfall2TitanAiAction.Defense ) ) return false;
 		// AI uses a bounded tactical hold. The cockpit supplies hold/release separately.
 		if ( Kit == Chassis.Ion ) return !DefenseVolumeActive && TryStartIonVortex( aim );
 		if ( Kit == Chassis.Scorch )
 		{
 			if ( DefenseVolumeActive || ThermalShieldMeter < 0.2f ) return false;
 			BeginDefenseVolume();
-			PlayUtilitySoundRpc( "heat_shield", Eye );
 			return true;
 		}
 		if ( DefenseRemaining > 0 ) return false;
@@ -269,10 +211,17 @@ public sealed partial class Titanfall2TitanKit : Component
 			return true;
 		}
 		DefenseRemaining = Math.Clamp( DefenseCooldown, 1, 120 );
-		PlayActivation( true );
-		if ( Kit == Chassis.Monarch ) Beam( aim, attacker, siphon: true, AbilityData( defense: true ) );
+		if ( Kit == Chassis.Monarch )
+		{
+			PlayUtilitySoundRpc( "siphon", Eye );
+			Beam( aim, attacker, siphon: true, AbilityData( defense: true ) );
+		}
 		else if ( Kit is Chassis.Ion or Chassis.Legion ) BeginDefenseVolume();
-		else GuardRemaining = Kit == Chassis.Ronin ? 3 : 5;
+		else
+		{
+			GuardRemaining = Kit == Chassis.Ronin ? 3 : 5;
+			if ( Kit == Chassis.Ronin ) RoninBlocking = true;
+		}
 		return true;
 	}
 
@@ -280,17 +229,13 @@ public sealed partial class Titanfall2TitanKit : Component
 	{
 		EnsureDashInitialized();
 		if ( !Ready || DashCharges <= 0 || Actor.Seat is not { IsOccupied: true } ) return false;
-		DashCharges = Math.Max( 0, DashCharges - 1 );
-		if ( _dashChargeTimer <= 0f ) _dashChargeTimer = MathF.Max( 0.5f, DashRechargeSeconds );
-		DashRemaining = DashCharges > 0 ? 0f : _dashChargeTimer;
-		DashRechargeProgress = Math.Clamp( 1f - _dashChargeTimer / MathF.Max( 0.5f, DashRechargeSeconds ), 0f, 1f );
-		return true;
+		return ConsumeDashCharge();
 	}
 
 	/// <summary>Slot 3 countermeasure: deploys an anti-pilot/area Electric Smoke cloud centered on the Titan.</summary>
 	public bool TryElectricSmoke( GameObject attacker )
 	{
-		if ( !Ready || IsPhasing || SmokeRemaining > 0 ) return false;
+		if ( !Ready || IsPhasing || SmokeRemaining > 0 || !CanActivateOffhand( Titanfall2TitanAiAction.Smoke ) ) return false;
 		SmokeRemaining = Math.Clamp( SmokeCooldown, 2f, 120f );
 		var origin = Actor.WorldPosition + Vector3.Up * (Actor.BodyHeight * 0.42f);
 		var smokeSettings = new Titanfall2ProjectileSettings
@@ -313,9 +258,15 @@ public sealed partial class Titanfall2TitanKit : Component
 	/// <summary>Slot 4 close-quarters strike: initiates Titan-vs-Titan Termination on a Doomed enemy Titan, else heavy punch/sword cleave.</summary>
 	public bool TryTitanMelee( Ray aim, GameObject attacker )
 	{
-		if ( !Ready || IsPhasing || Actor.IsInTermination || MeleeRemaining > 0 || !ValidAim( aim ) ) return false;
+		LastMeleeFailure = null;
+		if ( !Ready ) return RejectMelee( Actor is { CanFight: false } ? "机体战斗已禁用" : "机体当前无法近战" );
+		if ( !CanActivateOffhand( Titanfall2TitanAiAction.Melee ) ) return RejectMelee( "动作未完成" );
+		if ( IsPhasing ) return RejectMelee( "相位状态中无法近战" );
+		if ( Actor.IsInTermination ) return RejectMelee( "处决进行中" );
+		if ( MeleeRemaining > 0 ) return RejectMelee( $"泰坦近战冷却中 · {MeleeRemaining:0.0}s" );
+		if ( !ValidAim( aim ) ) return RejectMelee( "近战瞄准位置异常" );
 		var core = Actor.GetComponent<Titanfall2TitanCore>();
-		if ( core is { BlocksPrimary: true, SwordCoreActive: false } ) return false;
+		if ( core is { BlocksPrimary: true, SwordCoreActive: false } ) return RejectMelee( "核心释放期间无法近战" );
 
 		// Retail Titanfall 2 rule: meleeing a Doomed enemy Titan within range initiates a paired Titan-vs-Titan Termination!
 		var doomedTarget = FindDoomedTerminationTarget( aim );
@@ -347,7 +298,7 @@ public sealed partial class Titanfall2TitanKit : Component
 		var killedAny = false;
 		var impactPoint = Eye + forward * (reach * 0.7f);
 
-		foreach ( var hit in hits )
+		foreach ( var hit in hits.OrderBy( hit => hit.HitPosition.Distance( Eye ) ) )
 		{
 			if ( !hit.Hit || hit.StartedSolid || !hit.GameObject.IsValid() ) continue;
 			var npc = hit.GameObject.GetComponentInParent<Titanfall2Npc>();
@@ -357,6 +308,8 @@ public sealed partial class Titanfall2TitanKit : Component
 			if ( npc.IsValid() && (!Actor.IsHostileToFaction( npc.Faction ) || npc.Dead) ) continue;
 
 			var damageable = victimRoot.GetComponentInParent<Component.IDamageable>();
+			// A solid wall ends the sweep: a cleave cannot damage actors on its far side.
+			if ( damageable is null && victimRoot.GetComponentInParent<Rigidbody>() is null ) break;
 			if ( damageable is not null )
 			{
 				var wasDead = npc is { Dead: true };
@@ -386,6 +339,12 @@ public sealed partial class Titanfall2TitanKit : Component
 			PlayTitanSlotSoundRpc( "melee_hit", impactPoint );
 		}
 		return true;
+	}
+
+	bool RejectMelee( string reason )
+	{
+		LastMeleeFailure = reason;
+		return false;
 	}
 
 	Titanfall2Npc FindDoomedTerminationTarget( Ray aim )
@@ -452,7 +411,11 @@ public sealed partial class Titanfall2TitanKit : Component
 			&& damage.Weapon?.GetComponent<BaseCombatWeapon>() is null ) return damage.Damage;
 		var toOrigin = damage.Origin - Eye;
 		var forward = Vector3.Dot( Actor.WorldRotation.Forward, toOrigin.Normal );
-		if ( Kit == Chassis.Ronin && Actor.GetComponent<Titanfall2TitanCore>() is { SwordCoreActive: true } ) return damage.Damage * 0.15f;
+		if ( Kit == Chassis.Ronin )
+		{
+			PresentRoninBlockImpact( damage );
+			if ( Actor.GetComponent<Titanfall2TitanCore>() is { SwordCoreActive: true } ) return damage.Damage * 0.15f;
+		}
 		return damage.Damage * GuardMultiplier( Kit, forward );
 	}
 
@@ -589,24 +552,11 @@ public sealed partial class Titanfall2TitanKit : Component
 			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Grenade ).EndPosition;
 		var origin = Eye;
 		if ( Kit == Chassis.Tone ) target = _volleyTarget.WorldPosition + Vector3.Up * (_volleyTarget.BodyHeight * 0.55f);
-		var settings = _volleyData.Projectile with { MountIdent = Actor.MountIdent };
+		var settings = _volleyData.MountedProjectile( Actor.MountIdent );
+		if ( Kit == Chassis.Monarch ) settings.FlightSound = Titanfall2OffensePresentation.MonarchRocketFlight;
 		var projectile = Titanfall2Projectile.Launch( Scene, new Ray( origin, (target - origin).Normal ), settings,
 			_volleyData.Damage, _volleyData.TitanDamage, attacker, GameObject, Actor.GameObject );
 		if ( Kit == Chassis.Tone && projectile.IsValid() ) projectile.DesignateHomingTarget( _volleyTarget.GameObject );
-	}
-
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayActivation( bool defense )
-	{
-		if ( !Actor.IsValid() ) return;
-		var sound = AbilityData( defense )?.Sound ?? (defense ? Kit == Chassis.Monarch ? "Weapon_EnergySyphon_Lvl1_Fire_3P" : null
-			: Kit switch
-			{
-				Chassis.Ion => "Weapon_ShoulderLaser_Fire_3P", Chassis.Monarch => "ShoulderRocket_Paint_Fire_3P",
-				Chassis.Tone => "weapon_trackingrockets_fire_3P", Chassis.Northstar => "ShoulderRocket_Cluster_Fire_3P",
-				Chassis.Ronin => "arcwave_fire_3p", _ => Actor.FireSound
-			});
-		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, sound, Eye );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
@@ -632,66 +582,28 @@ public sealed partial class Titanfall2TitanKit : Component
 		Titanfall2CombatEffects.Impact( Scene, shot, Actor.MountIdent, impact ?? "default", data?.Projectile.SplashRadius ?? 0, color );
 	}
 
-	void UpdateGuardVisual()
-	{
-		if ( Application.IsHeadless || Application.IsDedicatedServer ) return;
-		if ( GuardRemaining <= 0 || Actor is not { Dead: false } )
-		{
-			if ( _guardVisual.IsValid() ) _guardVisual.Destroy();
-			return;
-		}
-		if ( _guardVisual.IsValid() )
-		{
-			if ( Kit is Chassis.Ion or Chassis.Legion or Chassis.Scorch ) _guardVisual.WorldTransform = new Transform( DefenseCenter, DefenseFacing );
-			return;
-		}
-		_guardVisual = new GameObject( Actor.GameObject, false, DefenseName );
-		_guardVisual.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-		_guardVisual.LocalPosition = new Vector3( Actor.BodyRadius + 8, 0, Actor.BodyHeight * 0.6f );
-		if ( Kit is Chassis.Ion or Chassis.Legion or Chassis.Scorch ) _guardVisual.WorldTransform = new Transform( DefenseCenter, DefenseFacing );
-		var color = Kit == Chassis.Scorch ? new Color( 1, 0.35f, 0.08f ) : new Color( 0.2f, 0.6f, 1 );
-		if ( Kit is Chassis.Ion or Chassis.Scorch or Chassis.Legion )
-		{
-			var retail = _guardVisual.AddComponent<Titanfall2PlasmaFlight>();
-			retail.MountIdent = Actor.MountIdent;
-			retail.EffectName = Kit == Chassis.Ion ? "wpn_vortex_chargingCP_titan"
-				: Kit == Chassis.Legion ? "P_titan_gun_shield_3P" : "P_wpn_HeatShield";
-			_guardVisual.Enabled = true;
-			return;
-		}
-		var points = new List<GameObject>();
-		for ( var i = 0; i <= 24; i++ )
-		{
-			var angle = i * MathF.PI * 2 / 24;
-			var point = new GameObject( _guardVisual, true, "Guard edge" );
-			point.LocalPosition = new Vector3( 0, MathF.Cos( angle ) * Actor.BodyRadius * 1.4f, MathF.Sin( angle ) * Actor.BodyHeight * 0.35f );
-			points.Add( point );
-		}
-		var line = _guardVisual.AddComponent<LineRenderer>();
-		line.Points = points;
-		line.Width = 3;
-		line.Color = color * 3;
-		line.Additive = true;
-		line.Opaque = false;
-		line.CastShadows = false;
-		_guardVisual.Enabled = true;
-	}
-
 	protected override void OnDisabled()
 	{
-		if ( _guardVisual.IsValid() ) _guardVisual.Destroy();
+		ClearDefensePresentation();
+		ClearHoverPresentation();
 		ReleaseRoninPhaseCamera();
 		if ( Actor.IsValid() && Actor.Renderer.IsValid() ) Actor.Renderer.RenderOptions.Game = true;
 		if ( Actor.IsValid() ) Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: true );
-		if ( Networking.IsHost && !IsProxy ) { _rockets = 0; GuardRemaining = 0; ClearUtilityState(); ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); ClearHoldDefenseInput(); }
+		if ( Networking.IsHost && !IsProxy ) { CancelAiActions( "disabled" ); _rockets = 0; GuardRemaining = 0; ClearUtilityState(); ClearDefenseVolume(); ClearTrackers(); ClearIonInput(); ClearPrimaryAdsInput(); ClearHoldDefenseInput(); }
 	}
 
-	protected override void OnDestroy() => ReleaseRoninPhaseCamera();
+	protected override void OnDestroy() { CancelAiActions( "destroyed" ); ClearDefensePresentation(); ClearHoverPresentation(); ReleaseRoninPhaseCamera(); }
 }
 
 public sealed partial class Titanfall2Npc
 {
 	internal GameObject CombatTarget => _target;
+	internal bool TryConsumeTitanAbilityRounds( int count )
+	{
+		if ( !Networking.IsHost || IsProxy || Dead || Reloading || count <= 0 || Rounds < count ) return false;
+		if ( GetComponent<Titanfall2TitanCore>() is not { UnlimitedAmmo: true } ) Rounds -= count;
+		return true;
+	}
 	internal void RestoreTitanShield( float amount )
 	{
 		if ( Networking.IsHost && !IsProxy && !Dead && IsTitan ) Shield = MathF.Min( MaxShield, Shield + MathF.Max( 0, amount ) );

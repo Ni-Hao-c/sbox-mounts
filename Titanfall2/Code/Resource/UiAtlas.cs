@@ -60,23 +60,26 @@ sealed class Titanfall2UiAtlasPixelCache
 	}
 }
 
-sealed class Titanfall2UiAtlasTextureLoader( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache )
+sealed class Titanfall2UiAtlasTextureLoader( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache, bool restoreCanvas = false )
 	: ResourceLoader<Titanfall2Mount>
 {
-	internal static Texture CreateTexture( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache )
+	internal static Texture CreateTexture( Titanfall2UiAtlasSource source, Titanfall2UiAtlasImage image, Titanfall2UiAtlasPixelCache cache, bool restoreCanvas = false )
 	{
 		var pixels = cache.Get( source );
 		if ( !image.TryGetCrop( pixels.Width, pixels.Height, out var crop ) ) throw new InvalidDataException( "UI image UV bounds are invalid for the decoded atlas." );
-		var output = new Color32[checked(crop.Width * crop.Height)];
+		var destination = (X: 0, Y: 0, Width: crop.Width, Height: crop.Height);
+		if ( restoreCanvas && !image.TryGetCanvasPlacement( crop.Width, crop.Height, out destination ) )
+			throw new InvalidDataException( "UI image has no valid original canvas transform." );
+		var output = new Color32[checked(destination.Width * destination.Height)];
 		for ( var row = 0; row < crop.Height; row++ )
-			Array.Copy( pixels.Data, (crop.Y + row) * pixels.Width + crop.X, output, row * crop.Width, crop.Width );
-		return Texture.Create( crop.Width, crop.Height, ImageFormat.RGBA8888 ).WithStaticUsage().WithData<Color32>( output ).Finish();
+			Array.Copy( pixels.Data, (crop.Y + row) * pixels.Width + crop.X, output, (destination.Y + row) * destination.Width + destination.X, crop.Width );
+		return Texture.Create( destination.Width, destination.Height, ImageFormat.RGBA8888 ).WithStaticUsage().WithData<Color32>( output ).Finish();
 	}
 	protected override object Load()
 	{
 		try
 		{
-			return CreateTexture( source, image, cache );
+			return CreateTexture( source, image, cache, restoreCanvas );
 		}
 		catch ( Exception exception )
 		{
@@ -104,6 +107,10 @@ public partial class Titanfall2Mount
 					_mapPreviewImages.TryAdd( image.Name, (source, image) );
 				if ( registered.Add( image.Name + ".vtex" ) )
 					catalog.Add( new( ResourceType.Texture, image.Name, new Titanfall2UiAtlasTextureLoader( source, image, cache ) ) );
+				// Physical RUI planes use original-image UVs, unlike a cropped HUD icon.
+				// Give them a separate resource so a same-named world TXTR cannot win.
+				if ( image.HasTrimTransform && registered.Add( "rui_full/" + image.Name + ".vtex" ) )
+					catalog.Add( new( ResourceType.Texture, "rui_full/" + image.Name, new Titanfall2UiAtlasTextureLoader( source, image, cache, restoreCanvas: true ) ) );
 			}
 	}
 

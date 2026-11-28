@@ -19,8 +19,8 @@ static class Titanfall2MapCache
 	// The parse payload is its own format: its magic/version/tag are independent of the T2FC
 	// container and of every other cache kind, so one kind can never be read as another.
 	internal const uint PayloadMagic = 0x504D3254; // "T2MP"
-	internal const int PayloadVersion = 1;
-	internal const string PayloadTag = "map-parse-v1";
+	internal const int PayloadVersion = 2;
+	internal const string PayloadTag = "map-parse-v2";
 	const string Kind = "map";
 
 	// Uncompressed payload ceiling. CacheReader can hand out at most 768 MiB per entry, and a map
@@ -414,8 +414,7 @@ static class Titanfall2MapCachePayload
 		Titanfall2ProcessedCache.WriteArray( writer, visibility.Planes?.ToArray() ?? Array.Empty<Titanfall2BspReader.VisibilityPlane>() );
 		Titanfall2ProcessedCache.WriteArray( writer, visibility.Nodes?.ToArray() ?? Array.Empty<Titanfall2BspReader.VisibilityBspNode>() );
 		writer.Write( visibility.CellCount );
-		writer.Write( visibility.AlwaysVisibleCells.Low );
-		writer.Write( visibility.AlwaysVisibleCells.High );
+		visibility.AlwaysVisibleCells.Write( writer );
 		Titanfall2ProcessedCache.WriteArray( writer, visibility.Portals?.ToArray() ?? Array.Empty<Titanfall2BspReader.VisibilityPortal>() );
 		Titanfall2ProcessedCache.WriteArray( writer, visibility.ObjectCellMasks?.ToArray() ?? Array.Empty<Titanfall2BspReader.VisibilityCellMask>() );
 
@@ -581,7 +580,7 @@ static class Titanfall2MapCachePayload
 		var planes = reader.Blittable<Titanfall2BspReader.VisibilityPlane>( MaximumPlanes );
 		var nodes = reader.Blittable<Titanfall2BspReader.VisibilityBspNode>( MaximumNodes );
 		var cellCount = reader.ReadInt32();
-		var alwaysVisible = new Titanfall2BspReader.VisibilityCellMask( reader.ReadUInt64(), reader.ReadUInt64() );
+		var alwaysVisible = Titanfall2BspReader.VisibilityCellMask.Read( reader );
 		var portals = reader.Blittable<Titanfall2BspReader.VisibilityPortal>( MaximumPortals );
 		var objectCellMasks = reader.Blittable<Titanfall2BspReader.VisibilityCellMask>( MaximumObjectMasks );
 		var visibility = new Titanfall2BspReader.BspVisibility

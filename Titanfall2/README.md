@@ -30,7 +30,7 @@ Like the SourceEngine mount, indexing and mount lifecycle live in the mount, bin
 
 <a id="en-scope"></a>
 ## Scope
-The content snapshot fixes precedence for a mount session: enabled Northstar loose overrides first, then each mod's RPAK/VPK content, then retail RPAK/VPK, generated sky material and Miles sounds. Higher `LoadPriority` wins; equal priorities use deterministic directory ordering. Diagnostics retain losing candidates for inspection.
+The content snapshot fixes precedence for a mount session: enabled Northstar loose overrides first, then each mod's active RPAK/VPK content, then retail RPAK/VPK, generated sky material and Miles sounds. Higher `LoadPriority` wins; equal priorities use deterministic directory ordering. Without `NORTHSTAR_MAP`, RPAKs selected only through a `MapOnly` map declaration (including their Postload chain) are indexed after global/retail sources: unique custom-map assets remain available, while shared assets keep the global/retail winner. Select the custom map explicitly to activate its shared RPAK overrides. Diagnostics retain losing candidates for inspection.
 
 | Source | Mounted content |
 | -- | -- |
@@ -83,8 +83,9 @@ The mount publishes ordinary `PrefabFile` resources tagged `weapon`, `npc`, or `
 | `weapons/mp_weapon_<id>.prefab` (anti-Titan) | `defender`, `mgl`, `rocket_launcher`, `arc_launcher` |
 | `weapons/mp_weapon_<id>.prefab` (ordnance) | `frag_grenade`, `grenade_emp`, `thermite_grenade`, `grenade_gravity`, `grenade_electric_smoke`, `satchel` |
 | `items/pilot_jump_kit.prefab` | Equipable Pilot Jump Kit (`Titanfall2PilotParkour`, `Titanfall2PilotCombat`, `Titanfall2PilotTactical`: double jump, wallrun/wallkick, slide/slide-hop, ledge mantle, melee, offhand ordnance, Stim, Grapple, Phase Shift, Pulse Blade). |
-| `npcs/<id>.prefab` | 24 infantry/robot/wildlife actors (`npc_soldier`, `npc_spectre`, `npc_stalker`, `npc_militia_grunt`, `npc_imc_heavy`, `npc_reaper`, `npc_marvin`, `npc_plasma_turret`, `npc_attack_drone`, `npc_prowler`, plus IMC/Militia SMG/Shotgun/Captain/Pilot/Corporate/Mossy variants). |
-| `titans/<id>.prefab` | 8 drivable Titans (`monarch`, `bt7274`, `legion`, `ion`, `tone`, `scorch`, `northstar`, `ronin`) + 4 Frontier Defense AI Titans (`arc_titan`, `nuke_titan`, `elite_monarch`, `mortar_titan`). |
+| `items/pilot_tactical_{stim,grapple,phase,pulse}.prefab` | Pick up with E after equipping the Jump Kit; replaces the single tactical slot. T activates. The Jump Kit starts with an empty slot; duplicate pickups do not refill charges. Retail tactical icon appears beside health. |
+| `npcs/{ally,enemy,neutral}/<id>.prefab` | 32 infantry/robot/wildlife actors split into `[Ally]` (15), `[Enemy]` (15), and `[Neutral]` (2 MRVN) mounts (`npc_soldier` / `npc_militia_grunt`, `npc_reaper` / `npc_reaper_ally`, `npc_plasma_turret`, `npc_attack_drone`, `npc_prowler`, Spectres, Stalkers, Pilots, Shield Captains, MRVNs). |
+| `titans/{ally,enemy}/<id>.prefab` | 8 drivable Titans split into `[Ally]` & `[Enemy]` mounts (`monarch`, `bt7274`, `legion`, `ion`, `tone`, `scorch`, `northstar`, `ronin`) + 4 `[Enemy]` Frontier Defense AI Titans (`arc_titan`, `nuke_titan`, `elite_monarch`, `mortar_titan`). |
 | `titanweapons/mp_titanweapon_<id>.prefab` | `xo16_shorty`, `xo16_vanguard`, `predator_cannon`, `particle_accelerator`, `leadwall`, `sniper`, `sticky_40mm`, `meteor`. Tagged `titan-weapon`; use `Titanfall2TitanArmament.EquipTo(actor)` on the host. |
 
 Weapons read PC multiplayer `WeaponData` (including `#base`, `MP_BASE`, and `Mods`). They use `BaseCombatWeapon` for inventory, hitscan and reload, plus retail charge (Charge Rifle), continuous heat/overheat venting (L-STAR), spin-up (Devotion), smart-lock (Smart Pistol), burst (Hemlok), and multi-pellet patterns (EVA-8, Double Take, Mastiff, Mozambique). A standalone host needs a `PlayerController` and `BaseInventoryComponent` configured for pickup and control; reserve ammo is unlimited. Pilot guns use retail POV rigs and bone-merged pilot arms with supported ADS, sprint, reload and animation events. Authored bodygroups, muzzle flashes, shells, tracers, trails and bullet decals use mounted retail resources. Gunshot samples are selected by verified weapon family, perspective and firing stage; the Miles event mixer is not reproduced. See [presentation and current limits](docs/COMBAT_SYSTEMS.zh-CN.md).
@@ -409,13 +410,15 @@ These projects informed the earlier reusable mount-framework design. The researc
 | `weapons/mp_weapon_<id>.prefab`（反泰坦） | `defender`、`mgl`、`rocket_launcher`、`arc_launcher` |
 | `weapons/mp_weapon_<id>.prefab`（投掷物） | `frag_grenade`、`grenade_emp`、`thermite_grenade`、`grenade_gravity`、`grenade_electric_smoke`、`satchel` |
 | `items/pilot_jump_kit.prefab` | 可穿戴铁驭跃升背包（`Titanfall2PilotParkour` / `Titanfall2PilotCombat` / `Titanfall2PilotTactical`：二段跳、跑墙蹬墙、滑铲跳、攀爬、铁驭近战、副手投掷物、兴奋剂、钩爪、相位转移、脉冲刀） |
-| `npcs/<id>.prefab` | `npc_soldier`、`npc_spectre`、`npc_stalker`、`npc_militia_grunt`、`npc_imc_heavy`、`npc_reaper`、`npc_marvin`、`npc_plasma_turret`、`npc_attack_drone`、`npc_prowler` |
-| `npcs/<id>.prefab`（扩展） | `npc_imc_smg`、`npc_imc_shotgun`、`npc_imc_captain`、`npc_militia_heavy`、`npc_militia_smg`、`npc_militia_shotgun`、`npc_stalker_red`、`npc_imc_pilot`、`npc_militia_pilot`、`npc_corporate_spectre`、`npc_mossy_stalker`、`npc_militia_spectre`、`npc_militia_stalker`、`npc_mossy_marvin` |
-| `titans/<id>.prefab`（可驾驶） | `monarch`（帝王 / XO-16）、`bt7274`（BT / XO-16）、`legion`（军团 / Predator Cannon）、`ion`（离子 / Splitter Rifle）、`tone`（强力 / 40mm）、`scorch`（烈焰 / T-203）、`northstar`（北极星 / Plasma Railgun）、`ronin`（浪人 / Leadwall） |
-| `titans/<id>.prefab`（FD 敌方 AI） | `arc_titan`、`nuke_titan`、`elite_monarch`、`mortar_titan`；没有驾驶座 |
+| `items/pilot_tactical_{stim,grapple,phase,pulse}.prefab` | 穿戴跃升背包后按 E 拾取，替换唯一技能槽，T 使用。初始为空槽，同类拾取不会刷新充能；血量旁显示原版技能图标。资源依据与适配差异见 [铁御技能研究](docs/PILOT_TACTICAL_RESEARCH_2026-11-28.zh-CN.md)。 |
+| `npcs/enemy/<id>.prefab` | 15 种敌方单位（`[Enemy]` 前缀）：`npc_soldier`、`npc_spectre`、`npc_stalker`、`npc_imc_heavy`、`npc_reaper`、`npc_plasma_turret`、`npc_attack_drone`、`npc_prowler`、`npc_imc_smg`、`npc_imc_shotgun`、`npc_imc_captain`、`npc_stalker_red`、`npc_imc_pilot`、`npc_corporate_spectre`、`npc_mossy_stalker` |
+| `npcs/ally/<id>.prefab` | 15 种友方单位（`[Ally]` 前缀）：`npc_militia_grunt`、`npc_militia_heavy`、`npc_militia_smg`、`npc_militia_shotgun`、`npc_militia_pilot`、`npc_militia_spectre`、`npc_militia_stalker`，以及死神/炮塔/无人机/猎兽/护盾队长/红潜行者/企业幽灵/苔藓潜行者的 `*_ally` 队友变体 |
+| `npcs/neutral/<id>.prefab` | 2 种中立单位（`[Neutral]` 前缀）：`npc_marvin`、`npc_mossy_marvin` |
+| `titans/{ally,enemy}/<id>.prefab`（可驾驶） | 8 台可驾驶泰坦均拆为 `[Ally]`（`ally/`）与 `[Enemy]`（`enemy/`）两份：`monarch`（帝王）、`bt7274`（BT）、`legion`（军团）、`ion`（离子）、`tone`（强力）、`scorch`（烈焰）、`northstar`（北极星）、`ronin`（浪人） |
+| `titans/enemy/<id>.prefab`（FD 敌方 AI） | `arc_titan`、`nuke_titan`、`elite_monarch`、`mortar_titan`；仅敌方且无驾驶座 |
 | `titanweapons/mp_titanweapon_<id>.prefab` | `xo16_shorty`、`xo16_vanguard`、`predator_cannon`、`particle_accelerator`、`leadwall`、`sniper`、`sticky_40mm`、`meteor`（标签 `titan-weapon`，主机调用 `Titanfall2TitanArmament.EquipTo(actor)` 装备） |
 
-当前目录包含 37 件铁驭武器／投掷物、1 件铁驭跃升背包、24 种普通 NPC、12 种泰坦与 8 件泰坦武装。铁驭武器读取零售 PC 多人 `WeaponData`（含 `#base`、`MP_BASE` 与 `Mods`），支持充能步枪蓄力、L-STAR 连续热量与过热散热、Devotion 渐进射速、智能手枪自动锁定、Hemlok 三连发与 EVA-8/Double Take/Mastiff/Mozambique 弹丸分布。独立项目需配置 `PlayerController` 和启用拾取及控制的 `BaseInventoryComponent`。第一人称使用原版 POV 骨架与骨骼合并的铁驭手臂，支持可用的 ADS、冲刺、换弹和动画事件；按原版 bodygroup 保留机瞄等部件。枪口、抛壳、曳光、尾迹与弹痕读取挂载的原版素材，枪声按已核对的武器音源族、视角和首发／循环／收尾选择，不使用跨武器模糊匹配。Miles 原生事件混音仍未恢复，详见[战斗系统说明](docs/COMBAT_SYSTEMS.zh-CN.md)。备用弹仍无限。
+当前目录包含 37 件铁驭武器／投掷物、1 件铁驭跃升背包、32 种普通 NPC（15 友方 / 15 敌方 / 2 中立）、20 种泰坦（8 友方可驾驶 / 8 敌方可驾驶 / 4 FD 敌方 AI）与 8 件泰坦武装。铁驭武器读取零售 PC 多人 `WeaponData`（含 `#base`、`MP_BASE` 与 `Mods`），支持充能步枪蓄力、L-STAR 连续热量与过热散热、Devotion 渐进射速、智能手枪自动锁定、Hemlok 三连发与 EVA-8/Double Take/Mastiff/Mozambique 弹丸分布。独立项目需配置 `PlayerController` 和启用拾取及控制的 `BaseInventoryComponent`。第一人称使用原版 POV 骨架与骨骼合并的铁驭手臂，支持可用的 ADS、冲刺、换弹和动画事件；按原版 bodygroup 保留机瞄等部件。枪口、抛壳、曳光、尾迹与弹痕读取挂载的原版素材，枪声按已核对的武器音源族、视角和首发／循环／收尾选择，不使用跨武器模糊匹配。Miles 原生事件混音仍未恢复，详见[战斗系统说明](docs/COMBAT_SYSTEMS.zh-CN.md)。备用弹仍无限。
 
 智能手枪目前锁定准星附近、无遮挡的敌对 NPC，持续约 0.6 秒后辅助命中；开镜时使用手动瞄准，尚无专用锁定 HUD。遥控炸药主射击投掷并黏附碰撞表面，副射击仅引爆当前武器投出的炸药，未引爆炸药在 45 秒后清理。电烟雷碰撞后生成 5 秒烟雾和受掩体阻挡的电击区域。
 
@@ -728,7 +731,8 @@ TF2 高度/方向雾、godray 面片和粒子不是引擎体积雾，TF2 自定�
 
 - 本地化目录 `englishclient_*.vpk` 的数据分卷映射到 `client_*.vpk`。
 
-- `vpk.json` 的 `MapOnly`（第三方约定，Northstar main 只读 `Preload`）与 `Preload` 一样预载对应包：未指定 `NORTHSTAR_MAP` 时按其声明地图载入并留下诊断，选中其他地图时仍推迟。`MapOnly` 声明的地图同时作为该 Mod 的 RPAK 地图上下文；`Preload`/`MapOnly` 的键容忍 `client_x`、`client_x.bsp` 与完整目录文件名三种写法。
+- `vpk.json` 的 `MapOnly`（第三方约定，Northstar main 只读 `Preload`）与 `Preload` 一样预载对应 VPK：未指定 `NORTHSTAR_MAP` 时按其声明地图载入并留下诊断，选中其他地图时仍推迟。`Preload`/`MapOnly` 的键容忍 `client_x`、`client_x.bsp` 与完整目录文件名三种写法。
+- 未指定地图时，仅因 `MapOnly` 声明地图才选中的 RPAK 及其 Postload 依赖链排在全局 Mod／零售资源之后；保留独有资源供自定义地图浏览，避免其同名材质或相同 GUID 资源污染零售地图。显式选择该 `NORTHSTAR_MAP` 后恢复正常 Mod 覆盖优先级。无条件 Preload、由全局包触发的 Postload 保持原优先级；现有解析仍把全部零售包作为已加载依赖，不代表完整模拟 Northstar 的逐地图运行时加载过程。此规则不改变 VPK 或 loose 文件的优先级。
 
 - 压缩块使用 LZHAM，字典大小为 2^20。解压由 [Formats/Rpak/](Code/Formats/Rpak) 中的纯 C# 移植负责（`LzhamDecoder` → `LzhamDecompressor` → 符号解码、前缀码、码长生成和校验），不再有原生桥或随包 DLL。
 

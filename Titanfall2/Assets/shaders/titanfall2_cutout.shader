@@ -8,6 +8,7 @@ FEATURES
 {
 	#include "common/features.hlsl"
 	Feature( F_T2_PROP_AGGREGATE, 0..1, "Static prop aggregate material and probe table" );
+	Feature( F_T2_FAST_NORMAL, 0..1, "Equivalent tangent-frame normalization" );
 }
 
 MODES
@@ -74,6 +75,7 @@ VS
 
 PS
 {
+	StaticCombo( S_T2_FAST_NORMAL, F_T2_FAST_NORMAL, Sys( ALL ) );
 	DynamicCombo( D_T2_SIMPLE_SURFACE, 0..1, Sys( ALL ) );
 	#include "common/pixel.hlsl"
 	#include "titanfall2_gpu_material_table.hlsl"

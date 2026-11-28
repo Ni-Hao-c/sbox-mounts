@@ -150,10 +150,13 @@ public partial class Titanfall2Mount
 						scriptEntitySource,
 						soundEntitySource ) ) );
 					// Additive path contract: the legacy preview scene keeps its cameras
-					// and spawns; games can request only mounted world assets.
-					catalog.Add( new( ResourceType.Scene, entry.Path + ".world", new MapLoader(
+					// and spawns; games can request only mounted world assets without
+					// exposing spawnless .world scenes in user-facing map pickers.
+					var pureWorldLoader = new MapLoader(
 						source, spawnEntitySource, environmentEntitySource, particleEntitySource,
-						scriptEntitySource, soundEntitySource, pureWorld: true ) ) );
+						scriptEntitySource, soundEntitySource, pureWorld: true );
+					pureWorldLoader.Flags |= ResourceFlags.DeveloperOnly;
+					catalog.Add( new( ResourceType.Scene, entry.Path + ".world", pureWorldLoader ) );
 					try
 					{
 						var brushCount = Titanfall2BrushModelSource.ReadCount( source );

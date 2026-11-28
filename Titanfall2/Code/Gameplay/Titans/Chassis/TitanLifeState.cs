@@ -82,6 +82,27 @@ public sealed partial class Titanfall2Npc
 	public bool TitanCanAct => !Dead && !IsNuking && (!IsTitan || LifeState is Titanfall2TitanLifeState.Normal or Titanfall2TitanLifeState.Doomed);
 	/// <summary>Host-only monotonic loss counter. A health-pool transition is not damage or healing.</summary>
 	internal double DamageTakenTotal { get; private set; }
+
+	/// <summary>Server-owned ordinary MP battery reward. A doomed Titan stays doomed.</summary>
+	internal bool ApplyRodeoBattery()
+	{
+		if ( !Networking.IsHost || IsProxy || !Active || !IsTitan || !TitanCanAct || IsInTermination ) return false;
+		Health = Titanfall2RodeoRules.HealedHealth( Health, MaxHealth, IsDoomed, MaxDoomedHealth );
+		TitanLife = IsDoomed ? TitanLife with { DoomedHealth = Health } : TitanLife with { NormalHealth = Health };
+		_damageHealthSnapshots.RebasePending( Health );
+		RestoreTitanShield( MaxShield );
+		GetComponent<Titanfall2TitanCore>()?.GrantBatteryCharge();
+		return true;
+	}
+
+	internal void ApplyRodeoDamage( GameObject pilot, float amount )
+	{
+		if ( !Networking.IsHost || IsProxy || !Active || !IsTitan || !TitanCanAct || IsInTermination || !pilot.IsValid()
+			|| !float.IsFinite( amount ) || amount <= 0 ) return;
+		var damage = new DamageInfo( amount, pilot, pilot ) { Origin = WorldPosition, Position = WorldPosition };
+		damage.Tags.Add( "rodeo-battery-removal" );
+		Titanfall2HostDamage.Deal( this, damage );
+	}
 	internal GameObject LastVerifiedTitanAttacker { get; private set; }
 	internal GameObject LastVerifiedTitanWeapon { get; private set; }
 	bool _forceTitanDeath;

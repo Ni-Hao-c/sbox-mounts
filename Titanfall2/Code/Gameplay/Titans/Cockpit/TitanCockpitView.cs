@@ -6,10 +6,13 @@ using Chassis = Titanfall2TitanKit.Chassis;
 /// Titan chassis arms exclusively for the local seated pilot.
 /// </summary>
 [Title( "Titanfall 2 Cockpit View" ), Group( "Titanfall 2" )]
-public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
+public sealed partial class Titanfall2TitanCockpitView : Component, ICameraModifier
 {
 	internal const string ClosedIdle = "atpov_cockpit_hatch_close_idle";
 	internal const float CockpitFieldOfView = 82f;
+	internal const float ReferenceAspectRatio = 16f / 9f;
+	internal const float CockpitDepthScale = 0.10f;
+	internal const float CockpitZNear = 0.25f;
 	const string RetailUiSurface = "models/weapons/arms/titan_atlas_int_screen";
 	const string TitanSwordViewModel = "models/weapons/titan_sword/atpov_titan_sword.mdl";
 	const float InertiaStiffness = 110f;
@@ -131,6 +134,8 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 		UpdateCockpitResource( actor.MountIdent, chassis );
 		UpdateWeaponAndArmsResource( actor, chassis, core is { SwordCoreActive: true } );
 		UpdateWeaponAnimation( actor, kit, core );
+		UpdateRearmVisual( actor, kit );
+		UpdateAdsPreview( actor, kit, core );
 	}
 
 	void UpdateCockpitResource( string mountIdent, Chassis chassis )
@@ -236,7 +241,8 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 		var fired = _lastShotSerial >= 0 && shotSerial != _lastShotSerial;
 		_lastShotSerial = shotSerial;
 
-		var aiming = kit is { Kit: Chassis.Ion, IonZoomFraction: > 0.25f };
+		var zoom = kit.IsValid() ? kit.PrimaryZoomFraction : 0f;
+		var aiming = zoom > 0.25f && core is not { SwordCoreActive: true };
 		var reloading = actor.Reloading;
 		var movingFast = Seat.DriveVelocity.WithZ( 0 ).Length > 120f;
 
@@ -266,7 +272,9 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 		{
 			if ( aiming != _wasAiming )
 			{
-				PlayWeaponClip( aiming ? Titanfall2PilotViewModel.AdsIn : Titanfall2PilotViewModel.AdsOut, restart: false );
+				var transitionClip = aiming ? Titanfall2PilotViewModel.AdsIn : Titanfall2PilotViewModel.AdsOut;
+				if ( _weaponClips.Contains( transitionClip ) )
+					PlayWeaponClip( transitionClip, restart: false );
 			}
 			else if ( _weaponActionEnds <= 0 )
 			{
@@ -395,13 +403,34 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 			: 0f;
 		_dashRoll = MathX.Lerp( _dashRoll, -lateralDash * 2.6f, Math.Clamp( dt * 14f, 0f, 1f ) );
 
-		var kit = Seat?.Actor?.GetComponent<Titanfall2TitanKit>();
-		var core = Seat?.Actor?.GetComponent<Titanfall2TitanCore>();
-		var ionZoom = kit is { Kit: Chassis.Ion } ? kit.IonZoomFraction : 0f;
+		var actor = Seat?.Actor;
+		var kit = actor?.GetComponent<Titanfall2TitanKit>();
+		var core = actor?.GetComponent<Titanfall2TitanCore>();
+		var primaryZoom = kit.IsValid() ? Math.Clamp( kit.PrimaryZoomFraction, 0f, 1f ) : 0f;
+		var adsFov = Titanfall2TitanAdsRules.ResolveCockpitAdsFov( actor?.AdsFov ?? 55f, kit?.Kit ?? Chassis.None, kit?.LegionLongRangeMode == true );
+		var baseFov = float.Lerp( CockpitFieldOfView, adsFov, primaryZoom );
 		var phaseFov = kit is { IsPhasing: true } ? 10f : 0f;
 		var flightFov = core is { FlightCoreActive: true } ? 6f : 0f;
-		var targetFov = CockpitFieldOfView + dashVisual * 6f + phaseFov + flightFov - ionZoom * 10f;
+		var targetFov = baseFov + dashVisual * 6f + phaseFov + flightFov;
 		_currentFov = MathX.Lerp( _currentFov, targetFov, Math.Clamp( dt * 12f, 0f, 1f ) );
+	}
+
+	internal static float ResolveCameraFieldOfView( float horizontalFov16x9, CameraComponent.Axis axis )
+	{
+		var clamped = float.IsFinite( horizontalFov16x9 ) ? Math.Clamp( horizontalFov16x9, 30f, 120f ) : CockpitFieldOfView;
+		if ( axis != CameraComponent.Axis.Vertical ) return clamped;
+		var halfRad = clamped * 0.5f * (MathF.PI / 180f);
+		return 2f * MathF.Atan( MathF.Tan( halfRad ) / ReferenceAspectRatio ) * (180f / MathF.PI);
+	}
+
+	internal static Transform BuildCockpitTransform( Transform cockpitCamera, Transform localCockpitCamera, float depthScale = CockpitDepthScale )
+	{
+		var localRoot = localCockpitCamera.ToLocal( global::Transform.Zero );
+		var scaledRoot = new Transform(
+			localRoot.Position * depthScale,
+			localRoot.Rotation,
+			localRoot.Scale * depthScale );
+		return cockpitCamera.ToWorld( scaledRoot );
 	}
 
 	void ICameraModifier.ModifyCamera( CameraComponent camera, ref CameraView view )
@@ -420,7 +449,8 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 
 		view.Position = eye.Position + Vector3.Up * strideVertical;
 		view.Rotation = eye.Rotation * Rotation.From( cameraAngles );
-		view.FieldOfView = _currentFov;
+		view.FieldOfView = ResolveCameraFieldOfView( _currentFov, camera.FovAxis );
+		view.ZNear = MathF.Min( view.ZNear > 0f ? view.ZNear : 10f, CockpitZNear );
 	}
 
 	void ICameraModifier.PostCameraSetup( CameraComponent camera, in CameraView view )
@@ -428,6 +458,7 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 		if ( camera != Scene.Camera ) return;
 		var pilot = GetPilot();
 		var active = pilot.IsValid();
+		PlaceRearmVisual( active, view );
 
 		Transform localCockpit = default;
 		Transform localWeapon = default;
@@ -448,19 +479,25 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 				_swayOffset.x * CockpitParallaxScale,
 				_swayOffset.x * 0.12f ) );
 			var cockpitCamera = new Transform( view.Position, view.Rotation * cockpitSway );
-			_visual.WorldTransform = cockpitCamera.ToWorld( localCockpit.ToLocal( global::Transform.Zero ) );
+			// Scale the cockpit radially around the eye so it occupies a strictly closer overlay
+			// depth band than the Titan weapon/arms without altering its screen-space projection.
+			_visual.WorldTransform = BuildCockpitTransform( cockpitCamera, localCockpit );
 		}
 
 		if ( weaponReady )
 		{
+			var primaryZoom = Seat?.Actor?.GetComponent<Titanfall2TitanKit>() is { IsValid: true } kit
+				? Math.Clamp( kit.PrimaryZoomFraction, 0f, 1f )
+				: 0f;
+			var adsDamp = 1f - primaryZoom * 0.55f;
 			var weaponBob = view.Rotation * new Vector3(
-				-_recoilKick * 0.9f,
-				MathF.Cos( _stridePhase ) * 0.75f * _strideBlend,
-				MathF.Sin( _stridePhase * 2f ) * 0.55f * _strideBlend );
+				-_recoilKick * 0.9f * adsDamp,
+				MathF.Cos( _stridePhase ) * 0.75f * _strideBlend * adsDamp,
+				MathF.Sin( _stridePhase * 2f ) * 0.55f * _strideBlend * adsDamp );
 			var weaponSway = Rotation.From( new Angles(
-				_swayOffset.y - _recoilPitch * 0.65f,
-				_swayOffset.x,
-				_swayOffset.x * 0.35f ) );
+				(_swayOffset.y - _recoilPitch * 0.65f) * adsDamp,
+				_swayOffset.x * adsDamp,
+				_swayOffset.x * 0.35f * adsDamp ) );
 			var weaponCamera = new Transform( view.Position + weaponBob, view.Rotation * weaponSway );
 			_weaponVisual.WorldTransform = weaponCamera.ToWorld( localWeapon.ToLocal( global::Transform.Zero ) );
 		}
@@ -539,6 +576,8 @@ public sealed class Titanfall2TitanCockpitView : Component, ICameraModifier
 	void Clear()
 	{
 		RestoreExterior();
+		ClearAdsPreview();
+		ClearRearmVisual();
 		ClearCockpitVisual();
 		ClearWeaponVisual();
 		_inertiaReady = false;

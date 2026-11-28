@@ -8,7 +8,22 @@ partial class ModelLoader
 	readonly Dictionary<string, AnimationEntry> _actorAnimationEntries = new( StringComparer.OrdinalIgnoreCase );
 
 	sealed record AnimationEntry( string Name, string SourcePath, int Index, int Flags, int AnimationFlags, int FrameCount, float FrameRate );
-	sealed record AnimationCatalog( SkeletonData Skeleton, int[] Parents, AnimationEntry[] Clips, string Metadata );
+	sealed record AnimationCatalog( SkeletonData Skeleton, int[] Parents, AnimationEntry[] Clips, string Metadata,
+		Dictionary<string, Titanfall2Mdl53Reader.EventInfo[]> Events );
+
+	// Shared descriptor access for gameplay choreography; resource loading never references gameplay types.
+	internal Titanfall2Mdl53Reader.EventInfo[] GetInteractionEvents( string sequence ) =>
+		GetAnimationCatalog().Events.GetValueOrDefault( sequence ?? "" ) ?? [];
+
+	internal static object AnimationEventMetadata( Titanfall2Mdl53Reader.EventInfo evt ) => new
+	{
+		evt.Name, evt.Options,
+		// Some retail descriptors contain sentinel/non-finite event cycles. Preserve
+		// them internally, but never let one invalid event break skeleton/clip loading.
+		Cycle = float.IsFinite( evt.Cycle ) ? (float?)evt.Cycle : null,
+		ValidCycle = float.IsFinite( evt.Cycle ) && evt.Cycle is >= 0 and <= 1,
+		evt.Event, evt.Type
+	};
 
 	protected override ResourceLoader ResolveChild( string name, out ResourceType type )
 	{
@@ -74,6 +89,7 @@ partial class ModelLoader
 		var clips = new List<AnimationEntry>();
 		var names = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 		var sequences = new List<object>();
+		var events = new Dictionary<string, Titanfall2Mdl53Reader.EventInfo[]>( StringComparer.OrdinalIgnoreCase );
 		ReadModel( primary, null );
 		while ( pending.Count > 0 )
 		{
@@ -98,7 +114,7 @@ partial class ModelLoader
 			} ),
 			Sequences = sequences
 		} );
-		return new( skeleton, parents, clips.ToArray(), metadata );
+		return new( skeleton, parents, clips.ToArray(), metadata, events );
 
 		void ReadModel( Titanfall2Mdl53Reader.ParsedModel model, string sourcePath )
 		{
@@ -114,6 +130,7 @@ partial class ModelLoader
 			}
 			foreach ( var sequence in model.Sequences )
 			{
+				if ( !string.IsNullOrWhiteSpace( sequence.Label ) ) events.TryAdd( sequence.Label.TrimStart( '@' ), sequence.Events );
 				var cellClips = new string[sequence.AnimationIndices.Length];
 				var first = true;
 				for ( var cell = 0; cell < cellClips.Length; cell++ )
@@ -135,7 +152,8 @@ partial class ModelLoader
 					ParameterEnd = new[] { sequence.Sequence.ParameterEnd[0], sequence.Sequence.ParameterEnd[1] },
 					sequence.AnimationIndices, Clips = cellClips,
 					// Preserve TF2 descriptors without claiming Source 1's layer/IK evaluation applies.
-					sequence.Sequence.AutoLayerCount, sequence.Sequence.EventCount, sequence.Sequence.IkRuleCount
+					sequence.Sequence.AutoLayerCount, sequence.Sequence.EventCount, sequence.Sequence.IkRuleCount,
+					Events = sequence.Events.Select( AnimationEventMetadata )
 				} );
 			}
 		}
@@ -195,10 +213,12 @@ partial class ModelLoader
 					if ( index < 0 ) continue;
 					pose[index] = new Transform( ToSandbox( frame[bone].Position ), ToSandbox( frame[bone].Rotation ),
 						ToSandbox( frame[bone].Scale ) - (decoded.Delta ? Vector3.One : Vector3.Zero) );
-					if ( actor && IsLocomotionRole( entry.Name ) && GetBoneParent( model, bone ) < 0 )
+					if ( actor && (IsLocomotionRole( entry.Name ) || HasExternalRootMotion( entry.Name )) && GetBoneParent( model, bone ) < 0 )
 					{
 						var start = ToSandbox( decoded.Frames[0][bone].Position );
-						pose[index] = pose[index].WithPosition( new Vector3( start.x, start.y, pose[index].Position.z ) );
+						pose[index] = HasExternalRootMotion( entry.Name )
+							? pose[index].WithPosition( start ).WithRotation( ToSandbox( decoded.Frames[0][bone].Rotation ) )
+							: pose[index].WithPosition( new Vector3( start.x, start.y, pose[index].Position.z ) );
 					}
 				}
 				for ( var bone = 0; bone < pose.Length; bone++ ) pose[bone] = NormalizeAnimationScale( pose[bone], target.Names[bone] );

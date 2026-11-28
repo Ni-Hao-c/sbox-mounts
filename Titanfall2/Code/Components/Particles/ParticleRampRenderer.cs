@@ -64,6 +64,7 @@ public sealed class Titanfall2ParticleRampRenderer : ParticleController
 		EnsureObject();
 		if ( !_object.IsValid() || !Source.IsValid() || !ParticleEffect.IsValid() ) return;
 		Source.RenderOptions.Apply( _object );
+		_object.Tags.SetFrom( GameObject.Tags );
 		lock ( _sync )
 		{
 			var animation = Source.CurrentAnimation;

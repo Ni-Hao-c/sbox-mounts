@@ -1,23 +1,26 @@
 using Sandbox.Npcs;
 
-public sealed partial class Titanfall2Weapon
+/// <summary>
+/// Composed Smart Pistol target-acquisition, multi-lock burst queueing, audio, and damage multiplier controller.
+/// </summary>
+internal sealed class Titanfall2WeaponSmartAmmoController : ITitanfall2WeaponMechanic
 {
-	[Property] public Titanfall2SmartAmmoProfile SmartAmmo { get; set; }
-	[Sync( SyncFlags.FromHost )] public int SmartBurstRemaining { get; private set; }
-	[Sync( SyncFlags.FromHost )] public int SmartBurstSerial { get; private set; }
-	public float SmartLockProgress => _smartLocks.Count == 0 ? 0 : Math.Clamp( _smartLocks.Max( entry => entry.Fraction ), 0, 1 );
-	public int SmartReadyShots => Math.Min( SmartAmmo.MaxBurst, _smartLocks.Sum( entry => (int)MathF.Floor( entry.Fraction ) ) );
-	internal bool UsesRetailSmartAmmo => SmartLockEnabled && SmartAmmo.Enabled;
-	readonly List<SmartTarget> _smartLocks = [];
-	readonly Queue<BaseNpc> _smartBurst = new();
-	PlayerController _smartOwner;
-	double _smartTick = double.NaN, _nextSmartTarget;
-	TimeUntil _smartShotTime;
-	float _smartBurstZoom;
-	int _smartRequestSerial, _lastSmartRequestSerial, _observedSmartBurstSerial;
-	bool _smartRemoteAiming, _smartSentAiming, _smartAcquiringSoundActive;
-	GameObject _smartAudioRoot;
-	Titanfall2SoundEventEmitter _smartAudio;
+	readonly List<SmartTarget> _locks = [];
+	internal readonly Queue<BaseNpc> BurstQueue = new();
+	PlayerController _owner;
+	double _tick = double.NaN;
+	double _nextTarget;
+	TimeUntil _shotTime;
+	float _burstZoom;
+	int _requestSerial;
+	int _lastRequestSerial;
+	int _observedBurstSerial;
+	bool _remoteAiming;
+	bool _sentAiming;
+	bool _acquiringSoundActive;
+	GameObject _audioRoot;
+	Titanfall2SoundEventEmitter _audio;
+
 	sealed class SmartTarget
 	{
 		internal BaseNpc Npc;
@@ -26,13 +29,23 @@ public sealed partial class Titanfall2Weapon
 		internal int ConfirmedLocks;
 		internal double LastVisible;
 	}
-	internal (GameObject Target, float Fraction)[] ObserveSmartLocks() => _smartLocks.Select( entry => (entry.Npc.GameObject, entry.Fraction) ).ToArray();
-	internal IReadOnlyList<(Vector3 AimPoint, float Fraction, int Required)> GetSmartLockDrawTargets() => _smartLocks
-		.Where( entry => SmartAlive( entry.Npc ) && entry.Fraction > 0 )
-		.Select( entry => (SmartAimPoint( entry.Npc ), entry.Fraction, Math.Max( 1, entry.Required )) )
+
+	internal float LockProgress => _locks.Count == 0 ? 0 : Math.Clamp( _locks.Max( entry => entry.Fraction ), 0, 1 );
+	internal int ReadyShots( Titanfall2Weapon w ) => Math.Min( w.SmartAmmo.MaxBurst, _locks.Sum( entry => (int)MathF.Floor( entry.Fraction ) ) );
+	internal bool CanStartAttack( Titanfall2Weapon w ) => w.SmartBurstRemaining == 0 && _shotTime <= 0;
+
+	public void OnHolster( Titanfall2Weapon w ) => Reset( w );
+	public void OnReload( Titanfall2Weapon w ) => Reset( w );
+	public void OnDisabled( Titanfall2Weapon w ) => Reset( w );
+
+	internal (GameObject Target, float Fraction)[] ObserveLocks() => _locks.Select( entry => (entry.Npc.GameObject, entry.Fraction) ).ToArray();
+
+	internal IReadOnlyList<(Vector3 AimPoint, float Fraction, int Required)> GetDrawTargets( Titanfall2Weapon w ) => _locks
+		.Where( entry => IsTargetAlive( w, entry.Npc ) && entry.Fraction > 0 )
+		.Select( entry => (AimPoint( entry.Npc ), entry.Fraction, Math.Max( 1, entry.Required )) )
 		.ToArray();
 
-	static Vector3 SmartAimPoint( BaseNpc npc )
+	static Vector3 AimPoint( BaseNpc npc )
 	{
 		// The original script chooses HEADSHOT for AI. Imported models preserve
 		// their authored attachments; generic Sandbox NPCs can use their eye point.
@@ -42,231 +55,230 @@ public sealed partial class Titanfall2Weapon
 		return npc.EyePosition;
 	}
 
-	bool SmartAlive( BaseNpc npc ) => npc.IsValid() && npc.Active && npc.Health > 0 && Owner.IsValid()
+	static bool IsTargetAlive( Titanfall2Weapon w, BaseNpc npc ) => npc.IsValid() && npc.Active && npc.Health > 0 && w.Owner.IsValid()
 		// npc_titan.txt declares large; the retail NPC vtable predicate requires
 		// the weapon's small lock type to match. Titans remain manually shootable.
 		&& (npc is not Titanfall2Npc retail || retail.AcceptsSmallSmartAmmo)
-		&& npc.GetDisposition( Owner.GameObject ) == Disposition.Hostile;
+		&& npc.GetDisposition( w.Owner.GameObject ) == Disposition.Hostile;
 
-	bool CanSeeSmartTarget( BaseNpc npc, Ray aim )
+	static bool CanSeeTarget( Titanfall2Weapon w, BaseNpc npc, Ray aim )
 	{
-		if ( !SmartAlive( npc ) ) return false;
-		var point = SmartAimPoint( npc );
-		if ( Owner.WorldPosition.Distance( npc.WorldPosition ) > SmartAmmo.SearchDistance
-			|| SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), point ) >= 1 ) return false;
-		var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( aim.Position, point ).UseHitboxes()
-			.IgnoreGameObjectHierarchy( Owner.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
+		if ( !IsTargetAlive( w, npc ) ) return false;
+		var point = AimPoint( npc );
+		if ( w.Owner.WorldPosition.Distance( npc.WorldPosition ) > w.SmartAmmo.SearchDistance
+			|| w.SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), point ) >= 1 ) return false;
+		var hit = Titanfall2CollisionQueries.Run( w.Scene.Trace.Ray( aim.Position, point ).UseHitboxes()
+			.IgnoreGameObjectHierarchy( w.Owner.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
 		return !hit.StartedSolid && (!hit.Hit || hit.GameObject == npc.GameObject || npc.GameObject.IsDescendant( hit.GameObject ));
 	}
 
-	void UpdateSmartLock()
+	public void Tick( Titanfall2Weapon w )
 	{
-		if ( _smartTick == Time.NowDouble ) return;
-		_smartTick = Time.NowDouble;
-		if ( !UsesRetailSmartAmmo || !Active || !IsHeld || !IsActive || IsReloading || !Owner.IsValid() )
+		if ( _tick == Time.NowDouble ) return;
+		_tick = Time.NowDouble;
+		if ( !w.UsesRetailSmartAmmo || !w.Active || !w.IsHeld || !w.IsActive || w.IsReloading || !w.Owner.IsValid() )
 		{
-			ResetSmartAmmo(); return;
+			Reset( w ); return;
 		}
-		BindSmartOwner();
-		if ( !Networking.IsHost && IsProxy ) return;
-		if ( !Networking.IsHost && _smartSentAiming != IsAiming )
+		BindOwner( w );
+		if ( !Networking.IsHost && w.IsProxy ) return;
+		if ( !Networking.IsHost && _sentAiming != w.IsAiming )
 		{
-			_smartSentAiming = IsAiming;
-			RequestSmartAimMode( _smartSentAiming );
+			_sentAiming = w.IsAiming;
+			w.SendSmartAimModeRpc( _sentAiming );
 		}
-		if ( _observedSmartBurstSerial != SmartBurstSerial )
+		if ( _observedBurstSerial != w.SmartBurstSerial )
 		{
-			_observedSmartBurstSerial = SmartBurstSerial;
-			_smartLocks.Clear();
+			_observedBurstSerial = w.SmartBurstSerial;
+			_locks.Clear();
 		}
-		if ( Networking.IsHost && SmartBurstRemaining > 0 )
+		if ( Networking.IsHost && w.SmartBurstRemaining > 0 )
 		{
-			if ( _smartShotTime <= 0 ) FireNextSmartRound();
+			if ( _shotTime <= 0 ) FireNextRound( w );
 			return;
 		}
-		var aim = new Ray( Owner.EyePosition, Owner.EyeTransform.Forward );
-		var aiming = Networking.IsHost && IsProxy ? _smartRemoteAiming : IsAiming;
-		var maySearch = SmartAmmo.SearchNpcs && (aiming ? SmartAmmo.AllowAds : SmartAmmo.AllowHip);
+		var aim = new Ray( w.Owner.EyePosition, w.Owner.EyeTransform.Forward );
+		var aiming = Networking.IsHost && w.IsProxy ? _remoteAiming : w.IsAiming;
+		var maySearch = w.SmartAmmo.SearchNpcs && (aiming ? w.SmartAmmo.AllowAds : w.SmartAmmo.AllowHip);
 		var lockedIncreased = false;
-		foreach ( var entry in _smartLocks.ToArray() )
+		foreach ( var entry in _locks.ToArray() )
 		{
-			if ( !SmartAlive( entry.Npc ) ) { _smartLocks.Remove( entry ); continue; }
-			var distance = Owner.WorldPosition.Distance( entry.Npc.WorldPosition );
+			if ( !IsTargetAlive( w, entry.Npc ) ) { _locks.Remove( entry ); continue; }
+			var distance = w.Owner.WorldPosition.Distance( entry.Npc.WorldPosition );
 			var heavy = entry.Npc is Titanfall2Npc { IsTitan: true };
-			var required = SmartAmmo.RequiredLocks( entry.Npc.Health, heavy ? TitanDamage : Ballistics.Damage, true, heavy );
+			var required = w.SmartAmmo.RequiredLocks( entry.Npc.Health, heavy ? w.TitanDamage : w.Ballistics.Damage, true, heavy );
 			entry.Required = required;
-			if ( maySearch && CanSeeSmartTarget( entry.Npc, aim ) )
+			if ( maySearch && CanSeeTarget( w, entry.Npc, aim ) )
 			{
 				entry.LastVisible = Time.NowDouble;
-				var seconds = SmartAmmo.LockSeconds( distance, true );
+				var seconds = w.SmartAmmo.LockSeconds( distance, true );
 				entry.Fraction = seconds <= 0 ? required : Math.Clamp( entry.Fraction + Time.Delta / seconds, 0, required );
 			}
-			else if ( Time.NowDouble - entry.LastVisible > SmartAmmo.UnlockDebounce
-				&& !(SmartAmmo.StickToLocked && entry.Fraction >= 1) )
+			else if ( Time.NowDouble - entry.LastVisible > w.SmartAmmo.UnlockDebounce
+				&& !(w.SmartAmmo.StickToLocked && entry.Fraction >= 1) )
 			{
-				var seconds = SmartAmmo.LockSeconds( distance, true, decay: true );
+				var seconds = w.SmartAmmo.LockSeconds( distance, true, decay: true );
 				entry.Fraction = seconds <= 0 ? 0 : MathF.Max( 0, entry.Fraction - Time.Delta * required / seconds );
-				if ( entry.Fraction == 0 ) _smartLocks.Remove( entry );
+				if ( entry.Fraction == 0 ) _locks.Remove( entry );
 			}
 			var nowConfirmed = (int)MathF.Floor( entry.Fraction );
 			if ( nowConfirmed > entry.ConfirmedLocks ) lockedIncreased = true;
 			entry.ConfirmedLocks = nowConfirmed;
 		}
-		if ( maySearch && _smartLocks.Count < SmartAmmo.MaxTargets && Time.NowDouble >= _nextSmartTarget )
+		if ( maySearch && _locks.Count < w.SmartAmmo.MaxTargets && Time.NowDouble >= _nextTarget )
 		{
 			// Stable target objects survive acquisition and burst snapshots. A dead
 			// first target must never shift subsequent rounds to a different actor.
-			foreach ( var candidate in Scene.GetAllComponents<BaseNpc>()
-				.Where( npc => !_smartLocks.Any( entry => entry.Npc == npc ) && CanSeeSmartTarget( npc, aim ) )
-				.OrderBy( npc => SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), SmartAimPoint( npc ) ) ) )
+			foreach ( var candidate in w.Scene.GetAllComponents<BaseNpc>()
+				.Where( npc => !_locks.Any( entry => entry.Npc == npc ) && CanSeeTarget( w, npc, aim ) )
+				.OrderBy( npc => w.SmartAmmo.SearchMetric( aim, npc.GameObject.GetBounds(), AimPoint( npc ) ) ) )
 			{
-				var required = SmartAmmo.RequiredLocks( candidate.Health, Ballistics.Damage, true, false );
-				var seconds = SmartAmmo.LockSeconds( Owner.WorldPosition.Distance( candidate.WorldPosition ), true );
+				var required = w.SmartAmmo.RequiredLocks( candidate.Health, w.Ballistics.Damage, true, false );
+				var seconds = w.SmartAmmo.LockSeconds( w.Owner.WorldPosition.Distance( candidate.WorldPosition ), true );
 				var fraction = seconds <= 0 ? required : MathF.Min( required, 0.0001f + Time.Delta / seconds );
 				var confirmed = (int)MathF.Floor( fraction );
 				if ( confirmed > 0 ) lockedIncreased = true;
-				_smartLocks.Add( new() { Npc = candidate, Fraction = fraction, Required = required, ConfirmedLocks = confirmed, LastVisible = Time.NowDouble } );
-				_nextSmartTarget = Time.NowDouble + SmartAmmo.NewTargetDelay;
-				if ( SmartAmmo.NewTargetDelay > 0 || _smartLocks.Count >= SmartAmmo.MaxTargets ) break;
+				_locks.Add( new() { Npc = candidate, Fraction = fraction, Required = required, ConfirmedLocks = confirmed, LastVisible = Time.NowDouble } );
+				_nextTarget = Time.NowDouble + w.SmartAmmo.NewTargetDelay;
+				if ( w.SmartAmmo.NewTargetDelay > 0 || _locks.Count >= w.SmartAmmo.MaxTargets ) break;
 			}
 		}
-		UpdateSmartLockAudio( lockedIncreased );
+		UpdateAudio( w, lockedIncreased );
 	}
 
-	void UpdateSmartLockAudio( bool lockedIncreased )
+	void UpdateAudio( Titanfall2Weapon w, bool lockedIncreased )
 	{
-		if ( !HasLocalFirstPersonHud ) { StopSmartLockAudio(); return; }
-		var acquiring = _smartLocks.Any( entry => entry.Fraction > 0 && entry.Fraction < entry.Required );
+		if ( !w.HasLocalHud ) { StopAudio(); return; }
+		var acquiring = _locks.Any( entry => entry.Fraction > 0 && entry.Fraction < entry.Required );
 		if ( !acquiring && !lockedIncreased )
 		{
-			if ( _smartAcquiringSoundActive ) StopSmartLockAudio();
+			if ( _acquiringSoundActive ) StopAudio();
 			return;
 		}
-		if ( !_smartAudioRoot.IsValid() )
+		if ( !_audioRoot.IsValid() )
 		{
-			_smartAudioRoot = new GameObject( GameObject, false, "TF2 smart lock audio" );
-			_smartAudioRoot.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-			_smartAudio = _smartAudioRoot.AddComponent<Titanfall2SoundEventEmitter>();
-			_smartAudioRoot.Enabled = true;
+			_audioRoot = new GameObject( w.GameObject, false, "TF2 smart lock audio" );
+			_audioRoot.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+			_audio = _audioRoot.AddComponent<Titanfall2SoundEventEmitter>();
+			_audioRoot.Enabled = true;
 		}
-		var sourcePosition = Owner.IsValid() ? Owner.EyePosition : WorldPosition;
-		_smartAudio.SetSource( sourcePosition );
-		if ( acquiring && !_smartAcquiringSoundActive && !string.IsNullOrEmpty( SmartAmmo.AcquiringSound ) )
-			_smartAcquiringSoundActive = _smartAudio.Play( MountIdent, SmartAmmo.AcquiringSound, firstPerson: true, sourcePosition, sustain: true );
-		else if ( !acquiring && _smartAcquiringSoundActive )
+		var sourcePosition = w.Owner.IsValid() ? w.Owner.EyePosition : w.WorldPosition;
+		_audio.SetSource( sourcePosition );
+		if ( acquiring && !_acquiringSoundActive && !string.IsNullOrEmpty( w.SmartAmmo.AcquiringSound ) )
+			_acquiringSoundActive = _audio.Play( w.MountIdent, w.SmartAmmo.AcquiringSound, firstPerson: true, sourcePosition, sustain: true );
+		else if ( !acquiring && _acquiringSoundActive )
 		{
-			_smartAudio.StopAll();
-			_smartAcquiringSoundActive = false;
+			_audio.StopAll();
+			_acquiringSoundActive = false;
 		}
-		if ( lockedIncreased && !string.IsNullOrEmpty( SmartAmmo.ConfirmedSound ) )
-			_smartAudio.Play( MountIdent, SmartAmmo.ConfirmedSound, firstPerson: true, sourcePosition );
+		if ( lockedIncreased && !string.IsNullOrEmpty( w.SmartAmmo.ConfirmedSound ) )
+			_audio.Play( w.MountIdent, w.SmartAmmo.ConfirmedSound, firstPerson: true, sourcePosition );
 	}
 
-	void StopSmartLockAudio()
+	void StopAudio()
 	{
-		_smartAudio?.StopAll();
-		if ( _smartAudioRoot.IsValid() ) _smartAudioRoot.Destroy();
-		_smartAudioRoot = null;
-		_smartAudio = null;
-		_smartAcquiringSoundActive = false;
+		_audio?.StopAll();
+		if ( _audioRoot.IsValid() ) _audioRoot.Destroy();
+		_audioRoot = null;
+		_audio = null;
+		_acquiringSoundActive = false;
 	}
 
-	void BeginSmartAttack()
+	internal void BeginAttack( Titanfall2Weapon w )
 	{
-		if ( Networking.IsHost ) StartSmartBurst( ViewKickAimRay.Forward, _adsBlend );
-		else RequestSmartBurst( ++_smartRequestSerial, ViewKickAimRay.Forward, _adsBlend );
+		if ( Networking.IsHost ) StartBurst( w, w.CurrentViewKickAimRay.Forward, w.AdsBlend );
+		else w.SendSmartBurstRpc( ++_requestSerial, w.CurrentViewKickAimRay.Forward, w.AdsBlend );
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestSmartBurst( int serial, Vector3 direction, float zoom )
+	internal void ApplyBurstRequest( Titanfall2Weapon w, int serial, Vector3 direction, float zoom )
 	{
-		if ( !Networking.IsHost || !Owner.IsValid() ) return;
-		BindSmartOwner();
-		if ( serial <= _lastSmartRequestSerial ) return;
-		_lastSmartRequestSerial = serial;
-		StartSmartBurst( direction, zoom );
+		if ( !Networking.IsHost || !w.Owner.IsValid() ) return;
+		BindOwner( w );
+		if ( serial <= _lastRequestSerial ) return;
+		_lastRequestSerial = serial;
+		StartBurst( w, direction, zoom );
 	}
 
-	void StartSmartBurst( Vector3 direction, float zoom )
+	void StartBurst( Titanfall2Weapon w, Vector3 direction, float zoom )
 	{
-		if ( !Networking.IsHost || !Active || !UsesRetailSmartAmmo || !Owner.IsValid() || !IsActive || !IsHeld || IsReloading
-			|| SmartBurstRemaining > 0 || _smartShotTime > 0 || !HasRoundAmmo() || !direction.IsFinite
+		if ( !Networking.IsHost || !w.Active || !w.UsesRetailSmartAmmo || !w.Owner.IsValid() || !w.IsActive || !w.IsHeld || w.IsReloading
+			|| w.SmartBurstRemaining > 0 || _shotTime > 0 || !w.HasRoundAmmoInternal() || !direction.IsFinite
 			|| direction.LengthSquared is < 0.25f or > 4 || !float.IsFinite( zoom ) || zoom is < 0 or > 1
-			|| Vector3.Dot( Owner.EyeTransform.Forward, direction.Normal ) < 0.35f ) return;
-		BindSmartOwner();
-		_smartBurst.Clear();
-		var available = UsesPrimaryClip ? Clip1 / Firing.Cost : SmartAmmo.MaxBurst;
-		foreach ( var entry in _smartLocks )
+			|| Vector3.Dot( w.Owner.EyeTransform.Forward, direction.Normal ) < 0.35f ) return;
+		BindOwner( w );
+		BurstQueue.Clear();
+		var available = w.IsPrimaryClipUsed ? w.Clip1 / w.Firing.Cost : w.SmartAmmo.MaxBurst;
+		foreach ( var entry in _locks )
 		{
-			if ( zoom > 0 ? !SmartAmmo.AllowAds : !SmartAmmo.AllowHip ) break;
-			if ( !SmartAlive( entry.Npc ) ) continue;
-			for ( var i = 0; i < (int)MathF.Floor( entry.Fraction ) && _smartBurst.Count < Math.Min( available, SmartAmmo.MaxBurst ); ++i )
-				_smartBurst.Enqueue( entry.Npc );
+			if ( zoom > 0 ? !w.SmartAmmo.AllowAds : !w.SmartAmmo.AllowHip ) break;
+			if ( !IsTargetAlive( w, entry.Npc ) ) continue;
+			for ( var i = 0; i < (int)MathF.Floor( entry.Fraction ) && BurstQueue.Count < Math.Min( available, w.SmartAmmo.MaxBurst ); ++i )
+				BurstQueue.Enqueue( entry.Npc );
 		}
-		_smartBurstZoom = zoom;
-		if ( _smartBurst.Count == 0 )
+		_burstZoom = zoom;
+		if ( BurstQueue.Count == 0 )
 		{
-			ResolveHitscan( new Ray( Owner.EyePosition, direction.Normal ), zoom );
-			_smartShotTime = MathF.Max( PrimaryDelay, 0.015f );
+			w.ResolveHitscanInternal( new Ray( w.Owner.EyePosition, direction.Normal ), zoom );
+			_shotTime = MathF.Max( w.PrimaryDelay, 0.015f );
 			return;
 		}
-		SmartBurstRemaining = _smartBurst.Count;
-		SmartBurstSerial = SmartBurstSerial == int.MaxValue ? 1 : SmartBurstSerial + 1;
-		_observedSmartBurstSerial = SmartBurstSerial;
-		FireNextSmartRound();
+		var nextSerial = w.SmartBurstSerial == int.MaxValue ? 1 : w.SmartBurstSerial + 1;
+		w.SetSmartBurstStateHost( BurstQueue.Count, nextSerial );
+		_observedBurstSerial = nextSerial;
+		FireNextRound( w );
 	}
 
-	void FireNextSmartRound()
+	void FireNextRound( Titanfall2Weapon w )
 	{
 		if ( !Networking.IsHost ) return;
-		if ( !Active || !IsActive || !IsHeld || IsReloading || !Owner.IsValid() ) { ResetSmartAmmo(); return; }
-		while ( _smartBurst.TryDequeue( out var target ) )
+		if ( !w.Active || !w.IsActive || !w.IsHeld || w.IsReloading || !w.Owner.IsValid() ) { Reset( w ); return; }
+		while ( BurstQueue.TryDequeue( out var target ) )
 		{
-			if ( !SmartAlive( target ) ) continue;
-			var direction = SmartAimPoint( target ) - Owner.EyePosition;
+			if ( !IsTargetAlive( w, target ) ) continue;
+			var direction = AimPoint( target ) - w.Owner.EyePosition;
 			if ( direction.LengthSquared < 0.001f ) continue;
 			// Re-trace every round against current geometry. A stored lock can aim
 			// at its target but cannot bypass a newly closed door or a vortex.
-			ResolveHitscan( new Ray( Owner.EyePosition, direction.Normal ), _smartBurstZoom, target );
-			_smartShotTime = MathF.Max( PrimaryDelay, 0.015f );
+			w.ResolveHitscanInternal( new Ray( w.Owner.EyePosition, direction.Normal ), _burstZoom, target );
+			_shotTime = MathF.Max( w.PrimaryDelay, 0.015f );
 			break;
 		}
-		SmartBurstRemaining = _smartBurst.Count;
-		if ( SmartBurstRemaining == 0 || !HasRoundAmmo() )
+		w.SetSmartBurstRemainingHost( BurstQueue.Count );
+		if ( w.SmartBurstRemaining == 0 || !w.HasRoundAmmoInternal() )
 		{
-			_smartBurst.Clear(); SmartBurstRemaining = 0; _smartLocks.Clear();
-			SmartBurstSerial = SmartBurstSerial == int.MaxValue ? 1 : SmartBurstSerial + 1;
-			_observedSmartBurstSerial = SmartBurstSerial;
-			_nextSmartTarget = Time.NowDouble + SmartAmmo.NewTargetDelay;
+			BurstQueue.Clear(); _locks.Clear();
+			var nextSerial = w.SmartBurstSerial == int.MaxValue ? 1 : w.SmartBurstSerial + 1;
+			w.SetSmartBurstStateHost( 0, nextSerial );
+			_observedBurstSerial = nextSerial;
+			_nextTarget = Time.NowDouble + w.SmartAmmo.NewTargetDelay;
 		}
 	}
 
-	void ResetSmartAmmo()
+	internal void Reset( Titanfall2Weapon w )
 	{
-		_smartLocks.Clear(); _smartBurst.Clear();
-		StopSmartLockAudio();
-		if ( Networking.IsHost ) SmartBurstRemaining = 0;
+		_locks.Clear(); BurstQueue.Clear();
+		StopAudio();
+		if ( Networking.IsHost ) w.SetSmartBurstRemainingHost( 0 );
 	}
 
-	void BindSmartOwner()
+	void BindOwner( Titanfall2Weapon w )
 	{
-		if ( _smartOwner == Owner ) return;
-		ResetSmartAmmo(); _smartOwner = Owner; _lastSmartRequestSerial = 0;
-		_smartRemoteAiming = _smartSentAiming = false;
-		_nextSmartTarget = Time.NowDouble + (SmartAmmo.DelayFirstTarget ? SmartAmmo.NewTargetDelay : 0);
+		if ( _owner == w.Owner ) return;
+		Reset( w ); _owner = w.Owner; _lastRequestSerial = 0;
+		_remoteAiming = _sentAiming = false;
+		_nextTarget = Time.NowDouble + (w.SmartAmmo.DelayFirstTarget ? w.SmartAmmo.NewTargetDelay : 0);
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestSmartAimMode( bool aiming )
+	internal void ApplyAimMode( Titanfall2Weapon w, bool aiming )
 	{
-		if ( !Networking.IsHost || !UsesRetailSmartAmmo || !Owner.IsValid() || !IsActive || !IsHeld ) return;
-		BindSmartOwner(); _smartRemoteAiming = aiming;
+		if ( !Networking.IsHost || !w.UsesRetailSmartAmmo || !w.Owner.IsValid() || !w.IsActive || !w.IsHeld ) return;
+		BindOwner( w ); _remoteAiming = aiming;
 	}
 
-	float SmartBulletDamage( float damage, GameObject hit, BaseNpc locked )
+	internal static float ComputeBulletDamage( Titanfall2Weapon w, float damage, GameObject hit, BaseNpc locked )
 	{
-		if ( !UsesRetailSmartAmmo || hit?.GetComponentInParent<BaseNpc>() is not { } actor ) return damage;
-		if ( locked == actor ) damage *= SmartAmmo.NpcLockFactor;
+		if ( !w.UsesRetailSmartAmmo || hit?.GetComponentInParent<BaseNpc>() is not { } actor ) return damage;
+		if ( locked == actor ) damage *= w.SmartAmmo.NpcLockFactor;
 		if ( actor is not Titanfall2Npc npc ) return damage;
 		// sh_smart_ammo.gnut's MP damage callback also applies to unlocked hits.
 		if ( npc.ModelPath?.Contains( "/robots/spectre/", StringComparison.OrdinalIgnoreCase ) == true ) return MathF.Floor( npc.MaxHealth / 2 ) + 1;

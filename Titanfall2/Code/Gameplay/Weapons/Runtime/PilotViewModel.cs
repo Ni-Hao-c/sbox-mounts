@@ -1,6 +1,6 @@
 /// <summary>The original TF2 pilot first-person rig drives the gun and the bone-merged pilot arms.</summary>
 [Hide]
-public sealed class Titanfall2PilotViewModel : BaseWeaponModel
+public sealed partial class Titanfall2PilotViewModel : BaseWeaponModel
 {
 	internal const string PilotArms = "models/weapons/arms/pov_pilot_light_ged_m.mdl";
 	internal const string Idle = "pilot_fp_idle";
@@ -24,10 +24,6 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	internal static string EmptyReloadLate( int milestone ) => EmptyReload + "_late" + milestone;
 	readonly List<GameObject> _stateParticles = [];
 
-	const float InertiaStiffness = 140f;
-	const float InertiaDamping = 18f;
-	const float MaxInertiaDegrees = 4.5f;
-
 	Titanfall2Weapon _owner;
 	HashSet<string> _clips = new( StringComparer.OrdinalIgnoreCase );
 	Dictionary<string, Titanfall2PilotViewData.ClipEvent[]> _eventsByClip = new( StringComparer.OrdinalIgnoreCase );
@@ -46,14 +42,11 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	internal float PresentationZoom => _animation?.Zoom ?? _zoom;
 	internal string PresentationAction => _action;
 	internal float PresentationCycle => _animation is not null
-		? _action == Fire ? _animation.FireCycle : _animation.ActionCycle
+		? _action is Fire or SlideFire ? _animation.FireCycle : _animation.ActionCycle
 		: Renderer.IsValid() ? Renderer.Sequence.TimeNormalized : 0;
 	internal int FireSerial => _animation?.FireSerial ?? 0;
 
-	// Critically damped look-inertia state in view-local yaw/pitch degrees.
-	Angles _lastCameraAngles;
-	Vector2 _swayOffset;
-	Vector2 _swayVelocity;
+	// Parkour presentation is separate from each weapon's authored sway/bob.
 	float _wallrunBlend;
 	float _slidePoseBlend;
 	float _mantlePoseBlend;
@@ -121,74 +114,52 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		=> SetLocomotionState( aiming, sprinting, oneHanded, aiming ? 1 : 0 );
 
 	internal void SetLocomotionState( bool aiming, bool sprinting, bool oneHanded, float zoom )
+		=> SetLocomotionState( aiming, sprinting, oneHanded, zoom, _owner.IsValid() && _owner.Owner.IsValid() && _owner.Owner.IsDucking, false );
+
+	internal void SetLocomotionState( bool aiming, bool sprinting, bool oneHanded, float zoom, bool crouching, bool sliding )
 	{
 		if ( !Renderer.IsValid() ) return;
+		var previousZoom = _zoom;
 		SetZoom( zoom );
-		var locked = _action is Reload or EmptyReload or ReloadSegLoop or Draw or Charge or Cooldown || _action?.StartsWith( EmptyReload + "_late", StringComparison.Ordinal ) == true;
-		if ( locked )
-		{
-			_aiming = false;
-			_sprinting = false;
-			_oneHanded = oneHanded;
-			return;
-		}
-
+		var wasSliding = _sliding;
+		_crouching = crouching;
+		_sliding = sliding;
 		aiming &= HasAds;
-		sprinting &= !aiming && _clips.Contains( Sprint );
-		oneHanded &= !aiming && !sprinting && _clips.Contains( OneHandedIdle );
-		if ( _animation is not null )
+		_animation?.SetStancePose( crouching, sliding, aiming );
+		var locked = _action is Reload or EmptyReload or ReloadSegLoop or ReloadSegEnd or ReloadEmptySegEnd or Draw or Charge or Cooldown or Rechamber or RechamberAds
+			|| (_action != SlideRaise && IsStanceAction( _action )) || _action?.StartsWith( EmptyReload + "_late", StringComparison.Ordinal ) == true;
+		if ( locked || IsOrdnanceAction( _action ) ) return;
+
+		var wasSprinting = _sprinting;
+		var wasAiming = _aiming;
+		_aiming = aiming;
+		_sprinting = sprinting && !aiming && !sliding && _clips.Contains( Sprint );
+		_oneHanded = (oneHanded || (sliding && !_clips.Contains( SlideIdle ))) && !aiming && !_sprinting && _clips.Contains( OneHandedIdle );
+		if ( _animation is null && wasAiming != aiming )
 		{
-			// ADS is a sampled base pose, not an action which can replace a shot.
-			// Retaining the fire timeline also makes a mid-shot ADS reversal continuous.
-			_aiming = aiming;
-			if ( sprinting != _sprinting )
+			var role = aiming ? AdsIn : AdsOut;
+			var stanceAds = aiming ? CrouchAdsIn : CrouchAdsOut;
+			if ( (crouching || sliding) && _clips.Contains( stanceAds ) ) role = stanceAds;
+			if ( _clips.Contains( role ) )
 			{
-				_sprinting = sprinting;
-				if ( sprinting ) Play( Sprint );
-				else if ( oneHanded ) Play( OneHandedIdle );
-				else if ( _clips.Contains( SprintRaise ) ) Play( SprintRaise );
-				else Play( Idle );
+				Play( role );
+				// Reverse from the same zoom instead of jumping back to the hip/sight endpoint.
+				var phase = aiming ? previousZoom : 1f - previousZoom;
+				Renderer.Sequence.TimeNormalized = phase;
+				_lastCycle = phase;
+				_actionEnds = Renderer.Sequence.Duration * (1f - phase);
 			}
-			if ( oneHanded != _oneHanded && _action is Idle or AdsIdle or OneHandedIdle or SprintRaise )
-				Play( oneHanded ? OneHandedIdle : Idle );
-			_oneHanded = oneHanded;
+			else Play( RestingClip );
 			return;
 		}
-
-		if ( aiming != _aiming )
+		if ( !IsRestOrRaise ) return; // never replace a shot with a movement transition
+		if ( sliding && !wasSliding && wasSprinting && !aiming && _clips.Contains( SlideRaise ) ) Play( SlideRaise );
+		else if ( wasSprinting && !_sprinting && !sliding && !aiming && !_oneHanded && _clips.Contains( SprintRaise ) ) Play( SprintRaise );
+		else
 		{
-			_aiming = aiming;
-			if ( aiming )
-				Play( AdsIn );
-			else if ( _clips.Contains( AdsOut ) )
-				Play( AdsOut );
-			else
-				Play( Idle );
-			_sprinting = false;
-			_oneHanded = oneHanded;
-			return;
-		}
-
-		if ( sprinting != _sprinting )
-		{
-			_sprinting = sprinting;
-			if ( sprinting )
-				Play( Sprint );
-			else if ( oneHanded )
-				Play( OneHandedIdle );
-			else if ( _clips.Contains( SprintRaise ) )
-				Play( SprintRaise );
-			else
-				Play( Idle );
-			_oneHanded = oneHanded;
-			return;
-		}
-
-		if ( oneHanded != _oneHanded )
-		{
-			_oneHanded = oneHanded;
-			if ( _action is Idle or OneHandedIdle )
-				Play( oneHanded ? OneHandedIdle : Idle );
+			if ( _action == SlideRaise && sliding && !aiming ) return;
+			if ( _action == SprintRaise && !sliding && !aiming && !_sprinting && !_oneHanded ) return;
+			if ( _action != RestingClip ) Play( RestingClip );
 		}
 	}
 
@@ -199,12 +170,13 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	internal void Place( Transform camera, float adsBlend, in Titanfall2PilotViewPoseState pose )
 	{
 		SetZoom( adsBlend );
-		var posedCamera = ApplyInertia( camera, _zoom, pose );
+		var posedCamera = ApplyParkourPose( camera, _zoom, pose );
 		if ( _owner.IsValid() )
 		{
-			// Apply authored optic translation in view space before resolving the
+			// Apply authored optic and crouch translations before resolving the
 			// animated CAMERA_BASE anchor; it must not become part of that inverse.
-			posedCamera.Position += camera.Rotation * _owner.Presentation.ViewModelOffset( _zoom );
+			var offset = _owner.Presentation.ViewModelOffset( _zoom ) + Vector3.Up * UpdateDuckViewOffset( _zoom );
+			posedCamera.Position += camera.Rotation * offset;
 		}
 
 		// Retail action clips move the POV root into view space. Resolve the current
@@ -216,15 +188,14 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		}
 		// Parent-space animation bones share one pose and do not depend on either
 		// the current native render root or its previous world-bone cache.
+		posedCamera = ApplyWeaponMotion( posedCamera, localCamera, _zoom, pose );
 		WorldTransform = posedCamera.ToWorld( localCamera.ToLocal( global::Transform.Zero ) );
 	}
 
-	Transform ApplyInertia( Transform camera, float adsBlend, in Titanfall2PilotViewPoseState pose )
+	Transform ApplyParkourPose( Transform camera, float adsBlend, in Titanfall2PilotViewPoseState pose )
 	{
-		var currentAngles = camera.Rotation.Angles();
 		if ( !_inertiaReady )
 		{
-			_lastCameraAngles = currentAngles;
 			_inertiaTime = Time.NowDouble;
 			_inertiaReady = true;
 			return camera;
@@ -236,32 +207,21 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		{
 			_inertiaTime = Time.NowDouble;
 			var dt = Math.Clamp( Time.Delta, 0f, 0.05f );
-			var dYaw = MathX.DeltaDegrees( currentAngles.yaw, _lastCameraAngles.yaw );
-			var dPitch = MathX.DeltaDegrees( currentAngles.pitch, _lastCameraAngles.pitch );
-			_lastCameraAngles = currentAngles;
-
-			_swayOffset.x = Math.Clamp( _swayOffset.x + dYaw * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
-			_swayOffset.y = Math.Clamp( _swayOffset.y + dPitch * 0.12f, -MaxInertiaDegrees, MaxInertiaDegrees );
-
-			var accel = -InertiaStiffness * _swayOffset - InertiaDamping * _swayVelocity;
-			_swayVelocity += accel * dt;
-			_swayOffset += _swayVelocity * dt;
-
 			var targetWall = Math.Clamp( pose.WallrunSide, -1f, 1f );
-			var targetSlide = Math.Clamp( pose.SlideBlend, 0f, 1f );
+			var targetSlide = _clips.Contains( SlideIdle ) ? 0f : Math.Clamp( pose.SlideBlend, 0f, 1f );
 			var targetMantle = Math.Clamp( pose.MantleProgress, 0f, 1f );
 			_wallrunBlend = MathX.Lerp( _wallrunBlend, targetWall, Math.Clamp( dt * 12f, 0f, 1f ), true );
 			_slidePoseBlend = MathX.Lerp( _slidePoseBlend, targetSlide, Math.Clamp( dt * 14f, 0f, 1f ), true );
 			_mantlePoseBlend = MathX.Lerp( _mantlePoseBlend, targetMantle, Math.Clamp( dt * 18f, 0f, 1f ), true );
 		}
 
-		var scale = float.Lerp( 1f, 0.18f, adsBlend );
 		// Suppress procedural hipfire cant almost completely while ADSing so optics stay aligned.
 		var hipScale = float.Lerp( 1f, 0.06f, adsBlend );
 
 		var absWall = MathF.Abs( _wallrunBlend );
-		var wallRoll = -_wallrunBlend * 10.5f * hipScale;
-		var wallYaw = _wallrunBlend * 3.5f * hipScale;
+		var wallRollScale = pose.IsWallhanging ? 6.5f : 10.5f;
+		var wallRoll = -_wallrunBlend * wallRollScale * hipScale;
+		var wallYaw = _wallrunBlend * (pose.IsWallhanging ? 2.2f : 3.5f) * hipScale;
 		var wallLocalOffset = new Vector3( -0.6f * absWall, _wallrunBlend * 1.15f, -0.75f * absWall ) * hipScale;
 
 		// Iconic Titanfall 2 tactical canted slide hipfire stance.
@@ -288,15 +248,16 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 
 		var totalOffset = camera.Rotation * (wallLocalOffset + slideLocalOffset + mantleLocalOffset + airLocalOffset + offhandOffset + meleeOffset);
 		var swayRot = Rotation.From( new Angles(
-			_swayOffset.y * scale + slidePitch + mantlePitch + landingPitch + offhandAngles.pitch + meleeAngles.pitch,
-			_swayOffset.x * scale + wallYaw + slideYaw + offhandAngles.yaw + meleeAngles.yaw,
-			_swayOffset.x * 0.35f * scale + wallRoll + slideRoll + mantleRoll + offhandAngles.roll + meleeAngles.roll ) );
+			slidePitch + mantlePitch + landingPitch + offhandAngles.pitch + meleeAngles.pitch,
+			wallYaw + slideYaw + offhandAngles.yaw + meleeAngles.yaw,
+			wallRoll + slideRoll + mantleRoll + offhandAngles.roll + meleeAngles.roll ) );
 		return new Transform( camera.Position + totalOffset, camera.Rotation * swayRot );
 	}
 
 	protected override void OnUpdate()
 	{
 		if ( !Renderer.IsValid() || !Renderer.SceneModel.IsValid() ) return;
+		TickRechamberPresentation();
 		if ( _owner.IsValid() && _owner.ChargeProfile.Valid )
 		{
 			if ( _owner.ChargePhase == Titanfall2ChargePhase.Charging && _action != Charge && _clips.Contains( Charge ) ) Play( Charge );
@@ -304,12 +265,9 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		}
 		_animation?.ApplyParameters();
 		DispatchEvents();
+		if ( TickOrdnancePresentation() ) return;
 
-		var restingClip = _aiming && _clips.Contains( AdsIdle ) ? AdsIdle
-			: _sprinting && _clips.Contains( Sprint ) ? Sprint
-			: _oneHanded && _clips.Contains( OneHandedIdle ) ? OneHandedIdle
-			: Idle;
-
+		var restingClip = RestingClip;
 		if ( _action != Charge && _action != restingClip && _actionEnds <= 0 )
 			Play( restingClip );
 	}
@@ -317,12 +275,25 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 	public override void OnDeploy()
 	{
 		base.OnDeploy();
+		_viewMotion.Reset();
+		_duckView.Reset();
 		_aiming = false;
 		_sprinting = false;
 		_oneHanded = false;
 		SetZoom( 0 );
 		SetClipVisible( true );
-		Play( Draw );
+		var player = _owner.IsValid() ? _owner.Owner : null;
+		_crouching = player.IsValid() && player.IsDucking;
+		_sliding = player.IsValid() && player.GameObject.GetComponent<ITitanfall2PilotParkourState>() is { Equipped: true, IsSliding: true };
+		_animation?.SetStancePose( _crouching, _sliding, false );
+		var draw = SelectAction( Draw, _crouching, _sliding );
+		// Retail has one-handed slide draws, but no one-handed first-draw variant.
+		if ( _owner.IsValid() && !(_sliding && draw == StanceRole( Draw, true )) && _owner.BeginPilotDraw() )
+		{
+			var first = SelectAction( FirstDraw, _crouching, _sliding );
+			if ( _clips.Contains( first ) && (first != FirstDraw || draw == Draw) ) draw = first;
+		}
+		Play( draw );
 	}
 
 	public override void OnAttack( Vector3? hitPoint = null, Vector3? origin = null )
@@ -330,7 +301,9 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnAttack( hitPoint, origin );
 		if ( _owner.IsValid() && _owner.IsReloading ) return;
 		_sprinting = false;
-		var fireClip = _animation is not null ? Fire : _aiming && _clips.Contains( AdsFire ) ? AdsFire : Fire;
+		var canSlideFire = _sliding && (_animation is not null ? _animation.HasSlideFire : _zoom < 0.5f && _clips.Contains( SlideFire ));
+		var fireClip = canSlideFire ? SlideFire
+			: _animation is null && _aiming && _clips.Contains( AdsFire ) ? AdsFire : Fire;
 		Play( fireClip );
 		if ( !HasEvent( fireClip, Titanfall2PilotViewData.EventKind.MuzzleFlash ) )
 			SpawnMuzzleFlash();
@@ -345,8 +318,13 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		var isEmpty = _owner.IsValid() && _owner.ReloadStartedEmpty;
 		var reloadTime = _owner.IsValid() ? _owner.ReloadDuration : (float?)null;
 		var elapsed = _owner.IsValid() ? _owner.ReloadElapsed : 0;
-		var role = isEmpty ? EmptyReload : Reload;
-		if ( isEmpty && _owner.IsValid() && _owner.ReloadMilestone > 0 && _clips.Contains( EmptyReloadLate( _owner.ReloadMilestone ) ) ) role = EmptyReloadLate( _owner.ReloadMilestone );
+		_reloadStance = (_crouching, _sliding);
+		var role = ReloadAction( isEmpty ? EmptyReload : Reload );
+		if ( isEmpty && _owner.ReloadMilestone > 0 )
+		{
+			var late = ReloadAction( EmptyReloadLate( _owner.ReloadMilestone ) );
+			if ( _clips.Contains( late ) ) role = late;
+		}
 		Play( role, reloadTime, elapsed );
 	}
 
@@ -355,17 +333,18 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		base.OnIncrementalReload();
 		if ( !_owner.IsValid() || !_owner.IsReloading || !_owner.ReloadIsSegmented ) return;
 		if ( _owner.Clip1 >= _owner.ClipMaxSize || _owner.Ammo1 <= 0 ) return;
-		if ( !_clips.Contains( ReloadSegLoop ) ) return;
-		Play( ReloadSegLoop, _owner.ReloadLoopDuration );
+		var loop = ReloadAction( ReloadSegLoop );
+		if ( !_clips.Contains( loop ) ) return;
+		Play( loop, _owner.ReloadLoopDuration );
 	}
 
 	public override void OnReloadFinish()
 	{
 		base.OnReloadFinish();
 		if ( _reloadCancelled || !_owner.IsValid() || !_owner.ReloadIsSegmented ) return;
-		var endClip = _owner.ReloadStartedEmpty && _clips.Contains( ReloadEmptySegEnd )
-			? ReloadEmptySegEnd
-			: ReloadSegEnd;
+		var endClip = _owner.ReloadStartedEmpty && _clips.Contains( ReloadAction( ReloadEmptySegEnd ) )
+			? ReloadAction( ReloadEmptySegEnd )
+			: ReloadAction( ReloadSegEnd );
 		if ( !_clips.Contains( endClip ) ) return;
 		Play( endClip, _owner.ReloadEndDuration );
 	}
@@ -384,7 +363,7 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 		Play( Cooldown, MathF.Max( 0.01f, (float)(_owner.HeatVentUntil - Time.NowDouble) ) );
 	}
 
-	void Play( string name, float? seconds = null, float elapsed = 0 )
+	void Play( string name, float? seconds = null, float elapsed = 0, float? eventCursor = null )
 	{
 		if ( !Renderer.IsValid() ) return;
 		DispatchEvents();
@@ -394,18 +373,18 @@ public sealed class Titanfall2PilotViewModel : BaseWeaponModel
 			_action = name;
 			var duration = seconds is > 0.05f && float.IsFinite( seconds.Value ) ? seconds.Value : _animation.Duration( name );
 			_actionEnds = MathF.Max( 0, duration - MathF.Max( 0, elapsed ) );
-			_lastCycle = elapsed > 0 ? PresentationCycle : -0.001f;
+			_lastCycle = eventCursor ?? (elapsed > 0 ? PresentationCycle : -0.001f);
 			DispatchEvents();
 			return;
 		}
 		var seq = Renderer.Sequence;
 		seq.Name = name;
-		seq.Looping = name is Idle or AdsIdle or Sprint or OneHandedIdle or Charge;
+		seq.Looping = name is Idle or AdsIdle or SlideIdle or Sprint or OneHandedIdle or Charge or TossHold;
 		seq.PlaybackRate = seconds is > 0.05f ? seq.Duration / seconds.Value : 1f;
 		var realDuration = seq.Duration / MathF.Max( 0.01f, seq.PlaybackRate );
 		seq.TimeNormalized = elapsed > 0 && realDuration > 0 ? Math.Clamp( elapsed / realDuration, 0, 1 ) : 0;
 		_action = name;
-		_lastCycle = elapsed > 0 ? seq.TimeNormalized : -0.001f;
+		_lastCycle = eventCursor ?? (elapsed > 0 ? seq.TimeNormalized : -0.001f);
 		_actionEnds = MathF.Max( 0, realDuration - MathF.Max( 0, elapsed ) );
 		DispatchEvents();
 	}

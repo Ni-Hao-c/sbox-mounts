@@ -10,10 +10,10 @@ public sealed partial class Titanfall2TitanCockpitHud
 			_artKit = chassis;
 			var id = chassis == Titanfall2TitanKit.Chassis.Monarch ? "vanguard" : chassis.ToString().ToLowerInvariant();
 			SetRetailImage( _chassisArt, $"r2_ui/menus/loadout_icons/titans/{id}_icon" );
-			SetRetailImage( _abilityArt[0], OffenseArt( chassis ) );
-			SetRetailImage( _abilityArt[1], DefenseArt( chassis ) );
-			if ( _abilityArt.Count > 2 ) SetRetailImage( _abilityArt[2], UtilityArt( chassis ) );
-			if ( _abilityArt.Count > 3 ) SetRetailImage( _abilityArt[3], "rui/titan_loadout/ordnance/electric_smoke" );
+			SetRetailImage( _abilityArt[DefenseSlot], DefenseArt( chassis ) );
+			SetRetailImage( _abilityArt[UtilitySlot], UtilityArt( chassis ) );
+			SetRetailImage( _abilityArt[OffenseSlot], OffenseArt( chassis ) );
+			SetRetailImage( _abilityArt[SmokeSlot], "rui/titan_loadout/tactical/titan_tactical_electric_smoke" );
 			SetRetailImage( _coreArt, CoreArt( chassis ) );
 			SetRetailImage( _damageArt, "vgui/hud/damage/damage_overlay_orangebloom_col" );
 			const string cockpit = "models/titans_r2/titan_cockpit/titan_cockpit_rui_";

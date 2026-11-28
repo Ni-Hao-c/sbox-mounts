@@ -47,6 +47,7 @@ partial class ModelLoader
 		Titanfall2Mdl53Reader.SequenceInfo OneHandedIdle,
 		Titanfall2Mdl53Reader.SequenceInfo Charge,
 		Titanfall2Mdl53Reader.SequenceInfo Cooldown,
+		Titanfall2Mdl53Reader.SequenceInfo Rechamber,
 		Titanfall2Mdl53Reader.SequenceInfo[] EmptyReloadLate );
 
 	internal static PilotViewSequenceSet ResolvePilotViewSequences( Titanfall2Mdl53Reader.ParsedModel model, string modelPath )
@@ -81,13 +82,34 @@ partial class ModelLoader
 
 		var charge = FindSequence( model, ["charge_seq"], "ACT_VM_CHARGE" );
 		var cooldown = FindSequence( model, ["cooldown_seq"], "ACT_VM_COOLDOWN" );
+		var rechamber = FindSequence( model, ["rechamber_seq"], "ACT_VM_RECHAMBER" );
 		var late = Enumerable.Range( 1, 5 ).Select( index => FindSequence( model, [$"reload_empty_late{index}_seq"], $"ACT_VM_RELOADEMPTY_LATE{index}" ) ).ToArray();
-		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, reloadSegLoop, reloadSegEnd, reloadEmptySegEnd, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle, charge, cooldown, late );
+		return new PilotViewSequenceSet( idle, draw, fire, reload, emptyReload, reloadSegLoop, reloadSegEnd, reloadEmptySegEnd, adsIn, adsOut, sprint, sprintRaise, oneHandedIdle, charge, cooldown, rechamber, late );
+	}
+
+	internal static int ResolvePilotAdsAnimationIndex( Titanfall2SequenceRuntimeData sequence )
+	{
+		if ( sequence?.AnimationIndices is not { Length: > 0 } ) return 0;
+		// A second cell is not necessarily ADS (it may be an alternate attack).
+		// Follow the authored pose axis and its keys; other axes keep their first cell.
+		for ( var axis = 0; axis < sequence.Axes.Length && axis < sequence.Keys.Length; ++axis )
+		{
+			if ( !string.Equals( sequence.Axes[axis]?.Name, "ads_blend", StringComparison.OrdinalIgnoreCase ) ) continue;
+			var keys = sequence.Keys[axis];
+			if ( keys is not { Length: > 0 } ) break;
+			var key = 0;
+			for ( var i = 1; i < keys.Length; ++i )
+				if ( MathF.Abs( keys[i] - 1f ) < MathF.Abs( keys[key] - 1f ) ) key = i;
+			var index = axis == 0 ? key : key * sequence.Width;
+			return index >= 0 && index < sequence.AnimationIndices.Length ? sequence.AnimationIndices[index] : sequence.AnimationIndices[0];
+		}
+		return sequence.AnimationIndices[0];
 	}
 
 	int AddPilotViewAnimations( ModelBuilder builder, Titanfall2Mdl53Reader.ParsedModel model, byte[] data )
 	{
 		var sequences = ResolvePilotViewSequences( model, ImportPath );
+		var stance = ResolvePilotStanceSequences( model );
 		var cache = new Dictionary<int, Titanfall2Mdl53AnimationReader.DecodedAnimation>();
 		var events = new List<Titanfall2PilotViewData.ClipEvent>();
 
@@ -96,6 +118,9 @@ partial class ModelLoader
 		var draw = Decode( sequences.Draw );
 		var idle = Decode( sequences.Idle );
 		var fire = Decode( sequences.Fire );
+		var adsFireIndex = ResolvePilotAdsAnimationIndex( Titanfall2SequenceRuntimeData.Read( data, model, sequences.Fire ) );
+		var adsFire = adsFireIndex == sequences.Fire.AnimationIndices[0] ? fire
+			: Titanfall2Mdl53AnimationReader.Decode( data, model, adsFireIndex, sequences.Fire.Label, sequences.Fire.Sequence.Flags );
 
 		// Retail normal idle and fire clips are additive. The first frame of a non-delta
 		// reload clip (or last frame of draw) is the authored ready stance, including both
@@ -119,6 +144,13 @@ partial class ModelLoader
 		CollectEvents( Titanfall2PilotViewModel.Fire, sequences.Fire );
 		CollectEvents( Titanfall2PilotViewModel.Reload, sequences.Reload );
 		CollectEvents( Titanfall2PilotViewModel.EmptyReload, sequences.EmptyReload );
+		foreach ( var (role, sequence) in ResolvePilotOrdnanceSequences( model ).Roles() )
+		{
+			if ( sequence is null ) continue;
+			Add( role, Decode( sequence ), ready, loop: role == Titanfall2PilotViewModel.TossHold );
+			CollectEvents( role, sequence );
+			count++;
+		}
 		if ( sequences.ReloadSegLoop is { } segLoop )
 		{
 			Add( Titanfall2PilotViewModel.ReloadSegLoop, Decode( segLoop ), ready );
@@ -152,6 +184,19 @@ partial class ModelLoader
 				Add( Titanfall2PilotViewModel.CooldownAds, decoded, adsReady ); count++;
 			}
 		}
+		if ( sequences.Rechamber is { } rechamber )
+		{
+			Add( Titanfall2PilotViewModel.Rechamber, Decode( rechamber ), ready );
+			CollectEvents( Titanfall2PilotViewModel.Rechamber, rechamber ); count++;
+			if ( sequences.AdsIn is { } ads )
+			{
+				var adsIndex = ResolvePilotAdsAnimationIndex( Titanfall2SequenceRuntimeData.Read( data, model, rechamber ) );
+				var pose = Decode( ads ); var adsReady = ApplyBase( pose.Frames[^1], pose.Delta, ready );
+				var decoded = Titanfall2Mdl53AnimationReader.Decode( data, model, adsIndex, rechamber.Label, rechamber.Sequence.Flags );
+				Add( Titanfall2PilotViewModel.RechamberAds, decoded, adsReady );
+				CollectEvents( Titanfall2PilotViewModel.RechamberAds, rechamber ); count++;
+			}
+		}
 		for ( var i = 0; i < sequences.EmptyReloadLate.Length; ++i )
 			if ( sequences.EmptyReloadLate[i] is { } late )
 			{
@@ -174,7 +219,7 @@ partial class ModelLoader
 			adsIdleClip.AddFrame( adsPose );
 			count++;
 
-			Add( Titanfall2PilotViewModel.AdsFire, fire, adsPose );
+			Add( Titanfall2PilotViewModel.AdsFire, adsFire, adsPose );
 			CollectEvents( Titanfall2PilotViewModel.AdsFire, sequences.Fire );
 			count++;
 		}
@@ -203,10 +248,30 @@ partial class ModelLoader
 			count++;
 		}
 
+		var slideReady = ready;
+		if ( stance.TryGetValue( Titanfall2PilotViewModel.SlideIdle, out var slideIdleSource ) )
+		{
+			var idlePose = PilotSlideIdle( Decode( slideIdleSource ), slideIdleSource );
+			slideReady = ApplyBase( idlePose.Frames[0], idlePose.Delta, ready );
+			Add( Titanfall2PilotViewModel.SlideIdle, idlePose, ready, loop: true ); count++;
+		}
+		foreach ( var (role, sequence) in stance )
+		{
+			if ( role == Titanfall2PilotViewModel.SlideIdle ) continue;
+			var animation = Decode( sequence );
+			Add( role, animation, role == Titanfall2PilotViewModel.SlideFire ? slideReady : ready );
+			CollectEvents( role, sequence ); count++;
+			if ( role == Titanfall2PilotViewModel.SlideFire && PilotSlideFireAds( data, model, sequence, animation ) is not null )
+			{
+				resourceClips.Add( Titanfall2PilotAnimationPlayer.SlideFireDelta );
+				resourceClips.Add( Titanfall2PilotAnimationPlayer.SlideFireAdsDelta );
+			}
+		}
+
 		builder.WithData( new Titanfall2PilotViewData
 		{
 			Events = events.ToArray(), Skeleton = $"{Path}/pilot/skeleton.skel", ClipFolder = $"{Path}/pilot",
-			Clips = resourceClips.ToArray(), ContinuousAds = idle.Delta && fire.Delta && sequences.AdsIn is not null
+			Clips = resourceClips.ToArray(), ContinuousAds = idle.Delta && fire.Delta && adsFire.Delta && sequences.AdsIn is not null
 		} );
 
 		return count;
@@ -316,6 +381,7 @@ partial class ModelLoader
 			if ( match is not null ) return match;
 		}
 
+		if ( string.IsNullOrEmpty( fallbackActivity ) ) return null;
 		Titanfall2Mdl53Reader.SequenceInfo fallback = null;
 		foreach ( var entry in model.Sequences )
 		{

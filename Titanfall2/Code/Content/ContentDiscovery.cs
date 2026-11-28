@@ -29,7 +29,7 @@ static class Titanfall2ContentDiscovery
 		// read. Preserve that rule even when a lower-priority Mod owns the loose file.
 		foreach ( var mod in profile.Mods )
 		{
-			foreach ( var path in mod.Rpaks ) AddRpak( path, $"northstar:{mod.Name}/rpak", required: true );
+			foreach ( var path in mod.Rpaks.Except( mod.FallbackRpaks, StringComparer.OrdinalIgnoreCase ) ) AddRpak( path, $"northstar:{mod.Name}/rpak", required: true );
 			foreach ( var path in mod.Vpks ) AddVpk( path, $"northstar:{mod.Name}/vpk", required: true );
 			foreach ( var path in Titanfall2NorthstarProfile.Files( Path.Combine( mod.Directory, "paks" ) ).Where( path => path.EndsWith( ".starpak", StringComparison.OrdinalIgnoreCase ) ) ) identities.Add( Stamp( path ) );
 			foreach ( var folder in new[] { "keyvalues", "media", "audio" } )
@@ -42,6 +42,10 @@ static class Titanfall2ContentDiscovery
 			.Where( path => path.EndsWith( "_dir.vpk", StringComparison.OrdinalIgnoreCase ) )
 			.OrderBy( path => Path.GetFileName( path ).Equals( "englishclient_mp_common.bsp.pak000_dir.vpk", StringComparison.OrdinalIgnoreCase ) ? 0 : 1 )
 			.ThenBy( path => path, StringComparer.OrdinalIgnoreCase ) ) AddVpk( path, "retail/vpk", required: false );
+		// Keep custom-map assets discoverable without allowing an unselected map's
+		// RPAKs to replace retail/global sources by either logical name or native GUID.
+		foreach ( var mod in profile.Mods )
+			foreach ( var path in mod.FallbackRpaks ) AddRpak( path, $"northstar:{mod.Name}/map-fallback-rpak", required: true );
 		foreach ( var folder in new[] { Path.Combine( gameRoot, "vpk" ), Path.Combine( gameRoot, "r2/paks/Win64" ) } )
 			foreach ( var path in Titanfall2NorthstarProfile.Files( folder, recursive: false ).Where( path => path.EndsWith( ".vpk", StringComparison.OrdinalIgnoreCase ) || path.EndsWith( ".starpak", StringComparison.OrdinalIgnoreCase ) ) ) identities.Add( Stamp( path ) );
 		var soundRoot = Path.Combine( gameRoot, "r2/sound" );

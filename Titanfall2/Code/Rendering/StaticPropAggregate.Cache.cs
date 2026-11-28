@@ -9,7 +9,9 @@ sealed partial class Titanfall2StaticPropAggregate
 {
 	const string CacheKind = "propagg";
 	const uint CacheMagic = 0x41503254; // "T2PA"
-	const int CacheVersion = 4;
+	// V9 retains forward geometry/authored LODs and authored cutout shadow flags.
+	// Earlier payloads could omit blockers or synthesize Far meshes that shrink cover.
+	const int CacheVersion = 9;
 
 	internal static string BuildCacheIdentity( Titanfall2Mount mount, string mapPath ) =>
 		mount is null || string.IsNullOrWhiteSpace( mapPath )
@@ -62,8 +64,6 @@ sealed partial class Titanfall2StaticPropAggregate
 				buckets[i] = new BucketSpec( shader, filter, castShadows, templateIdx );
 			}
 
-			var sharedModels = ReadAggregateModels( reader, bucketCount );
-
 			var sectorCount = reader.Count( 16384 );
 			var sectors = new SectorData[sectorCount];
 			for ( var i = 0; i < sectorCount; i++ )
@@ -71,10 +71,12 @@ sealed partial class Titanfall2StaticPropAggregate
 				var sx = reader.ReadInt32();
 				var sy = reader.ReadInt32();
 				var bounds = ReadBBox( reader );
-				var pvs = new Titanfall2BspReader.VisibilityCellMask( reader.ReadUInt64(), reader.ReadUInt64() );
+				var pvs = Titanfall2BspReader.VisibilityCellMask.Read( reader );
+				var hasLandmark = reader.ReadBoolean();
+				var sharedModels = ReadAggregateModels( reader, bucketCount );
 				var nearModels = ReadAggregateModels( reader, bucketCount );
 				var farModels = ReadAggregateModels( reader, bucketCount );
-				sectors[i] = new SectorData( sx, sy, bounds, pvs, nearModels, farModels );
+				sectors[i] = new SectorData( sx, sy, bounds, pvs, hasLandmark, sharedModels, nearModels, farModels );
 			}
 
 			var shadowCount = reader.Count( 16384 );
@@ -84,9 +86,10 @@ sealed partial class Titanfall2StaticPropAggregate
 				var cx = reader.ReadInt32();
 				var cy = reader.ReadInt32();
 				var bounds = ReadBBox( reader );
+				var pvs = Titanfall2BspReader.VisibilityCellMask.Read( reader );
 				var verts = reader.Array<TitanfallPropShadowVertex>( 8_000_000 );
 				var idxs = reader.Array<int>( 24_000_000 );
-				shadowChunks[i] = new ShadowChunkData( cx, cy, verts, idxs, bounds );
+				shadowChunks[i] = new ShadowChunkData( cx, cy, verts, idxs, bounds, pvs );
 			}
 
 			var resGroupCount = reader.Count( 16384 );
@@ -100,9 +103,10 @@ sealed partial class Titanfall2StaticPropAggregate
 				for ( var p = 0; p < partCount; p++ )
 				{
 					var bounds = ReadBBox( reader );
+					var pvs = Titanfall2BspReader.VisibilityCellMask.Read( reader );
 					var verts = reader.Array<TitanfallPropResidualVertex>( 4_000_000 );
 					var idxs = reader.Array<int>( 12_000_000 );
-					parts[p] = new ResidualPartData( verts, idxs, bounds );
+					parts[p] = new ResidualPartData( verts, idxs, bounds, pvs );
 				}
 				residualGroups[i] = new ResidualGroupData( matName, castShadows, parts );
 			}
@@ -113,7 +117,6 @@ sealed partial class Titanfall2StaticPropAggregate
 				materialNames,
 				probes,
 				buckets,
-				sharedModels,
 				sectors,
 				shadowChunks,
 				residualGroups,
@@ -168,16 +171,15 @@ sealed partial class Titanfall2StaticPropAggregate
 				writer.Write( b.TemplateMaterialIndex );
 			}
 
-			WriteAggregateModels( writer, payload.SharedModels );
-
 			writer.Write( payload.Sectors.Length );
 			foreach ( var s in payload.Sectors )
 			{
 				writer.Write( s.SectorX );
 				writer.Write( s.SectorY );
 				WriteBBox( writer, s.Bounds );
-				writer.Write( s.PvsCells.Low );
-				writer.Write( s.PvsCells.High );
+				s.PvsCells.Write( writer );
+				writer.Write( s.HasLandmark );
+				WriteAggregateModels( writer, s.SharedModels );
 				WriteAggregateModels( writer, s.NearModels );
 				WriteAggregateModels( writer, s.FarModels );
 			}
@@ -188,6 +190,7 @@ sealed partial class Titanfall2StaticPropAggregate
 				writer.Write( c.CellX );
 				writer.Write( c.CellY );
 				WriteBBox( writer, c.Bounds );
+				c.PvsCells.Write( writer );
 				Titanfall2ProcessedCache.WriteArray( writer, c.Vertices );
 				Titanfall2ProcessedCache.WriteArray( writer, c.Indices );
 			}
@@ -201,6 +204,7 @@ sealed partial class Titanfall2StaticPropAggregate
 				foreach ( var p in g.Parts )
 				{
 					WriteBBox( writer, p.Bounds );
+					p.PvsCells.Write( writer );
 					Titanfall2ProcessedCache.WriteArray( writer, p.Vertices );
 					Titanfall2ProcessedCache.WriteArray( writer, p.Indices );
 				}

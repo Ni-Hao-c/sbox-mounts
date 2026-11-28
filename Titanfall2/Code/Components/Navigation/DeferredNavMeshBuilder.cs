@@ -54,6 +54,9 @@ public sealed class Titanfall2DeferredNavMeshBuilder : Component
 		public bool Queued;
 		public bool WasEnabled;
 		public bool WasDeferred;
+		public bool WasGeneratingLinks;
+		public float WasJumpHeight, WasJumpDistance, WasDrop;
+		public float AppliedJumpHeight, AppliedJumpDistance, AppliedDrop;
 		public bool OnDemand;
 		public TagSet IncludedBodies;
 		public TagSet MountedBodies;
@@ -99,6 +102,10 @@ public sealed class Titanfall2DeferredNavMeshBuilder : Component
 			navMesh.DeferGeneration = true;
 			navMesh.IsEnabled = true;
 			navMesh.IncludedBodies = _navigation.MountedBodies;
+			navMesh.GenerateLinks = true;
+			navMesh.AgentMaxJumpHeight = _navigation.AppliedJumpHeight;
+			navMesh.AgentMaxJumpDistance = _navigation.AppliedJumpDistance;
+			navMesh.AgentMaxDrop = _navigation.AppliedDrop;
 			if ( _navigation.OnDemand )
 				Log.Info( $"Titanfall 2 NavMesh on demand: whole-map generation skipped; tiles within {OnDemandRadius:0} units of players and agents are generated as needed (bodies tagged '{NavMeshBodyTag}')." );
 		}
@@ -115,6 +122,14 @@ public sealed class Titanfall2DeferredNavMeshBuilder : Component
 		{
 			WasEnabled = navMesh.IsEnabled,
 			WasDeferred = navMesh.DeferGeneration,
+			WasGeneratingLinks = navMesh.GenerateLinks,
+			WasJumpHeight = navMesh.AgentMaxJumpHeight,
+			WasJumpDistance = navMesh.AgentMaxJumpDistance,
+			WasDrop = navMesh.AgentMaxDrop,
+			// Basic links fit ordinary ground infantry; higher roof links are typed and validated per actor.
+			AppliedJumpHeight = MathF.Max( 96, navMesh.AgentMaxJumpHeight ),
+			AppliedJumpDistance = MathF.Max( 256, navMesh.AgentMaxJumpDistance ),
+			AppliedDrop = MathF.Max( 128, navMesh.AgentMaxDrop ),
 			IncludedBodies = navMesh.IncludedBodies,
 			OnDemand = OnDemand,
 			// Whole-map mode keeps an enabled host's empty filter (every body). On-demand
@@ -138,6 +153,10 @@ public sealed class Titanfall2DeferredNavMeshBuilder : Component
 				navMesh.IncludedBodies = _navigation.IncludedBodies;
 				navMesh.DeferGeneration = _navigation.WasDeferred;
 				navMesh.IsEnabled = _navigation.WasEnabled;
+				if ( navMesh.GenerateLinks ) navMesh.GenerateLinks = _navigation.WasGeneratingLinks;
+				if ( navMesh.AgentMaxJumpHeight == _navigation.AppliedJumpHeight ) navMesh.AgentMaxJumpHeight = _navigation.WasJumpHeight;
+				if ( navMesh.AgentMaxJumpDistance == _navigation.AppliedJumpDistance ) navMesh.AgentMaxJumpDistance = _navigation.WasJumpDistance;
+				if ( navMesh.AgentMaxDrop == _navigation.AppliedDrop ) navMesh.AgentMaxDrop = _navigation.WasDrop;
 			}
 			NavigationStates.Remove( _navigationScene );
 		}
@@ -199,6 +218,12 @@ public sealed class Titanfall2DeferredNavMeshBuilder : Component
 			if ( !agent.Active ) continue;
 			RequestAround( navMesh, agent.WorldPosition, OnDemandRadius, ref budget );
 			if ( agent.TargetPosition is Vector3 target ) RequestAround( navMesh, target, TileSize, ref budget );
+		}
+		foreach ( var link in Scene.GetAllComponents<Titanfall2TraversalLink>() )
+		{
+			if ( !link.Active || budget <= 0 ) continue;
+			RequestAround( navMesh, link.WorldTransform.PointToWorld( link.LocalStart ), TileSize, ref budget );
+			RequestAround( navMesh, link.WorldTransform.PointToWorld( link.LocalEnd ), TileSize, ref budget );
 		}
 		if ( state.RequestedTiles.Count >= state.LoggedTileCount + 64 )
 		{

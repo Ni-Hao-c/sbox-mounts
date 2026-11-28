@@ -4,6 +4,7 @@ public record struct Titanfall2WeaponUiDisplay
 	public int Slot { get; set; }
 	public string UiPath { get; set; }
 	public string MeshName { get; set; }
+	public bool FadeWithZoom { get; set; }
 }
 
 internal sealed partial record Titanfall2WeaponData
@@ -25,13 +26,17 @@ internal sealed partial record Titanfall2WeaponData
 			var isAmmoDisplay = ui.StartsWith( "ui/", StringComparison.OrdinalIgnoreCase )
 				&& (ui.Contains( "ammo_counter", StringComparison.OrdinalIgnoreCase ) || Titanfall2WeaponUiCatalog.IsKnownDisplay( ui ));
 			if ( !isAmmoDisplay || !definition.Blocks.TryGetValue( "Args", out var args ) ) continue;
+			var opticDisplay = Titanfall2WeaponUiCatalog.TryGet( ui, out var layout )
+				&& layout.Mode is Titanfall2WeaponUiDisplayMode.OpticFrame or Titanfall2WeaponUiDisplayMode.OpticReticle;
 			var bindsAmmo = string.Equals( args.Values.GetValueOrDefault( "ammo" ), "weapon_ammo", StringComparison.OrdinalIgnoreCase )
 				|| string.Equals( args.Values.GetValueOrDefault( "clipAmmo" ), "weapon_ammo", StringComparison.OrdinalIgnoreCase );
 			var bindsClipSize = string.Equals( args.Values.GetValueOrDefault( "clipSize" ), "weapon_clipSize", StringComparison.OrdinalIgnoreCase );
-			if ( !bindsAmmo || !bindsClipSize
+			if ( (!opticDisplay && (!bindsAmmo || !bindsClipSize))
 				|| !Titanfall2ContentSnapshot.TryNormalize( mesh, out var normalized )
 				|| !normalized.StartsWith( "models/weapons/attachments/", StringComparison.Ordinal ) ) continue;
-			displays.Add( new() { Slot = slot, UiPath = ui, MeshName = normalized } );
+			displays.Add( new() { Slot = slot, UiPath = ui, MeshName = normalized,
+				FadeWithZoom = opticDisplay && (string.Equals( args.Values.GetValueOrDefault( "vis" ), "player_zoomfrac", StringComparison.OrdinalIgnoreCase )
+					|| string.Equals( args.Values.GetValueOrDefault( "zoomFrac" ), "player_zoomfrac", StringComparison.OrdinalIgnoreCase )) } );
 		}
 		return displays.ToArray();
 	}

@@ -47,7 +47,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 		ModelSkinGroups = _compiledScene?.Layout.Models.Length ?? 0,
 		SpatialCells = _compiledScene?.Layout.Cells.Length ?? 0,
 		PvsCells = _compiledVisibility?.CellCount ?? 0,
-		PvsTableBytes = (_compiledVisibility?.CellCount ?? 0) * 16,
+		PvsTableBytes = (_compiledVisibility?.CellCount ?? 0) * Titanfall2.Titanfall2BspReader.VisibilityCellMask.WordCount * sizeof( ulong ),
 		KeepAllCollisions,
 		PreparationComplete,
 		ResourcesPrepared,

@@ -63,14 +63,9 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 	const int MaxTableEntries = 16_777_216;
 	// Major structural/cover props cast LOD3 shadows; small clutter uses baked sun visibility + contact shadows.
 	internal const float AggregateShadowMinimumRadius = 128f;
+	const float LandmarkRadius = 256f;
 	const float SmallPropLodRadius = 48f;
 	const float MediumPropLodRadius = 128f;
-	// Tiny non-collidable litter or small/medium non-collidable clutter with short retail FadeDistance
-	// is omitted in Far (>2304u) sectors, matching retail TF2's authored fade budget while keeping
-	// every collidable cover prop and large architectural prop (>=96u) visible map-wide.
-	const float FarTinyNonCollidableMaxRadius = 24f;
-	const float FarFadeExemptionRadius = 96f;
-	const float FarAuthoredFadeCutoff = 4500f;
 
 	internal readonly record struct PropEntry(
 		Model Model,
@@ -86,7 +81,8 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 	internal readonly record struct ResidualEntry(
 		ModelLoader.GpuGeometryMesh[] Meshes,
 		Transform Transform,
-		bool CastShadows );
+		bool CastShadows,
+		Titanfall2BspReader.VisibilityCellMask PvsCells );
 
 	internal readonly record struct BucketSpec( string ShaderName, int TextureFiltering, bool CastShadows, int TemplateMaterialIndex );
 	internal sealed record AggregatePartData( TitanfallPropAggregateVertex[] Vertices, int[] Indices, BBox Bounds );
@@ -96,17 +92,28 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		int SectorY,
 		BBox Bounds,
 		Titanfall2BspReader.VisibilityCellMask PvsCells,
+		bool HasLandmark,
+		AggregateModelData[] SharedModels,
 		AggregateModelData[] NearModels,
 		AggregateModelData[] FarModels );
-	internal sealed record ShadowChunkData( int CellX, int CellY, TitanfallPropShadowVertex[] Vertices, int[] Indices, BBox Bounds );
-	internal sealed record ResidualPartData( TitanfallPropResidualVertex[] Vertices, int[] Indices, BBox Bounds );
+	internal sealed record ShadowChunkData(
+		int CellX,
+		int CellY,
+		TitanfallPropShadowVertex[] Vertices,
+		int[] Indices,
+		BBox Bounds,
+		Titanfall2BspReader.VisibilityCellMask PvsCells );
+	internal sealed record ResidualPartData(
+		TitanfallPropResidualVertex[] Vertices,
+		int[] Indices,
+		BBox Bounds,
+		Titanfall2BspReader.VisibilityCellMask PvsCells );
 	internal sealed record ResidualGroupData( string MaterialName, bool CastShadows, ResidualPartData[] Parts );
 
 	internal sealed record PropAggregatePayload(
 		string[] MaterialNames,
 		Titanfall2ProbeData[] Probes,
 		BucketSpec[] Buckets,
-		AggregateModelData[] SharedModels,
 		SectorData[] Sectors,
 		ShadowChunkData[] ShadowChunks,
 		ResidualGroupData[] ResidualGroups,
@@ -138,6 +145,23 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 
 	enum TierKind { Shared, Near, Far }
 
+	struct PvsAccumulator
+	{
+		Titanfall2BspReader.VisibilityCellMask _mask;
+		bool _hasAny;
+		bool _unrestricted;
+
+		public void Add( Titanfall2BspReader.VisibilityCellMask pvs )
+		{
+			_hasAny = true;
+			if ( pvs.IsEmpty ) _unrestricted = true;
+			else if ( !_unrestricted ) _mask = _mask.Union( pvs );
+		}
+
+		public readonly Titanfall2BspReader.VisibilityCellMask Effective =>
+			_unrestricted || !_hasAny ? default : _mask;
+	}
+
 	sealed class AggregateCellJob( SectorKey sector, TierKind tier, int bucketIndex, CellKey cell, List<MeshPlacement> placements )
 	{
 		public readonly SectorKey Sector = sector;
@@ -148,34 +172,41 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		public AggregatePartData Result;
 	}
 
-	sealed class ShadowChunkJob( CellKey cell, List<ShadowPlacement> placements )
+	sealed class ShadowChunkJob( CellKey cell, Titanfall2BspReader.VisibilityCellMask pvsCells, List<ShadowPlacement> placements )
 	{
 		public readonly CellKey Cell = cell;
+		public readonly Titanfall2BspReader.VisibilityCellMask PvsCells = pvsCells;
 		public readonly List<ShadowPlacement> Placements = placements;
 		public ShadowChunkData Result;
 	}
 
-	sealed class ResidualCellJob( int groupIndex, CellKey cell, List<ResidualPlacement> placements )
+	sealed class ResidualCellJob( int groupIndex, CellKey cell, Titanfall2BspReader.VisibilityCellMask pvsCells, List<ResidualPlacement> placements )
 	{
 		public readonly int GroupIndex = groupIndex;
 		public readonly CellKey Cell = cell;
+		public readonly Titanfall2BspReader.VisibilityCellMask PvsCells = pvsCells;
 		public readonly List<ResidualPlacement> Placements = placements;
 		public ResidualPartData Result;
 	}
 
-	sealed class RuntimeSector( BBox bounds, Titanfall2BspReader.VisibilityCellMask pvsCells )
+	sealed class RuntimeSector( BBox bounds )
 	{
 		public readonly BBox Bounds = bounds;
-		public readonly Titanfall2BspReader.VisibilityCellMask PvsCells = pvsCells;
+		public readonly List<GameObject> SharedObjects = new();
 		public readonly List<GameObject> NearObjects = new();
 		public readonly List<GameObject> FarObjects = new();
-		public bool HasLodSwitch => NearObjects.Count > 0 || FarObjects.Count > 0;
 		public bool IsNear = true;
-		public bool PvsVisible = true;
+	}
+
+	sealed class RuntimeChunk( GameObject obj )
+	{
+		public readonly GameObject Object = obj;
 	}
 
 	readonly Scene _scene;
 	readonly List<RuntimeSector> _sectors = new();
+	readonly List<RuntimeChunk> _shadowChunks = new();
+	readonly List<RuntimeChunk> _residualChunks = new();
 	readonly List<GameObject> _allObjects = new();
 	readonly List<MountedAggregate> _aggregates = new();
 	readonly List<Model> _shadowModels = new();
@@ -188,7 +219,6 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 	GpuBuffer<Titanfall2GpuMaterialData> _materialBuffer;
 	GpuBuffer<Titanfall2ProbeData> _probeBuffer;
 	Vector3 _lastLodAnchor;
-	Titanfall2BspReader.VisibilityCellMask _lastPvsMask;
 	bool _hasLodAnchor;
 	bool _enabled;
 	bool _disposed;
@@ -199,7 +229,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 	public int AggregateCount => _aggregates.Count;
 	public int SectorCount => _sectors.Count;
 	public int NearSectorCount { get; private set; }
-	public int PvsCulledSectorCount { get; private set; }
+	public int PvsCulledSectorCount => 0;
 	public int ShadowChunkCount => _shadowModels.Count;
 	public int ResidualGroupCount { get; }
 	public int FragmentCount { get; }
@@ -315,6 +345,20 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 	static bool IsCutoutShader( string shaderName ) =>
 		shaderName.Contains( "cutout", StringComparison.OrdinalIgnoreCase );
 
+
+	static bool IsAllCutout( ModelLoader.GpuGeometryMesh[] meshes )
+	{
+		var any = false;
+		for ( var i = 0; i < meshes.Length; i++ )
+		{
+			var mesh = meshes[i];
+			if ( mesh.Vertices.Length == 0 || mesh.Indices.Length < 3 ) continue;
+			any = true;
+			if ( !IsCutoutShader( NormalizeShaderName( mesh.Material.ShaderName ) ) ) return false;
+		}
+		return any;
+	}
+
 	internal static PropAggregatePayload CompilePayload(
 		IReadOnlyList<PropEntry> entries,
 		IReadOnlyList<ResidualEntry> residualEntries,
@@ -341,14 +385,15 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 
 		// Sector -> (Tier, BucketIndex, Cell) -> Placements
 		var sectorTierCells = new Dictionary<(SectorKey Sector, TierKind Tier, int BucketIndex, CellKey Cell), List<MeshPlacement>>();
-		var sectorPvsMasks = new Dictionary<SectorKey, Titanfall2BspReader.VisibilityCellMask>();
+		var sectorPvs = new Dictionary<SectorKey, PvsAccumulator>();
+		var sectorLandmarks = new HashSet<SectorKey>();
 		var shadowCells = new Dictionary<CellKey, List<ShadowPlacement>>();
+		var shadowCellPvs = new Dictionary<CellKey, PvsAccumulator>();
 		var probes = new Titanfall2ProbeData[Math.Max( 1, entryCount )];
 		var inverseSector = 1f / SectorSize;
 		var inverseCell = 1f / FragmentCellSize;
 		var inverseShadowCell = 1f / ShadowCellSize;
 		var inverseResidualCell = 1f / ResidualCellSize;
-		var simplifiedFarCache = new Dictionary<Model, ModelLoader.GpuGeometryMesh[]>();
 		var simplifiedShadowCache = new Dictionary<Model, ModelLoader.GpuGeometryMesh[]>();
 
 		int GetOrRegisterMaterial( Material material, string materialName )
@@ -374,19 +419,24 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			return idx;
 		}
 
-		void AddTierMesh( SectorKey sector, TierKind tier, CellKey cell, ModelLoader.GpuGeometryMesh mesh, Transform transform, bool propCastShadows, int probeIndex )
+		void AddTierMesh(
+			SectorKey sector,
+			TierKind tier,
+			CellKey cell,
+			ModelLoader.GpuGeometryMesh mesh,
+			Transform transform,
+			bool propCastShadows,
+			int probeIndex )
 		{
 			if ( mesh.Vertices.Length == 0 || mesh.Indices.Length < 3 ) return;
 			var matId = GetOrRegisterMaterial( mesh.Material, mesh.MaterialName );
 			var shader = NormalizeShaderName( mesh.Material.ShaderName );
-			// Opaque props cast shadows via dedicated depth-only LOD3 ShadowChunks; only alpha-tested cutouts keep forward CastShadows.
+			// Opaque props use dedicated shadow chunks. Cutouts retain authored shadow flags;
+			// collision is not a reliable test of whether a visible surface should cast.
 			var forwardCastShadows = propCastShadows && IsCutoutShader( shader );
 			var bucketKey = new BucketKey( shader, mesh.Material.GetFeature( "F_TEXTURE_FILTERING" ), forwardCastShadows );
 			var bucketIdx = GetOrRegisterBucket( bucketKey, matId );
-			// Shared (1-LOD) props never switch between Near and Far, so keep them in one global map-wide
-			// aggregate per bucket instead of splitting across sectors.
-			var effectiveSector = tier == TierKind.Shared ? default : sector;
-			var mapKey = (effectiveSector, tier, bucketIdx, cell);
+			var mapKey = (sector, tier, bucketIdx, cell);
 			if ( !sectorTierCells.TryGetValue( mapKey, out var list ) )
 			{
 				list = new List<MeshPlacement>();
@@ -415,51 +465,26 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 				(int)MathF.Floor( pos.x * inverseCell ),
 				(int)MathF.Floor( pos.y * inverseCell ) );
 
-			var omitInFar = !entry.Collidable
-				&& (entry.Radius < FarTinyNonCollidableMaxRadius
-					|| (entry.Radius < FarFadeExemptionRadius && entry.FadeDistance > 0f && entry.FadeDistance <= FarAuthoredFadeCutoff));
+			var isNonCollidableCutout = !entry.Collidable && IsAllCutout( nearMeshes );
 			var distinctFarLod = !ReferenceEquals( nearMeshes, farMeshes )
 				&& CountTriangles( farMeshes ) < CountTriangles( nearMeshes ) * 0.90f;
 
-			// For 1-LOD props that lack an authored coarser LOD, synthesize an offline vertex-clustered
-			// Far mesh once per Model so Shared triangles drop sharply without touching Near LOD0 quality.
-			if ( !omitInFar && !distinctFarLod )
-			{
-				if ( !simplifiedFarCache.TryGetValue( entry.Model, out var syntheticFar ) )
-				{
-					var modelRadius = entry.Model.Bounds.Size.Length * 0.5f;
-					var anySimplified = false;
-					var built = new ModelLoader.GpuGeometryMesh[nearMeshes.Length];
-					for ( var m = 0; m < nearMeshes.Length; m++ )
-					{
-						var simp = Titanfall2PropMeshSimplifier.TrySimplifyForFar( nearMeshes[m], modelRadius );
-						if ( simp is not null ) { built[m] = simp; anySimplified = true; }
-						else built[m] = nearMeshes[m];
-					}
-					syntheticFar = anySimplified && CountTriangles( built ) < CountTriangles( nearMeshes ) * 0.85f
-						? built
-						: null;
-					simplifiedFarCache[entry.Model] = syntheticFar;
-				}
-				if ( syntheticFar is not null )
-				{
-					farMeshes = syntheticFar;
-					distinctFarLod = true;
-				}
-			}
+			// Track sector PVS and landmarks across all tiers (including 1-LOD Shared) so every
+			// sector retains source visibility metadata without using it to hide combat geometry.
+			sectorPvs.TryGetValue( sectorKey, out var acc );
+			acc.Add( entry.PvsCells );
+			sectorPvs[sectorKey] = acc;
+			if ( entry.Radius >= LandmarkRadius && !isNonCollidableCutout )
+				sectorLandmarks.Add( sectorKey );
 
-			if ( omitInFar || distinctFarLod )
+			// Retain authored geometry: non-collidable cutouts can still obscure a player,
+			// and generated vertex clustering can shrink cover independently of collision.
+			if ( distinctFarLod )
 			{
-				sectorPvsMasks[sectorKey] = sectorPvsMasks.TryGetValue( sectorKey, out var existingPvs )
-					? existingPvs.Union( entry.PvsCells )
-					: entry.PvsCells;
 				foreach ( var mesh in nearMeshes )
 					AddTierMesh( sectorKey, TierKind.Near, cellKey, mesh, entry.Transform, entry.CastShadows, propIndex );
-				if ( !omitInFar )
-				{
-					foreach ( var mesh in farMeshes )
-						AddTierMesh( sectorKey, TierKind.Far, cellKey, mesh, entry.Transform, entry.CastShadows, propIndex );
-				}
+				foreach ( var mesh in farMeshes )
+					AddTierMesh( sectorKey, TierKind.Far, cellKey, mesh, entry.Transform, entry.CastShadows, propIndex );
 			}
 			else
 			{
@@ -484,6 +509,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 				var shadowCell = new CellKey(
 					(int)MathF.Floor( pos.x * inverseShadowCell ),
 					(int)MathF.Floor( pos.y * inverseShadowCell ) );
+				var addedShadowMesh = false;
 				foreach ( var mesh in shadowMeshes )
 				{
 					if ( mesh.Vertices.Length == 0 || mesh.Indices.Length < 3 ) continue;
@@ -494,6 +520,13 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 						shadowCells.Add( shadowCell, list );
 					}
 					list.Add( new ShadowPlacement( mesh, entry.Transform ) );
+					addedShadowMesh = true;
+				}
+				if ( addedShadowMesh )
+				{
+					shadowCellPvs.TryGetValue( shadowCell, out var sAcc );
+					sAcc.Add( entry.PvsCells );
+					shadowCellPvs[shadowCell] = sAcc;
 				}
 			}
 		}
@@ -502,6 +535,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		var residualGroupMap = new Dictionary<(string MaterialName, bool CastShadows), int>();
 		var residualGroupSpecs = new List<(string MaterialName, bool CastShadows)>();
 		var residualCellMap = new Dictionary<(int GroupIndex, CellKey Cell), List<ResidualPlacement>>();
+		var residualCellPvs = new Dictionary<(int GroupIndex, CellKey Cell), PvsAccumulator>();
 		if ( residualEntries is not null )
 		{
 			foreach ( var entry in residualEntries )
@@ -530,6 +564,9 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 						residualCellMap.Add( cKey, list );
 					}
 					list.Add( new ResidualPlacement( mesh, entry.Transform ) );
+					residualCellPvs.TryGetValue( cKey, out var rAcc );
+					rAcc.Add( entry.PvsCells );
+					residualCellPvs[cKey] = rAcc;
 				}
 			}
 		}
@@ -548,65 +585,64 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		var shadowJobs = shadowCells
 			.OrderBy( pair => pair.Key.X )
 			.ThenBy( pair => pair.Key.Y )
-			.Select( pair => new ShadowChunkJob( pair.Key, pair.Value ) )
+			.Select( pair => new ShadowChunkJob(
+				pair.Key,
+				shadowCellPvs.TryGetValue( pair.Key, out var sAcc ) ? sAcc.Effective : default,
+				pair.Value ) )
 			.ToArray();
 
 		var residualJobs = residualCellMap
 			.OrderBy( pair => pair.Key.GroupIndex )
 			.ThenBy( pair => pair.Key.Cell.X )
 			.ThenBy( pair => pair.Key.Cell.Y )
-			.Select( pair => new ResidualCellJob( pair.Key.GroupIndex, pair.Key.Cell, pair.Value ) )
+			.Select( pair => new ResidualCellJob(
+				pair.Key.GroupIndex,
+				pair.Key.Cell,
+				residualCellPvs.TryGetValue( pair.Key, out var rAcc ) ? rAcc.Effective : default,
+				pair.Value ) )
 			.ToArray();
 
 		Sandbox.Utility.Parallel.ForEach( aggJobs, BuildAggregateCell );
 		Sandbox.Utility.Parallel.ForEach( shadowJobs, BuildShadowChunk );
 		Sandbox.Utility.Parallel.ForEach( residualJobs, BuildResidualCell );
 
-		// Assemble global Shared models and per-sector Near / Far AggregateModelData.
-		var sharedByBucket = new Dictionary<int, List<AggregatePartData>>();
-		var sectorMap = new Dictionary<SectorKey, (Dictionary<int, List<AggregatePartData>> Near, Dictionary<int, List<AggregatePartData>> Far)>();
+		// Assemble per-sector Shared / Near / Far AggregateModelData.
+		var sectorMap = new Dictionary<SectorKey, (Dictionary<int, List<AggregatePartData>> Shared, Dictionary<int, List<AggregatePartData>> Near, Dictionary<int, List<AggregatePartData>> Far)>();
 		int sharedTris = 0, nearTris = 0, farTris = 0;
 
 		foreach ( var job in aggJobs )
 		{
 			if ( job.Result is null ) continue;
 			var tris = job.Result.Indices.Length / 3;
-			if ( job.Tier == TierKind.Shared )
-			{
-				if ( !sharedByBucket.TryGetValue( job.BucketIndex, out var list ) )
-				{
-					list = new List<AggregatePartData>();
-					sharedByBucket.Add( job.BucketIndex, list );
-				}
-				list.Add( job.Result );
-				sharedTris += tris;
-				continue;
-			}
-
 			if ( !sectorMap.TryGetValue( job.Sector, out var buckets ) )
 			{
-				buckets = (new(), new());
+				buckets = (new(), new(), new());
 				sectorMap.Add( job.Sector, buckets );
 			}
-			var target = job.Tier == TierKind.Near ? buckets.Near : buckets.Far;
+			var target = job.Tier switch
+			{
+				TierKind.Shared => buckets.Shared,
+				TierKind.Near => buckets.Near,
+				_ => buckets.Far
+			};
 			if ( !target.TryGetValue( job.BucketIndex, out var targetList ) )
 			{
 				targetList = new List<AggregatePartData>();
 				target.Add( job.BucketIndex, targetList );
 			}
 			targetList.Add( job.Result );
-			if ( job.Tier == TierKind.Near ) nearTris += tris;
+			if ( job.Tier == TierKind.Shared ) sharedTris += tris;
+			else if ( job.Tier == TierKind.Near ) nearTris += tris;
 			else farTris += tris;
 		}
-
-		var sharedModels = PackBucketModels( sharedByBucket );
 
 		var sectors = new List<SectorData>( sectorMap.Count );
 		foreach ( var (sectorKey, buckets) in sectorMap.OrderBy( pair => pair.Key.X ).ThenBy( pair => pair.Key.Y ) )
 		{
+			var sharedModels = PackBucketModels( buckets.Shared );
 			var nearModels = PackBucketModels( buckets.Near );
 			var farModels = PackBucketModels( buckets.Far );
-			if ( nearModels.Length == 0 && farModels.Length == 0 ) continue;
+			if ( sharedModels.Length == 0 && nearModels.Length == 0 && farModels.Length == 0 ) continue;
 
 			var hasBounds = false;
 			var bounds = default( BBox );
@@ -621,11 +657,13 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 					}
 				}
 			}
+			Expand( sharedModels );
 			Expand( nearModels );
 			Expand( farModels );
 
-			var pvsMask = sectorPvsMasks.TryGetValue( sectorKey, out var mask ) ? mask : default;
-			sectors.Add( new SectorData( sectorKey.X, sectorKey.Y, bounds, pvsMask, nearModels, farModels ) );
+			var pvsMask = sectorPvs.TryGetValue( sectorKey, out var sAcc ) ? sAcc.Effective : default;
+			var hasLandmark = sectorLandmarks.Contains( sectorKey );
+			sectors.Add( new SectorData( sectorKey.X, sectorKey.Y, bounds, pvsMask, hasLandmark, sharedModels, nearModels, farModels ) );
 		}
 
 		var shadowChunks = shadowJobs.Where( static j => j.Result is not null ).Select( static j => j.Result ).ToArray();
@@ -654,7 +692,6 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			sourceMaterialNames.ToArray(),
 			probes,
 			bucketSpecs.ToArray(),
-			sharedModels,
 			sectors.ToArray(),
 			shadowChunks,
 			residualGroups.ToArray(),
@@ -705,6 +742,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		PropAggregatePayload payload,
 		Color skyColor,
 		Vector3 initialAnchor,
+		Titanfall2BspReader.VisibilityCellMask initialVisiblePvs,
 		bool enabled,
 		bool loadedFromCache,
 		IReadOnlyDictionary<string, Material> liveMaterials = null )
@@ -766,6 +804,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			var template = sourceMaterials[spec.TemplateMaterialIndex];
 			var shared = template.CreateCopy( $"{resourcePrefix}/prop_table_{i}" );
 			shared.SetFeature( "F_T2_PROP_AGGREGATE", 1 );
+			shared.SetFeature( "F_T2_FAST_NORMAL", 1 );
 			sharedMaterials[i] = shared;
 		}
 
@@ -796,9 +835,9 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			}
 
 			var totalFragments = 0;
-			foreach ( var m in payload.SharedModels ) totalFragments += m.Parts.Length;
 			foreach ( var sector in payload.Sectors )
 			{
+				foreach ( var m in sector.SharedModels ) totalFragments += m.Parts.Length;
 				foreach ( var m in sector.NearModels ) totalFragments += m.Parts.Length;
 				foreach ( var m in sector.FarModels ) totalFragments += m.Parts.Length;
 			}
@@ -821,37 +860,12 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			probeBuffer = null;
 
 			var modelIndex = 0;
-
-			// Attach global Shared (1-LOD) aggregates once per bucket instead of once per sector.
-			foreach ( var modelData in payload.SharedModels )
-			{
-				var spec = payload.Buckets[modelData.BucketIndex];
-				var parts = new List<MountedGeometryPart<TitanfallPropAggregateVertex>>( modelData.Parts.Length );
-				foreach ( var p in modelData.Parts )
-					parts.Add( new MountedGeometryPart<TitanfallPropAggregateVertex>( new List<TitanfallPropAggregateVertex>( p.Vertices ), new List<int>( p.Indices ), p.Bounds ) );
-
-				var geom = MountedAggregateBuilder.PrepareGeometry( parts, 0, parts.Count );
-				var name = $"{resourcePrefix}/shared_{modelIndex}";
-				var agg = MountedAggregateBuilder.CreateAggregate( sharedMaterials[modelData.BucketIndex], geom, name );
-				var renderer = MountedAggregateBuilder.Attach(
-					parent,
-					$"t2_prop_shared_{modelIndex}",
-					agg,
-					spec.CastShadows );
-				renderer.GameObject.Flags |= GameObjectFlags.NotSaved;
-				renderer.GameObject.Enabled = enabled;
-
-				result._aggregates.Add( agg );
-				result._allObjects.Add( renderer.GameObject );
-				modelIndex++;
-			}
-
 			var nearRadiusSq = NearLodRadius * NearLodRadius;
 			var nearCount = 0;
 
 			foreach ( var sector in payload.Sectors )
 			{
-				var runtimeSector = new RuntimeSector( sector.Bounds, sector.PvsCells );
+				var runtimeSector = new RuntimeSector( sector.Bounds );
 				var distSq = sector.Bounds.ClosestPoint( initialAnchor ).DistanceSquared( initialAnchor );
 				runtimeSector.IsNear = distSq <= nearRadiusSq;
 
@@ -882,9 +896,14 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 					}
 				}
 
-				AttachTier( sector.NearModels, runtimeSector.NearObjects, "near", runtimeSector.IsNear );
-				AttachTier( sector.FarModels, runtimeSector.FarObjects, "far", !runtimeSector.IsNear );
-				if ( runtimeSector.HasLodSwitch && runtimeSector.IsNear ) nearCount++;
+				AttachTier( sector.SharedModels, runtimeSector.SharedObjects, "shared",
+					true );
+				AttachTier( sector.NearModels, runtimeSector.NearObjects, "near",
+					runtimeSector.IsNear );
+				AttachTier( sector.FarModels, runtimeSector.FarObjects, "far",
+					!runtimeSector.IsNear );
+
+				if ( runtimeSector.IsNear ) nearCount++;
 				result._sectors.Add( runtimeSector );
 			}
 
@@ -892,7 +911,8 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			result._lastLodAnchor = initialAnchor;
 			result._hasLodAnchor = true;
 
-			// Attach depth-only LOD3 shadow chunks (same pattern as Map.cs WorldShadowChunks).
+			// Attach depth-only LOD3 shadow chunks (same pattern as Map.cs WorldShadowChunks),
+			// retained independently of the main camera: off-screen casters can shadow visible receivers.
 			if ( shadowMaterial is not null )
 			{
 				for ( var i = 0; i < payload.ShadowChunks.Length; i++ )
@@ -912,6 +932,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 					renderer.Model = shadowModel;
 					renderer.RenderType = ModelRenderer.ShadowRenderType.ShadowsOnly;
 					result._allObjects.Add( obj );
+					result._shadowChunks.Add( new RuntimeChunk( obj ) );
 				}
 			}
 
@@ -944,13 +965,14 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 					renderer.Model = resModel;
 					renderer.RenderType = renderType;
 					result._allObjects.Add( obj );
+					result._residualChunks.Add( new RuntimeChunk( obj ) );
 				}
 			}
 
 			timer.Stop();
 			Log.Info( $"Titanfall 2 static prop aggregates ready ({(loadedFromCache ? "disk cache hit" : "compiled")}): "
 				+ $"{payload.AggregatedPropCount} props ({payload.MixedPropCount} mixed, {payload.ResidualBatchedPropCount} residual-batched) -> "
-				+ $"{result.SectorCount} sectors ({nearCount} near), {result.AggregateCount} aggregates, "
+				+ $"{result.SectorCount} sectors ({nearCount} near, native visibility), {result.AggregateCount} aggregates, "
 				+ $"{result.ShadowChunkCount} LOD3 shadow chunks ({payload.ShadowTriangles} tris), "
 				+ $"{result.ResidualGroupCount} residual groups ({payload.ResidualTriangles} tris), "
 				+ $"forward tris shared={payload.SharedTriangles}/near={payload.NearTriangles}/far={payload.FarTriangles}, "
@@ -966,45 +988,41 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		}
 	}
 
+	static void ApplySectorVisibility( RuntimeSector sector, bool enabled )
+	{
+		foreach ( var obj in sector.SharedObjects )
+			if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = enabled;
+		foreach ( var obj in sector.NearObjects )
+			if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = enabled && sector.IsNear;
+		foreach ( var obj in sector.FarObjects )
+			if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = enabled && !sector.IsNear;
+	}
+
+	static void ApplyChunkVisibility( RuntimeChunk chunk, bool enabled )
+	{
+		if ( chunk.Object.IsValid() && !chunk.Object.IsDestroyed ) chunk.Object.Enabled = enabled;
+	}
+
+	// Portal reachability and distance do not prove that a combat blocker is invisible.
+	// Native view culling owns visibility; this pass only switches authored LODs with hysteresis.
+	// Shadows/residual materials stay enabled independently of the main camera's PVS.
 	public void UpdateCamera( Vector3 cameraPosition, Titanfall2BspReader.VisibilityCellMask visiblePvsCells )
 	{
 		if ( _disposed || !_enabled || _sectors.Count == 0 ) return;
-		var pvsChanged = !visiblePvsCells.Equals( _lastPvsMask );
-		if ( !pvsChanged && _hasLodAnchor && _lastLodAnchor.DistanceSquared( cameraPosition ) < CameraRecheckDistance * CameraRecheckDistance )
-			return;
+		if ( _hasLodAnchor && _lastLodAnchor.DistanceSquared( cameraPosition ) < CameraRecheckDistance * CameraRecheckDistance ) return;
 		_lastLodAnchor = cameraPosition;
-		_lastPvsMask = visiblePvsCells;
 		_hasLodAnchor = true;
-
-		var enterSq = NearLodRadius * NearLodRadius;
-		var exitSq = NearLodExitRadius * NearLodExitRadius;
 		var nearCount = 0;
-		var pvsCulled = 0;
-
-		for ( var i = 0; i < _sectors.Count; i++ )
+		foreach ( var sector in _sectors )
 		{
-			var sector = _sectors[i];
-			if ( !sector.HasLodSwitch ) continue;
-			var pvsVisible = visiblePvsCells.IsEmpty || sector.PvsCells.IsEmpty || sector.PvsCells.Intersects( visiblePvsCells );
-			var distSq = sector.Bounds.ClosestPoint( cameraPosition ).DistanceSquared( cameraPosition );
-			var wantNear = sector.IsNear ? distSq <= exitSq : distSq <= enterSq;
-
-			if ( !pvsVisible ) pvsCulled++;
-			else if ( wantNear ) nearCount++;
-
-			if ( pvsVisible == sector.PvsVisible && wantNear == sector.IsNear ) continue;
-
-			sector.PvsVisible = pvsVisible;
+			var distance = sector.IsNear ? NearLodExitRadius : NearLodRadius;
+			var wantNear = sector.Bounds.ClosestPoint( cameraPosition ).DistanceSquared( cameraPosition ) <= distance * distance;
+			if ( wantNear ) nearCount++;
+			if ( wantNear == sector.IsNear ) continue;
 			sector.IsNear = wantNear;
-			var showNear = pvsVisible && wantNear;
-			var showFar = pvsVisible && !wantNear;
-			foreach ( var obj in sector.NearObjects )
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = showNear;
-			foreach ( var obj in sector.FarObjects )
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = showFar;
+			ApplySectorVisibility( sector, _enabled );
 		}
 		NearSectorCount = nearCount;
-		PvsCulledSectorCount = pvsCulled;
 	}
 
 	static void BuildAggregateCell( AggregateCellJob job )
@@ -1101,7 +1119,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		}
 
 		if ( vertices.Count == 0 || indices.Count < 3 ) return;
-		job.Result = new ShadowChunkData( job.Cell.X, job.Cell.Y, vertices.ToArray(), indices.ToArray(), new BBox( min, max ) );
+		job.Result = new ShadowChunkData( job.Cell.X, job.Cell.Y, vertices.ToArray(), indices.ToArray(), new BBox( min, max ), job.PvsCells );
 	}
 
 	static void BuildResidualCell( ResidualCellJob job )
@@ -1151,7 +1169,7 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		}
 
 		if ( vertices.Count == 0 || indices.Count < 3 ) return;
-		job.Result = new ResidualPartData( vertices.ToArray(), indices.ToArray(), new BBox( min, max ) );
+		job.Result = new ResidualPartData( vertices.ToArray(), indices.ToArray(), new BBox( min, max ), job.PvsCells );
 	}
 
 	static void AppendValidTriangles( List<int> destination, int[] srcIndices, int baseVertex, int vertexCount )
@@ -1222,17 +1240,10 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 			return;
 		}
 
-		foreach ( var obj in _allObjects )
-			if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = true;
-
-		// Re-apply active PVS + Near/Far tier visibility so both tiers never render simultaneously.
-		foreach ( var sector in _sectors )
-		{
-			foreach ( var obj in sector.NearObjects )
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = sector.PvsVisible && sector.IsNear;
-			foreach ( var obj in sector.FarObjects )
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Enabled = sector.PvsVisible && !sector.IsNear;
-		}
+		// Restore only the selected authored LOD; shadow/residual visibility is native-owned.
+		foreach ( var sector in _sectors ) ApplySectorVisibility( sector, true );
+		foreach ( var chunk in _shadowChunks ) ApplyChunkVisibility( chunk, true );
+		foreach ( var chunk in _residualChunks ) ApplyChunkVisibility( chunk, true );
 	}
 
 	public void Dispose()
@@ -1246,6 +1257,8 @@ sealed partial class Titanfall2StaticPropAggregate : IDisposable
 		}
 		_allObjects.Clear();
 		_sectors.Clear();
+		_shadowChunks.Clear();
+		_residualChunks.Clear();
 		_aggregates.Clear();
 		_shadowModels.Clear();
 		_residualModels.Clear();

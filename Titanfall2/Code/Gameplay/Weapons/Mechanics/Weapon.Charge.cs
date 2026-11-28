@@ -1,171 +1,178 @@
-public sealed partial class Titanfall2Weapon
+/// <summary>
+/// Composed Charge Rifle mechanic controller (hold-to-charge, client prediction, host-verified discharge).
+/// </summary>
+internal sealed class Titanfall2WeaponChargeController : ITitanfall2WeaponMechanic
 {
-	[Property] public Titanfall2ChargeProfile ChargeProfile { get; set; }
-	[Property, Sync( SyncFlags.FromHost )] public int ChargeReserve { get; private set; } = -1;
-	[Sync( SyncFlags.FromHost )] public Titanfall2ChargeSnapshot ChargeSnapshot { get; private set; }
-	Titanfall2ChargeState _hostCharge, _predictedCharge;
-	PlayerController _chargeOwner;
-	bool _chargeLocalHeld, _chargeHostHeld, _dispatchingChargeShot, _chargeShotSpent;
-	int _chargeInputSerial, _chargeLastInputSerial, _chargeObservedSerial;
-	float _chargeZoom;
-	double _chargeTick = double.NaN, _chargeViewUpdate;
+	internal Titanfall2ChargeState HostState;
+	Titanfall2ChargeState _predicted;
+	PlayerController _owner;
+	internal bool LocalHeld;
+	internal bool HostHeld;
+	bool _dispatchingShot;
+	bool _shotSpent;
+	int _inputSerial;
+	int _lastInputSerial;
+	int _observedSerial;
+	float _zoom;
+	double _tick = double.NaN;
+	double _viewUpdate;
 
-	internal bool UsesRetailCharge => ChargeProfile.Valid;
-	internal bool IsDispatchingChargeShot => _dispatchingChargeShot;
-	internal int AvailableChargeAmmo => Math.Max( 0, ChargeReserve );
-	public int ChargeSerial => ChargeSnapshot.Serial;
-	public float ChargeFraction => ChargeVisible ? ObservedCharge.Fraction( ChargeProfile, Time.NowDouble ) : 0;
-	public Titanfall2ChargePhase ChargePhase => ChargeVisible ? ObservedCharge.Phase( ChargeProfile, Time.NowDouble ) : Titanfall2ChargePhase.Idle;
-	bool ChargeVisible => UsesRetailCharge && Active && IsHeld && IsActive && Owner.IsValid();
-	Titanfall2ChargeState ObservedCharge => Networking.IsHost ? _hostCharge : !IsProxy ? _predictedCharge
-		: Owner.IsValid() && ChargeSnapshot.OwnerId == Owner.GameObject.Id ? ChargeSnapshot.State : default;
-	internal bool CanBeginCharge => ChargeVisible && !IsReloading && !_chargeLocalHeld && !ObservedCharge.Charging && !ObservedCharge.FiredOnPress
-		&& Time.NowDouble >= ObservedCharge.ReadyAt && AvailableChargeAmmo >= Firing.Cost;
+	internal bool IsDispatchingShot => _dispatchingShot;
 
-	// The generic weapon HUD obtains Ammo1 through this virtual method. The
-	// reserve belongs to this weapon, as in retail, and survives changing holders.
-	protected override int GetReserveAmmo( BaseAmmoResource ammoType ) => UsesRetailCharge && ammoType == PrimaryAmmoType
-		? AvailableChargeAmmo : base.GetReserveAmmo( ammoType );
+	static bool IsVisible( Titanfall2Weapon w ) => w.UsesRetailCharge && w.Active && w.IsHeld && w.IsActive && w.Owner.IsValid();
 
-	void InitializeCharge()
+	Titanfall2ChargeState Observed( Titanfall2Weapon w ) => Networking.IsHost ? HostState : !w.IsProxy ? _predicted
+		: w.Owner.IsValid() && w.ChargeSnapshot.OwnerId == w.Owner.GameObject.Id ? w.ChargeSnapshot.State : default;
+
+	internal float ChargeFraction( Titanfall2Weapon w ) => IsVisible( w ) ? Observed( w ).Fraction( w.ChargeProfile, Time.NowDouble ) : 0;
+	internal Titanfall2ChargePhase ChargePhase( Titanfall2Weapon w ) => IsVisible( w ) ? Observed( w ).Phase( w.ChargeProfile, Time.NowDouble ) : Titanfall2ChargePhase.Idle;
+
+	internal bool CanBegin( Titanfall2Weapon w ) => IsVisible( w ) && !w.IsReloading && !LocalHeld && !Observed( w ).Charging && !Observed( w ).FiredOnPress
+		&& Time.NowDouble >= Observed( w ).ReadyAt && w.AvailableChargeAmmo >= w.Firing.Cost;
+
+	public void OnStart( Titanfall2Weapon w ) => Initialize( w );
+	public void OnAdded( Titanfall2Weapon w ) => Initialize( w );
+	public void OnRemoved( Titanfall2Weapon w ) => Cancel( w );
+	public void OnHolster( Titanfall2Weapon w ) => Cancel( w );
+	public void OnReload( Titanfall2Weapon w ) => Cancel( w );
+	public void OnDisabled( Titanfall2Weapon w ) => Cancel( w );
+
+	void Initialize( Titanfall2Weapon w )
 	{
-		if ( !UsesRetailCharge ) return;
-		UsesClips = false; ClipMaxSize = 0; AutoReload = false;
-		if ( Networking.IsHost && ChargeReserve < 0 ) ChargeReserve = Math.Clamp( ChargeProfile.InitialReserve, 0, ChargeProfile.MaximumReserve );
+		if ( !w.UsesRetailCharge ) return;
+		w.UsesClips = false; w.ClipMaxSize = 0; w.AutoReload = false;
+		if ( Networking.IsHost && w.ChargeReserve < 0 )
+			w.SetChargeReserveHost( Math.Clamp( w.ChargeProfile.InitialReserve, 0, w.ChargeProfile.MaximumReserve ) );
 	}
 
-	void BindChargeOwner()
+	void BindOwner( Titanfall2Weapon w )
 	{
-		InitializeCharge();
-		if ( _chargeOwner == Owner ) return;
-		_chargeOwner = Owner; _chargeLocalHeld = _chargeHostHeld = false; _chargeLastInputSerial = _chargeInputSerial = 0;
-		_hostCharge.Cancel( Time.NowDouble ); _predictedCharge.Cancel( Time.NowDouble );
-		if ( Networking.IsHost ) PublishCharge();
+		Initialize( w );
+		if ( _owner == w.Owner ) return;
+		_owner = w.Owner; LocalHeld = HostHeld = false; _lastInputSerial = _inputSerial = 0;
+		HostState.Cancel( Time.NowDouble ); _predicted.Cancel( Time.NowDouble );
+		if ( Networking.IsHost ) Publish( w );
 	}
 
-	void BeginChargeAttack()
+	internal void BeginAttack( Titanfall2Weapon w )
 	{
-		if ( !UsesRetailCharge || IsProxy || !Active || !IsHeld || !IsActive || IsReloading ) return;
-		BindChargeOwner();
-		if ( !CanBeginCharge ) return;
+		if ( !w.UsesRetailCharge || w.IsProxy || !w.Active || !w.IsHeld || !w.IsActive || w.IsReloading ) return;
+		BindOwner( w );
+		if ( !CanBegin( w ) ) return;
 		// Base FirePrimary installs the ordinary shot interval before this virtual
 		// attack runs. Beginning charge must not create an extra one-second wait.
-		SetNextPrimaryFire( 0 );
-		SetChargeInput( true );
+		w.SetNextPrimaryFire( 0 );
+		SetInput( w, true );
 	}
 
-	void SetChargeInput( bool held )
+	internal void SetInput( Titanfall2Weapon w, bool held )
 	{
-		if ( _chargeLocalHeld == held ) return;
-		_chargeLocalHeld = held;
-		_chargeInputSerial = _chargeInputSerial == int.MaxValue ? 1 : _chargeInputSerial + 1;
-		if ( Networking.IsHost ) ApplyChargeInput( _chargeInputSerial, held, _adsBlend );
+		if ( LocalHeld == held ) return;
+		LocalHeld = held;
+		_inputSerial = _inputSerial == int.MaxValue ? 1 : _inputSerial + 1;
+		if ( Networking.IsHost ) ApplyInput( w, _inputSerial, held, w.AdsBlend );
 		else
 		{
-			if ( held ) _predictedCharge.Begin( ChargeProfile, Time.NowDouble );
-			else _predictedCharge.Release( ChargeProfile, Time.NowDouble );
-			RequestChargeInput( _chargeInputSerial, held, _adsBlend );
+			if ( held ) _predicted.Begin( w.ChargeProfile, Time.NowDouble );
+			else _predicted.Release( w.ChargeProfile, Time.NowDouble );
+			w.SendChargeInputRpc( _inputSerial, held, w.AdsBlend );
 		}
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestChargeInput( int serial, bool held, float zoom ) => ApplyChargeInput( serial, held, zoom );
-
-	void ApplyChargeInput( int serial, bool held, float zoom )
+	internal void ApplyInput( Titanfall2Weapon w, int serial, bool held, float zoom )
 	{
-		if ( !Networking.IsHost || !UsesRetailCharge || !Owner.IsValid() ) return;
-		BindChargeOwner();
-		if ( serial <= _chargeLastInputSerial || !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
-		_chargeLastInputSerial = serial; _chargeZoom = zoom;
-		if ( held && (!Active || !IsActive || !IsHeld || !Owner.Active || IsReloading) )
+		if ( !Networking.IsHost || !w.UsesRetailCharge || !w.Owner.IsValid() ) return;
+		BindOwner( w );
+		if ( serial <= _lastInputSerial || !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
+		_lastInputSerial = serial; _zoom = zoom;
+		if ( held && (!w.Active || !w.IsActive || !w.IsHeld || !w.Owner.Active || w.IsReloading) )
 		{
-			_chargeHostHeld = false; _hostCharge.Cancel( Time.NowDouble ); PublishCharge(); return;
+			HostHeld = false; HostState.Cancel( Time.NowDouble ); Publish( w ); return;
 		}
-		_chargeHostHeld = held;
-		if ( !held ) _hostCharge.Release( ChargeProfile, Time.NowDouble );
-		else if ( Active && IsActive && IsHeld && Owner.Active && !IsReloading && NextPrimaryFire <= 0
-			&& AvailableChargeAmmo >= Firing.Cost ) _hostCharge.Begin( ChargeProfile, Time.NowDouble );
-		PublishCharge();
+		HostHeld = held;
+		if ( !held ) HostState.Release( w.ChargeProfile, Time.NowDouble );
+		else if ( w.Active && w.IsActive && w.IsHeld && w.Owner.Active && !w.IsReloading && w.NextPrimaryFireTimer <= 0
+			&& w.AvailableChargeAmmo >= w.Firing.Cost ) HostState.Begin( w.ChargeProfile, Time.NowDouble );
+		Publish( w );
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestChargeView( int inputSerial, float zoom )
+	internal void ApplyView( Titanfall2Weapon w, int inputSerial, float zoom )
 	{
-		if ( !Networking.IsHost || !UsesRetailCharge || !Active || !Owner.IsValid() || !IsActive || IsReloading
-			|| _chargeOwner != Owner || inputSerial != _chargeLastInputSerial || !_hostCharge.Charging
+		if ( !Networking.IsHost || !w.UsesRetailCharge || !w.Active || !w.Owner.IsValid() || !w.IsActive || w.IsReloading
+			|| _owner != w.Owner || inputSerial != _lastInputSerial || !HostState.Charging
 			|| !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
 		// Aim continues to come from the host's current player eye transform. This
 		// hint changes only the existing validated zoom/spread input, never time.
-		_chargeZoom = zoom;
+		_zoom = zoom;
 	}
 
-	void TickCharge()
+	public void Tick( Titanfall2Weapon w )
 	{
-		if ( !UsesRetailCharge || _chargeTick == Time.NowDouble ) return;
-		_chargeTick = Time.NowDouble;
-		BindChargeOwner();
-		if ( !Active || !IsHeld || !IsActive || !Owner.IsValid() || !Owner.Active || IsReloading ) { CancelCharge(); return; }
-		if ( !Networking.IsHost && ChargeSnapshot.Serial != _chargeObservedSerial
-			&& ChargeSnapshot.OwnerId == Owner.GameObject.Id && ChargeSnapshot.InputSerial >= _chargeInputSerial )
+		if ( !w.UsesRetailCharge || _tick == Time.NowDouble ) return;
+		_tick = Time.NowDouble;
+		BindOwner( w );
+		if ( !w.Active || !w.IsHeld || !w.IsActive || !w.Owner.IsValid() || !w.Owner.Active || w.IsReloading ) { Cancel( w ); return; }
+		if ( !Networking.IsHost && w.ChargeSnapshot.Serial != _observedSerial
+			&& w.ChargeSnapshot.OwnerId == w.Owner.GameObject.Id && w.ChargeSnapshot.InputSerial >= _inputSerial )
 		{
-			_chargeObservedSerial = ChargeSnapshot.Serial; _predictedCharge = ChargeSnapshot.State;
+			_observedSerial = w.ChargeSnapshot.Serial; _predicted = w.ChargeSnapshot.State;
 		}
-		if ( !IsProxy && Owner.UseInputControls && _chargeLocalHeld != Input.Down( "attack1" ) ) SetChargeInput( Input.Down( "attack1" ) );
+		if ( !w.IsProxy && w.Owner.UseInputControls && LocalHeld != Input.Down( "attack1" ) ) SetInput( w, Input.Down( "attack1" ) );
 		// Retail's semi-auto latch requires a release after every shot, but a new
 		// press during recovery can remain held and start charging once ready.
-		if ( Networking.IsHost && _chargeHostHeld && NextPrimaryFire <= 0 && AvailableChargeAmmo >= Firing.Cost
-			&& _hostCharge.Begin( ChargeProfile, Time.NowDouble ) ) PublishCharge();
-		else if ( !Networking.IsHost && !IsProxy && _chargeLocalHeld && NextPrimaryFire <= 0 && AvailableChargeAmmo >= Firing.Cost )
-			_predictedCharge.Begin( ChargeProfile, Time.NowDouble );
-		if ( !IsProxy && _chargeLocalHeld && Time.NowDouble >= _chargeViewUpdate )
+		if ( Networking.IsHost && HostHeld && w.NextPrimaryFireTimer <= 0 && w.AvailableChargeAmmo >= w.Firing.Cost
+			&& HostState.Begin( w.ChargeProfile, Time.NowDouble ) ) Publish( w );
+		else if ( !Networking.IsHost && !w.IsProxy && LocalHeld && w.NextPrimaryFireTimer <= 0 && w.AvailableChargeAmmo >= w.Firing.Cost )
+			_predicted.Begin( w.ChargeProfile, Time.NowDouble );
+		if ( !w.IsProxy && LocalHeld && Time.NowDouble >= _viewUpdate )
 		{
-			_chargeViewUpdate = Time.NowDouble + 0.1;
-			if ( Networking.IsHost ) _chargeZoom = _adsBlend;
-			else RequestChargeView( _chargeInputSerial, _adsBlend );
+			_viewUpdate = Time.NowDouble + 0.1;
+			if ( Networking.IsHost ) _zoom = w.AdsBlend;
+			else w.SendChargeViewRpc( _inputSerial, w.AdsBlend );
 		}
-		if ( !Networking.IsHost || !_hostCharge.Charging || _hostCharge.Fraction( ChargeProfile, Time.NowDouble ) < 1 ) return;
-		if ( AvailableChargeAmmo < Firing.Cost ) { CancelCharge(); return; }
-		var eye = Owner.EyeTransform;
-		if ( !eye.Position.IsFinite || !eye.Forward.IsFinite ) { CancelCharge(); return; }
-		_dispatchingChargeShot = true; _chargeShotSpent = false;
-		try { ResolveHitscan( new Ray( eye.Position, eye.Forward ), _chargeZoom ); }
+		if ( !Networking.IsHost || !HostState.Charging || HostState.Fraction( w.ChargeProfile, Time.NowDouble ) < 1 ) return;
+		if ( w.AvailableChargeAmmo < w.Firing.Cost ) { Cancel( w ); return; }
+		var eye = w.Owner.EyeTransform;
+		if ( !eye.Position.IsFinite || !eye.Forward.IsFinite ) { Cancel( w ); return; }
+		_dispatchingShot = true; _shotSpent = false;
+		try { w.ResolveHitscanInternal( new Ray( eye.Position, eye.Forward ), _zoom ); }
 		finally
 		{
-			_dispatchingChargeShot = false;
-			if ( _chargeShotSpent )
+			_dispatchingShot = false;
+			if ( _shotSpent )
 			{
-				_hostCharge.AcceptedShot( Time.NowDouble, PrimaryDelay );
-				SetNextPrimaryFire( PrimaryDelay ); PublishCharge();
+				HostState.AcceptedShot( Time.NowDouble, w.PrimaryDelay );
+				w.SetNextPrimaryFire( w.PrimaryDelay ); Publish( w );
 			}
-			else CancelCharge();
+			else Cancel( w );
 		}
 	}
 
-	bool TryTakeChargeAmmo( int amount )
+	internal bool TryTakeAmmo( Titanfall2Weapon w, int amount )
 	{
-		if ( !Networking.IsHost || !_dispatchingChargeShot || !UsesRetailCharge || amount <= 0 || AvailableChargeAmmo < amount ) return false;
-		if ( !ChargeProfile.InfiniteReserve ) ChargeReserve -= amount;
-		_chargeShotSpent = true;
+		if ( !Networking.IsHost || !_dispatchingShot || !w.UsesRetailCharge || amount <= 0 || w.AvailableChargeAmmo < amount ) return false;
+		if ( !w.ChargeProfile.InfiniteReserve ) w.SetChargeReserveHost( w.ChargeReserve - amount );
+		_shotSpent = true;
 		return true;
 	}
 
-	void CancelCharge()
+	internal void Cancel( Titanfall2Weapon w )
 	{
-		if ( !UsesRetailCharge ) return;
-		var changed = _hostCharge.Charging || _hostCharge.InitialFraction != 0 || _hostCharge.FiredOnPress;
-		if ( !Networking.IsHost && !IsProxy && _chargeLocalHeld ) SetChargeInput( false );
-		_chargeLocalHeld = _chargeHostHeld = false;
-		_hostCharge.Cancel( Time.NowDouble ); _predictedCharge.Cancel( Time.NowDouble );
-		if ( Networking.IsHost && changed ) PublishCharge();
+		if ( !w.UsesRetailCharge ) return;
+		var changed = HostState.Charging || HostState.InitialFraction != 0 || HostState.FiredOnPress;
+		if ( !Networking.IsHost && !w.IsProxy && LocalHeld ) SetInput( w, false );
+		LocalHeld = HostHeld = false;
+		HostState.Cancel( Time.NowDouble ); _predicted.Cancel( Time.NowDouble );
+		if ( Networking.IsHost && changed ) Publish( w );
 	}
 
-	void PublishCharge()
+	void Publish( Titanfall2Weapon w )
 	{
-		ChargeSnapshot = new()
+		w.SetChargeSnapshotHost( new()
 		{
-			OwnerId = Owner.IsValid() ? Owner.GameObject.Id : Guid.Empty,
-			Serial = ChargeSnapshot.Serial == int.MaxValue ? 1 : ChargeSnapshot.Serial + 1,
-			InputSerial = _chargeLastInputSerial, State = _hostCharge
-		};
+			OwnerId = w.Owner.IsValid() ? w.Owner.GameObject.Id : Guid.Empty,
+			Serial = w.ChargeSnapshot.Serial == int.MaxValue ? 1 : w.ChargeSnapshot.Serial + 1,
+			InputSerial = _lastInputSerial, State = HostState
+		} );
 	}
 }

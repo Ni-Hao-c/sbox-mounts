@@ -819,7 +819,8 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 		{
 			var decoded = Titanfall2Mdl53AnimationReader.Decode(
 				sourceData.Data, sourceData.Model, animationIndex, name, sequenceFlags );
-			if ( infantryAnimations && !HasPoseMotion( decoded, sourceToTarget ) )
+			// Verified ability hold poses (for example Vortex) may intentionally be stationary.
+			if ( infantryAnimations && !IsTitanActionRole( name ) && !HasPoseMotion( decoded, sourceToTarget ) )
 			{
 				addedNames.Remove( name );
 				return;
@@ -828,7 +829,7 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 				.WithLooping( decoded.Looping )
 				.WithDelta( decoded.Delta );
 
-			var stripRootTravel = infantryAnimations && IsLocomotionRole( name );
+			var stripRootTravel = infantryAnimations && (IsLocomotionRole( name ) || HasExternalRootMotion( name ));
 			var inPlaceRoot = stripRootTravel ? Enumerable.Range( 0, sourceToTarget.Length )
 				.Select( bone => GetBoneParent( sourceData.Model, bone ) < 0 ).ToArray() : null;
 			foreach ( var sourceFrame in decoded.Frames )
@@ -846,11 +847,11 @@ partial class ModelLoader( ITitanfall2AssetSource source, bool staticInstance = 
 					if ( inPlaceRoot is not null && inPlaceRoot[sourceBone] )
 					{
 						var start = ToSandbox( decoded.Frames[0][sourceBone].Position );
-						position = new Vector3( start.x, start.y, position.z );
+						position = HasExternalRootMotion( name ) ? start : new Vector3( start.x, start.y, position.z );
 					}
 					targetFrame[targetBone] = new Transform(
 						position,
-						ToSandbox( pose.Rotation ),
+						ToSandbox( inPlaceRoot is not null && inPlaceRoot[sourceBone] && HasExternalRootMotion( name ) ? decoded.Frames[0][sourceBone].Rotation : pose.Rotation ),
 						ToSandbox( pose.Scale ) );
 				}
 				animation.AddFrame( targetFrame );

@@ -6,15 +6,15 @@ internal sealed class Titanfall2IonEnergy
 	internal int Count { get; private set; } = Maximum;
 	double _regen, _drain;
 	float _delay;
-	internal bool Spend( int amount )
+	internal bool Spend( int amount, float regenDelay = RegenDelay )
 	{
 		if ( amount < 0 || Count < amount ) return false;
 		if ( amount == 0 ) return true;
-		Count -= amount; _delay = RegenDelay; _regen = 0;
+		Count -= amount; _delay = float.IsFinite( regenDelay ) ? Math.Clamp( regenDelay, 0, 30 ) : RegenDelay; _regen = 0;
 		return true;
 	}
 	internal void StartDrain() => _drain = 0;
-	internal void Tick( float seconds, bool piloted, bool vortex, int drainCost )
+	internal void Tick( float seconds, bool piloted, bool vortex, int drainCost, float npcRegenRate = 100, float npcRegenDelay = RegenDelay )
 	{
 		if ( !float.IsFinite( seconds ) || seconds <= 0 ) return;
 		if ( vortex )
@@ -24,14 +24,14 @@ internal sealed class Titanfall2IonEnergy
 			var ticks = (int)Math.Floor( _drain + 0.000001 );
 			_drain -= ticks;
 			Count = Math.Max( 0, Count - ticks * Math.Max( 0, drainCost ) );
-			_delay = RegenDelay; _regen = 0;
+			_delay = piloted ? RegenDelay : float.IsFinite( npcRegenDelay ) ? Math.Clamp( npcRegenDelay, 0, 30 ) : RegenDelay; _regen = 0;
 			return;
 		}
 		var eligible = MathF.Max( 0, seconds - _delay );
 		_delay = MathF.Max( 0, _delay - seconds );
 		if ( Count == Maximum ) { _regen = 0; return; }
 		// titan_atlas_stickybomb.set [$mp] = 80; NPC AI settings = 100.
-		_regen += eligible * (piloted ? 80.0 : 100.0);
+		_regen += eligible * (piloted ? 80.0 : float.IsFinite( npcRegenRate ) ? Math.Clamp( npcRegenRate, 0, 10000 ) : 100.0);
 		var amount = (int)Math.Floor( _regen + 0.000001 );
 		_regen -= amount;
 		Count = Math.Min( Maximum, Count + amount );
@@ -105,7 +105,11 @@ public sealed partial class Titanfall2TitanKit
 		var target = _ionAdsHeld && pilot.IsValid() ? 1f : 0f;
 		var step = Time.Delta / MathF.Max( 0.01f, data?.ZoomSeconds ?? 0.35f );
 		IonZoomFraction = target > IonZoomFraction ? MathF.Min( target, IonZoomFraction + step ) : MathF.Max( target, IonZoomFraction - step );
-		_ionEnergy.Tick( Time.Delta, pilot.IsValid(), DefenseVolumeActive, data?.VortexChargeCost ?? 0 );
+		var aiProfile = !pilot.IsValid() ? AiProfile : null;
+		var drain = aiProfile?.Defense is { Available: true } defense
+			? (int)defense.Number( "shared_energy_charge_cost", data?.VortexChargeCost ?? 0 ) : data?.VortexChargeCost ?? 0;
+		_ionEnergy.Tick( Time.Delta, pilot.IsValid(), DefenseVolumeActive, drain,
+			aiProfile?.SharedEnergyRegenRate ?? 100, aiProfile?.SharedEnergyRegenDelay ?? Titanfall2IonEnergy.RegenDelay );
 		SharedEnergy = _ionEnergy.Count;
 		if ( DefenseVolumeActive && SharedEnergy == 0 ) ReleaseDefenseVolume( true, DefenseAim() );
 	}
@@ -116,7 +120,7 @@ public sealed partial class Titanfall2TitanKit
 			|| Actor.GetComponent<Titanfall2TitanCore>() is { BlocksPrimary: true } ) return false;
 		// Retail ApplyActivationCost adjusts charge fraction, not shared energy.
 		// With charge_time=-1/cooldown_time=0, native getter returns 0: no invented 50-point fee.
-		BeginDefenseVolume(); _ionEnergy.StartDrain(); PlayActivation( true );
+		BeginDefenseVolume(); _ionEnergy.StartDrain();
 		return true;
 	}
 	internal bool TryReleaseIonVortex( Ray aim )

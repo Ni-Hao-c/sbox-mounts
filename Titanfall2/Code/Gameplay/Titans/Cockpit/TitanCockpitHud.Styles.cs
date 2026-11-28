@@ -47,6 +47,13 @@ titanfall2titancockpithud {
 	.ion-energy-fill { height: 100%; width: 100%; background-color: #69d1ff; }
 	.ion-energy-reticle.ads .ion-energy-fill { background-color: #ffce66; }
 	.ion-energy-reticle.low .ion-energy-fill { background-color: #ff6659; }
+	.northstar-charge { position: absolute; left: -42px; top: 24px; width: 84px; flex-direction: row; justify-content: center; gap: 4px; display: none; }
+	.northstar-pip { width: 12px; height: 5px; border: 1px solid #8bdcff88; background-color: #07101888; }
+	.northstar-pip.filled { border-color: #7ae2ff; background-color: #5ccfff; }
+	.northstar-charge.full .northstar-pip.filled { border-color: #ffe08a; background-color: #ffaa3b; }
+	.legion-spin-reticle { position: absolute; left: -34px; top: 24px; width: 68px; height: 4px; background-color: #091722aa; border: 1px solid #6cb8de66; display: none; }
+	.legion-spin-fill { height: 100%; width: 0%; background-color: #7ad5ff; }
+	.legion-spin-reticle.ready .legion-spin-fill { background-color: #ffae42; }
 	.target-state { position: absolute; top: 55.5%; width: 100%; text-align: center; font-size: 13px; color: #ffc09f; }
 	.cockpit-message { position: absolute; top: 21%; width: 100%; text-align: center; font-size: 18px; letter-spacing: 1px; }
 	.integrity { position: absolute; left: 50%; top: 9.5%; margin-left: -210px; width: 420px; height: 63px; }
@@ -69,32 +76,39 @@ titanfall2titancockpithud {
 	.hull-bar .bar-art, .shield-bar .bar-art, .dash-art { mask-size: 100% 100%; mask-repeat: no-repeat; }
 	.hull-bar .bar-art, .dash-art { mask-mode: alpha; }
 	.shield-bar .bar-art { mask-mode: luminance; }
-	.ammunition { position: absolute; left: 5%; margin-left: 525px; bottom: 7%; width: 250px; height: 80px; align-items: center; }
-	.weapon-art { width: 115px; height: 54px; margin-right: 15px; }
-	.ammunition .eyebrow { position: absolute; left: 0; top: -9px; font-size: 11px; }
-	.rounds { font-size: 34px; font-weight: 600; }
-	.rounds.reloading { font-size: 18px; color: #ffd483; }
-	.systems { position: absolute; left: 5%; bottom: 7%; width: 510px; height: 166px; }
-	.core { position: absolute; width: 156px; height: 156px; }
+	.ammunition { position: absolute; left: 3.5%; margin-left: 386px; bottom: 4.5%; width: 190px; height: 74px; flex-direction: row; align-items: center; }
+	.weapon-art { width: 96px; height: 46px; margin-right: 10px; }
+	.ammunition .eyebrow { position: absolute; left: 0; top: -8px; font-size: 11px; color: #c4e0f0; }
+	.rounds { font-size: 32px; font-weight: 600; }
+	.rounds.reloading { font-size: 16px; color: #ffd483; }
+	.systems { position: absolute; left: 3.5%; bottom: 4%; width: 370px; height: 176px; }
+	.core { position: absolute; left: 0; bottom: 4px; width: 124px; height: 124px; }
 	.core-gauge { position: absolute; width: 100%; height: 100%; }
-	.core-art { position: absolute; left: 48px; top: 42px; width: 60px; height: 60px; }
-	.core-name { position: absolute; top: 151px; left: -22px; width: 200px; font-size: 12px; text-align: center; }
-	.core-state { position: absolute; top: 112px; width: 100%; text-align: center; font-size: 18px; }
+	.core-art { position: absolute; left: 38px; top: 28px; width: 48px; height: 48px; }
+	.core-name { position: absolute; top: 122px; left: -18px; width: 160px; font-size: 11px; text-align: center; }
+	.core-state { position: absolute; top: 84px; width: 100%; text-align: center; font-size: 15px; font-weight: 600; }
 	.core-ready .core-state, .core-active .core-state { color: #ffde83; }
-	.abilities { position: absolute; left: 170px; bottom: 4px; flex-direction: row; gap: 10px; }
-	.ability { width: 76px; height: 102px; flex-direction: column; align-items: center; opacity: 0.6; }
+	.abilities { position: absolute; left: 136px; bottom: 2px; flex-direction: row; align-items: flex-end; gap: 6px; }
+	.ability-col { flex-direction: column; align-items: center; justify-content: flex-end; }
+	.ability { width: 72px; flex-direction: column; align-items: center; opacity: 0.6; }
 	.ability.ready { opacity: 1; }
-	.ability-art { width: 44px; height: 44px; margin-bottom: 3px; }
-	.key { position: absolute; right: -2px; top: 29px; padding: 1px 3px; border: 1px solid #b4cedf99; font-size: 10px; background-color: #07101cbb; }
-	.ability-name { font-size: 11px; margin-top: 4px; }
-	.ability-state { font-size: 10px; margin-top: 3px; color: #bcd2e2; }
-	.ability-bar { position: absolute; left: 6px; bottom: 0; width: 66px; height: 3px; }
-	.dash { position: absolute; left: 50%; margin-left: -65px; bottom: 18%; width: 130px; flex-direction: column; align-items: center; }
+	.ability-icon-wrap { width: 40px; height: 40px; justify-content: center; align-items: center; background-color: #07121c66; border-radius: 3px; }
+	.ability-art { width: 36px; height: 36px; }
+	.ability-bar { width: 44px; height: 3px; margin-top: 3px; }
+	.key { margin-top: 3px; padding: 1px 5px; border: 1px solid #b4cedfaa; border-radius: 2px; font-size: 10px; font-weight: 600; background-color: #07101cdd; color: #eff8ff; }
+	.ability-name { font-size: 11px; margin-top: 2px; text-align: center; color: #e4f6ff; }
+	.ability-state { font-size: 10px; margin-top: 1px; text-align: center; color: #bcd2e2; }
+	.ability-smoke { margin-bottom: 6px; }
+	.ability-smoke .ability-icon-wrap { width: 32px; height: 32px; }
+	.ability-smoke .ability-art { width: 28px; height: 28px; }
+	.ability-smoke .ability-bar { width: 34px; }
+	.ability-smoke .ability-name { display: none; }
+	.dash { position: absolute; left: 50%; margin-left: -65px; bottom: 24%; width: 130px; flex-direction: column; align-items: center; }
 	.dash-label { font-size: 10px; letter-spacing: 1px; color: #8ab8d0; margin-bottom: 4px; opacity: 0.85; }
 	.dash-label.ready { color: #c7f0ff; }
 	.dash-bar { width: 110px; height: 6px; }
 	.dash-art { position: absolute; width: 110px; height: 6px; object-fit: fill; background-size: 100% 100%; background-tint: #8bdcff; }
-	.controls { position: absolute; left: 32%; right: 5%; bottom: 3%; text-align: right; font-size: 11px; color: #a5becf; opacity: 0.72; }
+	.controls { position: absolute; left: 42%; right: 3.5%; bottom: 2%; text-align: right; font-size: 11px; color: #a5becf; opacity: 0.72; }
 	&.critical .stat, &.critical .cockpit-message { color: #ff786d; }
 	&.critical .hull-bar .bar-art { background-tint: #ff786d; }
 	&.boarding { background-color: #06142777; }

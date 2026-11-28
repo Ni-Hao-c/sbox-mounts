@@ -1,99 +1,106 @@
-public sealed partial class Titanfall2Weapon
+/// <summary>
+/// Composed continuous-heat &amp; overheat-venting mechanic controller (L-STAR).
+/// </summary>
+internal sealed class Titanfall2WeaponHeatController : ITitanfall2WeaponMechanic
 {
-	[Property] public Titanfall2HeatProfile HeatProfile { get; set; }
-	[Sync( SyncFlags.FromHost )] public double HeatVentUntil { get; private set; }
-	public bool HeatVenting => HeatProfile.Valid && Time.NowDouble < HeatVentUntil;
 	Titanfall2HeatState _hostHeat;
-	bool _ownerHeatRun;
-	PlayerController _heatOwner;
-	double _heatHostTick = double.NaN;
-	Titanfall2HeatInventory _heatInventory;
+	bool _ownerRun;
+	PlayerController _owner;
+	double _hostTick = double.NaN;
+	Titanfall2HeatInventory _inventory;
 
-	void RegisterHeatInventory()
+	internal bool IsFiringRun( Titanfall2Weapon w ) => Networking.IsHost ? _hostHeat.FiringRun : _ownerRun;
+
+	public void OnStart( Titanfall2Weapon w ) => RegisterInventory( w );
+	public void OnAdded( Titanfall2Weapon w ) => RegisterInventory( w );
+	public void OnHolster( Titanfall2Weapon w ) => StopRun( w );
+	public void OnReload( Titanfall2Weapon w ) => StopRun( w );
+	public void OnDisabled( Titanfall2Weapon w ) => StopRun( w );
+
+	public void OnRemoved( Titanfall2Weapon w )
 	{
-		if ( !Networking.IsHost || !HeatProfile.Valid || !Inventory.IsValid() ) return;
-		var pump = Inventory.GameObject.GetOrAddComponent<Titanfall2HeatInventory>();
-		if ( _heatInventory == pump ) return;
-		_heatInventory?.Remove( this ); _heatInventory = pump; pump.Add( this );
+		StopRun( w );
+		_inventory?.Remove( w );
+		_inventory = null;
+		_hostHeat.Recovering = false;
 	}
 
-	void PrepareOwnerHeatShot()
+	void RegisterInventory( Titanfall2Weapon w )
 	{
-		if ( HeatProfile.Valid && !IsProxy ) _ownerHeatRun = true;
+		if ( !Networking.IsHost || !w.HeatProfile.Valid || !w.Inventory.IsValid() ) return;
+		var pump = w.Inventory.GameObject.GetOrAddComponent<Titanfall2HeatInventory>();
+		if ( _inventory == pump ) return;
+		_inventory?.Remove( w ); _inventory = pump; pump.Add( w );
 	}
 
-	bool CanAcceptHeatShot()
+	internal void PrepareOwnerShot( Titanfall2Weapon w )
 	{
-		if ( !HeatProfile.Valid ) return true;
-		TickHeatHost();
-		return Active && IsHeld && IsActive && !IsReloading
-			&& _hostHeat.CanFire( Clip1, Firing.Minimum, Firing.Cost, Time.NowDouble );
+		if ( w.HeatProfile.Valid && !w.IsProxy ) _ownerRun = true;
 	}
 
-	void AcceptHeatShot()
+	internal bool CanAcceptShot( Titanfall2Weapon w )
 	{
-		if ( !HeatProfile.Valid ) return;
-		if ( Clip1 + Firing.Cost == Firing.Minimum ) PlayHeatWarning();
+		if ( !w.HeatProfile.Valid ) return true;
+		TickHost( w );
+		return w.Active && w.IsHeld && w.IsActive && !w.IsReloading
+			&& _hostHeat.CanFire( w.Clip1, w.Firing.Minimum, w.Firing.Cost, Time.NowDouble );
+	}
+
+	internal void AcceptShot( Titanfall2Weapon w )
+	{
+		if ( !w.HeatProfile.Valid ) return;
+		if ( w.Clip1 + w.Firing.Cost == w.Firing.Minimum ) w.PlayHeatWarningInternal();
 		_hostHeat.AcceptedShot( Time.NowDouble );
 	}
 
-	public override void DryFire()
+	public void Tick( Titanfall2Weapon w )
 	{
-		// The minimum-to-start gate waits for recovery; it is not an empty
-		// magazine and must not introduce the base dry-fire/reload delay.
-		if ( HeatProfile.Valid && Clip1 > 0 ) return;
-		base.DryFire();
-	}
-
-	void TickHeat()
-	{
-		if ( !HeatProfile.Valid ) return;
-		RegisterHeatInventory();
-		if ( !IsProxy && Owner is { UseInputControls: true } && !Input.Down( "attack1" ) ) StopHeatRun();
-		if ( Networking.IsHost ) TickHeatHost();
+		if ( !w.HeatProfile.Valid ) return;
+		RegisterInventory( w );
+		if ( !w.IsProxy && w.Owner is { UseInputControls: true } && !Input.Down( "attack1" ) ) StopRun( w );
+		if ( Networking.IsHost ) TickHost( w );
 	}
 
 	// The inventory pump runs even when the inventory has disabled this gun.
-	internal void TickHeatHost()
+	internal void TickHost( Titanfall2Weapon w )
 	{
-		if ( !Networking.IsHost || !HeatProfile.Valid || _heatHostTick == Time.NowDouble ) return;
-		_heatHostTick = Time.NowDouble;
-		if ( _heatOwner != Owner )
+		if ( !Networking.IsHost || !w.HeatProfile.Valid || _hostTick == Time.NowDouble ) return;
+		_hostTick = Time.NowDouble;
+		if ( _owner != w.Owner )
 		{
-			StopHostHeatRun(); _heatOwner = Owner; _ownerHeatRun = false;
+			StopHostRun( w ); _owner = w.Owner; _ownerRun = false;
 		}
-		if ( !IsHeld || !Inventory.IsValid() ) { _hostHeat.Recovering = false; return; }
-		TickHeatReload();
-		if ( !Active || !IsActive || IsReloading ) StopHostHeatRun();
-		else if ( _hostHeat.FiringRun && (IsProxy || Owner is { UseInputControls: false })
-			&& Time.NowDouble - _hostHeat.LastShot > PrimaryDelay + Math.Max( 0.12, PrimaryDelay * 0.5 ) )
-			StopHostHeatRun(); // A missing owner stop cannot retain a firing run indefinitely.
-		Clip1 = _hostHeat.Recover( HeatProfile, Clip1, ClipMaxSize, IsReloading || SavedHeatReloadMilestone != 0, Time.NowDouble, Time.Delta );
+		if ( !w.IsHeld || !w.Inventory.IsValid() ) { _hostHeat.Recovering = false; return; }
+		w.TickHeatReloadInternal();
+		if ( !w.Active || !w.IsActive || w.IsReloading ) StopHostRun( w );
+		else if ( _hostHeat.FiringRun && (w.IsProxy || w.Owner is { UseInputControls: false })
+			&& Time.NowDouble - _hostHeat.LastShot > w.PrimaryDelay + Math.Max( 0.12, w.PrimaryDelay * 0.5 ) )
+			StopHostRun( w ); // A missing owner stop cannot retain a firing run indefinitely.
+		w.Clip1 = _hostHeat.Recover( w.HeatProfile, w.Clip1, w.ClipMaxSize, w.IsReloading || w.SavedHeatReloadMilestone != 0, Time.NowDouble, Time.Delta );
 		// Empty overheat starts automatically, but partial clips never auto reload.
-		if ( Active && IsActive && Clip1 == 0 && !IsReloading && _hostHeat.HasFired
-			&& NextPrimaryFire <= 0 && _nextProjectileRequest <= 0 ) Reload();
+		if ( w.Active && w.IsActive && w.Clip1 == 0 && !w.IsReloading && _hostHeat.HasFired
+			&& w.NextPrimaryFireTimer <= 0 && !w.IsProjectileRequestPending ) w.Reload();
 	}
 
-	void StopHeatRun()
+	internal void StopRun( Titanfall2Weapon w )
 	{
-		if ( !HeatProfile.Valid ) return;
-		var wasFiring = _ownerHeatRun; _ownerHeatRun = false;
-		if ( Networking.IsHost ) StopHostHeatRun();
-		else if ( wasFiring && !IsProxy ) RequestStopHeatRun();
+		if ( !w.HeatProfile.Valid ) return;
+		var wasFiring = _ownerRun; _ownerRun = false;
+		if ( Networking.IsHost ) StopHostRun( w );
+		else if ( wasFiring && !w.IsProxy ) w.SendStopHeatRunRpc();
 	}
 
-	[Rpc.Host( NetFlags.OwnerOnly )]
-	void RequestStopHeatRun()
+	internal void ApplyStopRun( Titanfall2Weapon w )
 	{
-		if ( !Networking.IsHost || !HeatProfile.Valid || !Owner.IsValid() ) return;
-		StopHostHeatRun();
+		if ( !Networking.IsHost || !w.HeatProfile.Valid || !w.Owner.IsValid() ) return;
+		StopHostRun( w );
 	}
 
-	void StopHostHeatRun()
+	void StopHostRun( Titanfall2Weapon w )
 	{
-		if ( !_hostHeat.Stop( HeatProfile, Clip1, Time.NowDouble ) ) return;
-		HeatVentUntil = _hostHeat.VentUntil;
-		if ( Active && IsHeld && IsActive ) PlayHeatVent();
+		if ( !_hostHeat.Stop( w.HeatProfile, w.Clip1, Time.NowDouble ) ) return;
+		w.SetHeatVentUntilHost( _hostHeat.VentUntil );
+		if ( w.Active && w.IsHeld && w.IsActive ) w.PlayHeatVentInternal();
 	}
 }
 

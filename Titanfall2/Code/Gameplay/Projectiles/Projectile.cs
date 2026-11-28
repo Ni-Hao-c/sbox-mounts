@@ -31,6 +31,7 @@ public record struct Titanfall2ProjectileSettings
 	public float FuseSeconds { get; set; }
 	public float HazardSeconds { get; set; }
 	public string ImpactTable { get; set; }
+	public string FlightSound { get; set; }
 	public string MountIdent { get; set; }
 	public bool ReducedEffects { get; set; }
 	public bool VortexAbsorbOnly { get; set; }
@@ -63,8 +64,11 @@ public sealed partial class Titanfall2Projectile : Component
 	Vector3 _stuckLocalNormal;
 	Surface _stuckSurface;
 	readonly List<GameObject> _trails = [];
+	Titanfall2SoundEventEmitter _flightAudio;
 
 	internal GameObject StuckTarget => _stuck ? _stuckTo : null;
+	internal GameObject CombatAttacker => _attacker;
+	internal bool IsInFlight => !_finished && !_stuck;
 
 	internal void CleanseFromPhase()
 	{
@@ -152,7 +156,25 @@ public sealed partial class Titanfall2Projectile : Component
 				&& model.Attachments.GetTransform( Settings.TrailAttachment ) is { } exhaust ) trail.LocalTransform = exhaust;
 		}
 		if ( !string.IsNullOrWhiteSpace( Settings.ScriptTrailEffect ) ) CreateTrail( GameObject, Settings.ScriptTrailEffect );
+		if ( !string.IsNullOrWhiteSpace( Settings.FlightSound ) )
+		{
+			_flightAudio = GameObject.GetOrAddComponent<Titanfall2SoundEventEmitter>();
+			_flightAudio.Play( Settings.MountIdent ?? "titanfall2", Settings.FlightSound, firstPerson: false, WorldPosition, sustain: true );
+		}
 		render.Enabled = true;
+	}
+
+	protected override void OnUpdate()
+	{
+		if ( _flightAudio.IsValid() ) _flightAudio.SetSource( WorldPosition );
+	}
+
+	protected override void OnDisabled() => StopFlightAudio();
+	protected override void OnDestroy() => StopFlightAudio();
+
+	void StopFlightAudio()
+	{
+		if ( _flightAudio.IsValid() ) _flightAudio.StopAll();
 	}
 
 	GameObject CreateTrail( GameObject parent, string effectName )
@@ -248,6 +270,7 @@ public sealed partial class Titanfall2Projectile : Component
 	[Rpc.Broadcast( NetFlags.HostOnly )]
 	void ReleaseTrail()
 	{
+		StopFlightAudio();
 		foreach ( var trail in _trails )
 		{
 			if ( !trail.IsValid() ) continue;
@@ -424,6 +447,32 @@ public sealed partial class Titanfall2Projectile : Component
 			damage.Tags.Add( "projectile" );
 			TagTitanWeaponDamage( damage.Tags );
 			Titanfall2HostDamage.Deal( damageable, damage );
+			if ( Settings.Behavior == Titanfall2ProjectileBehavior.ArcGrenade )
+			{
+				receiver.GameObject.GetComponentInParent<Titanfall2TitanKit>()?.ApplySiphonSlow( 2.5f );
+			}
+		}
+
+		if ( Settings.Behavior == Titanfall2ProjectileBehavior.ArcGrenade )
+			ApplyArcEmpToPlayers( origin, radius );
+	}
+
+	void ApplyArcEmpToPlayers( Vector3 origin, float radius )
+	{
+		if ( !Networking.IsHost || radius <= 0f ) return;
+		var halfRadius = radius * 0.5f;
+		foreach ( var player in Scene.GetAllComponents<PlayerController>() )
+		{
+			if ( !player.IsValid() || !player.Active || player.GetComponentInParent<Titanfall2TitanSeat>().IsValid() ) continue;
+			var center = player.WorldPosition + Vector3.Up * 36f;
+			var dist = center.Distance( origin );
+			if ( dist >= radius ) continue;
+			var trace = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( origin, center )
+				.WithoutTags( "trigger", "projectile" )
+				.IgnoreGameObjectHierarchy( GameObject ), Titanfall2TraceMask.Grenade );
+			if ( trace.Hit && trace.GameObject != player.GameObject && !player.GameObject.IsDescendant( trace.GameObject ) ) continue;
+			var frac = dist <= halfRadius ? 1f : Math.Clamp( 1f - (dist - halfRadius) / MathF.Max( 1f, radius - halfRadius ), 0.25f, 1f );
+			Titanfall2EmpStatus.ApplyFromHost( player, frac, Settings.MountIdent );
 		}
 	}
 

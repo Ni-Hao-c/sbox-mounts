@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using NumericsVector2 = System.Numerics.Vector2;
 using NumericsVector3 = System.Numerics.Vector3;
@@ -142,33 +143,163 @@ public static partial class Titanfall2BspReader
 
 	public readonly record struct WorldVertexColor( byte R, byte G, byte B, byte A );
 
-	public readonly record struct VisibilityCellMask( ulong Low, ulong High )
+	/// <summary>
+	/// Fixed-size 1024-cell PVS bitset (16 x 64-bit words), kept blittable for binary cache arrays
+	/// and zero-allocation runtime tests. Large SP/MP maps such as sp_timeshift_spoke02 (342 cells)
+	/// and mp_rise (561 cells) exceed the legacy 128-cell mask.
+	/// </summary>
+	[StructLayout( LayoutKind.Sequential )]
+	public readonly struct VisibilityCellMask : IEquatable<VisibilityCellMask>
 	{
-		public bool IsEmpty => Low == 0 && High == 0;
-		public bool Intersects( VisibilityCellMask other ) => (Low & other.Low) != 0 || (High & other.High) != 0;
-		public VisibilityCellMask Union( VisibilityCellMask other ) => new( Low | other.Low, High | other.High );
-		public VisibilityCellMask Add( int cell ) => cell switch
+		public const int WordCount = 16;
+		public const int MaxCellCount = WordCount * 64;
+
+		public readonly ulong W0, W1, W2, W3, W4, W5, W6, W7;
+		public readonly ulong W8, W9, W10, W11, W12, W13, W14, W15;
+
+		public VisibilityCellMask( ulong low, ulong high )
 		{
-			>= 0 and < 64 => this with { Low = Low | (1UL << cell) },
-			>= 64 and < 128 => this with { High = High | (1UL << (cell - 64)) },
-			_ => this
+			W0 = low;
+			W1 = high;
+		}
+
+		VisibilityCellMask(
+			ulong w0, ulong w1, ulong w2, ulong w3, ulong w4, ulong w5, ulong w6, ulong w7,
+			ulong w8, ulong w9, ulong w10, ulong w11, ulong w12, ulong w13, ulong w14, ulong w15 )
+		{
+			W0 = w0; W1 = w1; W2 = w2; W3 = w3; W4 = w4; W5 = w5; W6 = w6; W7 = w7;
+			W8 = w8; W9 = w9; W10 = w10; W11 = w11; W12 = w12; W13 = w13; W14 = w14; W15 = w15;
+		}
+
+		public ulong Low => W0;
+		public ulong High => W1;
+
+		public static int WordCountFor( int cellCount ) =>
+			cellCount <= 0 ? 0 : Math.Min( WordCount, (cellCount + 63) / 64 );
+
+		public bool IsEmpty =>
+			(W0 | W1 | W2 | W3 | W4 | W5 | W6 | W7 | W8 | W9 | W10 | W11 | W12 | W13 | W14 | W15) == 0;
+
+		public bool Intersects( VisibilityCellMask other ) =>
+			((W0 & other.W0) | (W1 & other.W1) | (W2 & other.W2) | (W3 & other.W3)
+			| (W4 & other.W4) | (W5 & other.W5) | (W6 & other.W6) | (W7 & other.W7)
+			| (W8 & other.W8) | (W9 & other.W9) | (W10 & other.W10) | (W11 & other.W11)
+			| (W12 & other.W12) | (W13 & other.W13) | (W14 & other.W14) | (W15 & other.W15)) != 0;
+
+		public VisibilityCellMask Union( VisibilityCellMask other ) => new(
+			W0 | other.W0, W1 | other.W1, W2 | other.W2, W3 | other.W3,
+			W4 | other.W4, W5 | other.W5, W6 | other.W6, W7 | other.W7,
+			W8 | other.W8, W9 | other.W9, W10 | other.W10, W11 | other.W11,
+			W12 | other.W12, W13 | other.W13, W14 | other.W14, W15 | other.W15 );
+
+		public ulong GetWord( int wordIndex ) => wordIndex switch
+		{
+			0 => W0, 1 => W1, 2 => W2, 3 => W3, 4 => W4, 5 => W5, 6 => W6, 7 => W7,
+			8 => W8, 9 => W9, 10 => W10, 11 => W11, 12 => W12, 13 => W13, 14 => W14, 15 => W15,
+			_ => 0UL
 		};
 
-		public bool Contains( int cell ) => cell switch
+		public VisibilityCellMask Add( int cell )
 		{
-			>= 0 and < 64 => (Low & (1UL << cell)) != 0,
-			>= 64 and < 128 => (High & (1UL << (cell - 64))) != 0,
-			_ => false
-		};
+			if ( (uint)cell >= MaxCellCount ) return this;
+			var bit = 1UL << (cell & 63);
+			return (cell >> 6) switch
+			{
+				0 => new( W0 | bit, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				1 => new( W0, W1 | bit, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				2 => new( W0, W1, W2 | bit, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				3 => new( W0, W1, W2, W3 | bit, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				4 => new( W0, W1, W2, W3, W4 | bit, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				5 => new( W0, W1, W2, W3, W4, W5 | bit, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				6 => new( W0, W1, W2, W3, W4, W5, W6 | bit, W7, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				7 => new( W0, W1, W2, W3, W4, W5, W6, W7 | bit, W8, W9, W10, W11, W12, W13, W14, W15 ),
+				8 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8 | bit, W9, W10, W11, W12, W13, W14, W15 ),
+				9 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9 | bit, W10, W11, W12, W13, W14, W15 ),
+				10 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10 | bit, W11, W12, W13, W14, W15 ),
+				11 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11 | bit, W12, W13, W14, W15 ),
+				12 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12 | bit, W13, W14, W15 ),
+				13 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13 | bit, W14, W15 ),
+				14 => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14 | bit, W15 ),
+				_ => new( W0, W1, W2, W3, W4, W5, W6, W7, W8, W9, W10, W11, W12, W13, W14, W15 | bit )
+			};
+		}
+
+		public bool Contains( int cell ) =>
+			(uint)cell < MaxCellCount && (GetWord( cell >> 6 ) & (1UL << (cell & 63))) != 0;
 
 		public int FirstCell
 		{
 			get
 			{
-				if ( Low != 0 ) return System.Numerics.BitOperations.TrailingZeroCount( Low );
-				return High != 0 ? 64 + System.Numerics.BitOperations.TrailingZeroCount( High ) : -1;
+				for ( var word = 0; word < WordCount; word++ )
+				{
+					var bits = GetWord( word );
+					if ( bits != 0 ) return (word << 6) + System.Numerics.BitOperations.TrailingZeroCount( bits );
+				}
+				return -1;
 			}
 		}
+
+		public void Write( BinaryWriter writer, int wordCount = WordCount )
+		{
+			var count = Math.Clamp( wordCount, 0, WordCount );
+			for ( var word = 0; word < count; word++ ) writer.Write( GetWord( word ) );
+		}
+
+		public static VisibilityCellMask Read( BinaryReader reader, int wordCount = WordCount )
+		{
+			var count = Math.Clamp( wordCount, 0, WordCount );
+			ulong w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0, w6 = 0, w7 = 0;
+			ulong w8 = 0, w9 = 0, w10 = 0, w11 = 0, w12 = 0, w13 = 0, w14 = 0, w15 = 0;
+			if ( count > 0 ) w0 = reader.ReadUInt64();
+			if ( count > 1 ) w1 = reader.ReadUInt64();
+			if ( count > 2 ) w2 = reader.ReadUInt64();
+			if ( count > 3 ) w3 = reader.ReadUInt64();
+			if ( count > 4 ) w4 = reader.ReadUInt64();
+			if ( count > 5 ) w5 = reader.ReadUInt64();
+			if ( count > 6 ) w6 = reader.ReadUInt64();
+			if ( count > 7 ) w7 = reader.ReadUInt64();
+			if ( count > 8 ) w8 = reader.ReadUInt64();
+			if ( count > 9 ) w9 = reader.ReadUInt64();
+			if ( count > 10 ) w10 = reader.ReadUInt64();
+			if ( count > 11 ) w11 = reader.ReadUInt64();
+			if ( count > 12 ) w12 = reader.ReadUInt64();
+			if ( count > 13 ) w13 = reader.ReadUInt64();
+			if ( count > 14 ) w14 = reader.ReadUInt64();
+			if ( count > 15 ) w15 = reader.ReadUInt64();
+			return new( w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15 );
+		}
+
+		public static VisibilityCellMask FromWords( ReadOnlySpan<ulong> words )
+		{
+			ulong Get( ReadOnlySpan<ulong> s, int i ) => i < s.Length ? s[i] : 0UL;
+			return new(
+				Get( words, 0 ), Get( words, 1 ), Get( words, 2 ), Get( words, 3 ),
+				Get( words, 4 ), Get( words, 5 ), Get( words, 6 ), Get( words, 7 ),
+				Get( words, 8 ), Get( words, 9 ), Get( words, 10 ), Get( words, 11 ),
+				Get( words, 12 ), Get( words, 13 ), Get( words, 14 ), Get( words, 15 ) );
+		}
+
+		public bool Equals( VisibilityCellMask other ) =>
+			W0 == other.W0 && W1 == other.W1 && W2 == other.W2 && W3 == other.W3
+			&& W4 == other.W4 && W5 == other.W5 && W6 == other.W6 && W7 == other.W7
+			&& W8 == other.W8 && W9 == other.W9 && W10 == other.W10 && W11 == other.W11
+			&& W12 == other.W12 && W13 == other.W13 && W14 == other.W14 && W15 == other.W15;
+
+		public override bool Equals( object obj ) => obj is VisibilityCellMask other && Equals( other );
+
+		public override int GetHashCode()
+		{
+			var hash = new HashCode();
+			hash.Add( W0 ^ W4 ^ W8 ^ W12 );
+			hash.Add( W1 ^ W5 ^ W9 ^ W13 );
+			hash.Add( W2 ^ W6 ^ W10 ^ W14 );
+			hash.Add( W3 ^ W7 ^ W11 ^ W15 );
+			return hash.ToHashCode();
+		}
+
+		public static bool operator ==( VisibilityCellMask left, VisibilityCellMask right ) => left.Equals( right );
+		public static bool operator !=( VisibilityCellMask left, VisibilityCellMask right ) => !left.Equals( right );
 	}
 
 	public sealed class BspVisibility
@@ -180,7 +311,7 @@ public static partial class Titanfall2BspReader
 		public VisibilityCellMask AlwaysVisibleCells { get; init; }
 		public IReadOnlyList<VisibilityPortal> Portals { get; init; } = Array.Empty<VisibilityPortal>();
 		public IReadOnlyList<VisibilityCellMask> ObjectCellMasks { get; init; } = Array.Empty<VisibilityCellMask>();
-		public bool IsValid => CellCount > 0 && CellCount <= 128 && Planes.Count > 0 && Nodes.Count > 0;
+		public bool IsValid => CellCount > 0 && CellCount <= VisibilityCellMask.MaxCellCount && Planes.Count > 0 && Nodes.Count > 0;
 
 		public VisibilityCellMask GetObjectCellMask( int objectIndex ) =>
 			objectIndex >= 0 && objectIndex < ObjectCellMasks.Count ? ObjectCellMasks[objectIndex] : default;
@@ -281,6 +412,9 @@ public static partial class Titanfall2BspReader
 		// Non-solid decorative instances must stay non-solid even when the
 		// reserved bytes or subtractive contents mask are nonzero.
 		public bool IsCollidable => SolidType != 0;
+		// Retail STATIC_PROP_NO_SHADOW flag (set on decorative grass/foliage clumps).
+		public const byte FlagNoShadow = 0x10;
+		public bool CastsShadows => (Flags & FlagNoShadow) == 0;
 	}
 
 	private readonly record struct LumpHeader( int Offset, int Length, int Version, int FourCc );
@@ -622,13 +756,12 @@ public static partial class Titanfall2BspReader
 		var objectReferences = ReadUInt16Array(
 			ReadLumpBytes( stream, headers, overrideLumps, ObjectReferencesLumpId ) );
 
-		if ( cells.Length == 0 || cells.Length > 128 || planes.Length == 0 || nodes.Length == 0 )
+		if ( cells.Length == 0 || cells.Length > VisibilityCellMask.MaxCellCount || planes.Length == 0 || nodes.Length == 0 )
 			return new BspVisibility { WorldMeshCount = worldMeshCount };
 
 		var maximumObjectReference = objectReferences.Length > 0 ? objectReferences.Max( static value => (int)value ) : -1;
 		var objectCount = Math.Max( Math.Max( worldMeshCount, maximumObjectReference + 1 ), 0 );
-		var lowMasks = new ulong[objectCount];
-		var highMasks = new ulong[objectCount];
+		var objectMasks = new VisibilityCellMask[objectCount];
 		var rootCount = Math.Min( cells.Length, cellAabbRoots.Length );
 		for ( var cellIndex = 0; cellIndex < rootCount; cellIndex++ )
 		{
@@ -639,26 +772,17 @@ public static partial class Titanfall2BspReader
 			{
 				var objectIndex = objectReferences[referenceIndex];
 				if ( objectIndex >= objectCount ) continue;
-				if ( cellIndex < 64 ) lowMasks[objectIndex] |= 1UL << cellIndex;
-				else highMasks[objectIndex] |= 1UL << (cellIndex - 64);
+				objectMasks[objectIndex] = objectMasks[objectIndex].Add( cellIndex );
 			}
 		}
 
-		var objectMasks = new VisibilityCellMask[objectCount];
-		for ( var objectIndex = 0; objectIndex < objectMasks.Length; objectIndex++ )
-			objectMasks[objectIndex] = new VisibilityCellMask( lowMasks[objectIndex], highMasks[objectIndex] );
-
 		var portals = new List<VisibilityPortal>();
-		ulong alwaysVisibleLow = 0;
-		ulong alwaysVisibleHigh = 0;
+		var alwaysVisible = default( VisibilityCellMask );
 		for ( var fromCell = 0; fromCell < cells.Length; fromCell++ )
 		{
 			var cell = cells[fromCell];
 			if ( cell.Flags is 3 or 5 )
-			{
-				if ( fromCell < 64 ) alwaysVisibleLow |= 1UL << fromCell;
-				else alwaysVisibleHigh |= 1UL << (fromCell - 64);
-			}
+				alwaysVisible = alwaysVisible.Add( fromCell );
 			var firstPortal = Math.Max( 0, cell.FirstPortal );
 			var endPortal = Math.Min( rawPortals.Length, firstPortal + Math.Max( 0, cell.NumPortals ) );
 			for ( var portalIndex = firstPortal; portalIndex < endPortal; portalIndex++ )
@@ -697,7 +821,7 @@ public static partial class Titanfall2BspReader
 			Planes = planes,
 			Nodes = nodes,
 			CellCount = cells.Length,
-			AlwaysVisibleCells = new VisibilityCellMask( alwaysVisibleLow, alwaysVisibleHigh ),
+			AlwaysVisibleCells = alwaysVisible,
 			Portals = portals,
 			ObjectCellMasks = objectMasks
 		};

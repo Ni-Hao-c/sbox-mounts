@@ -74,12 +74,12 @@ public readonly record struct Titanfall2PilotTacticalSettings
 
 	public static Titanfall2PilotTacticalSettings RetailDefault => new()
 	{
-		StimDuration = 4.0f,
+		StimDuration = 3.0f,
 		StimSpeedScale = 1.55f,
 		StimWallrunSpeedScale = 1.32f,
 		StimHealPerSecond = 35f,
 		StimFovScale = 1.14f,
-		StimCooldownSeconds = 18f,
+		StimCooldownSeconds = 25f,
 
 		GrappleMaxRange = 1100f,
 		GrapplePullAccel = 1280f,
@@ -102,18 +102,18 @@ public readonly record struct Titanfall2PilotTacticalSettings
 		GrappleLowSpeedGroundTime = 0.7f,
 
 		PhaseDuration = 2.0f,
-		PhaseSpeedScale = 1.15f,
+		PhaseSpeedScale = 1f,
 		PhaseFovScale = 1.08f,
 		PhaseCooldownSeconds = 15f,
 
-		PulseThrowSpeed = 2400f,
-		PulseGravityScale = 0.45f,
+		PulseThrowSpeed = 3500f,
+		PulseGravityScale = 2f,
 		PulseDirectDamage = 100f,
-		PulseTitanDamage = 40f,
-		PulseSonarRadius = 760f,
-		PulseSonarDuration = 6.0f,
-		PulseIntervalSeconds = 1.5f,
-		PulseCooldownSeconds = 16f,
+		PulseTitanDamage = 100f,
+		PulseSonarRadius = 1250f,
+		PulseSonarDuration = 4.5f,
+		PulseIntervalSeconds = 1.3333f,
+		PulseCooldownSeconds = 25f,
 
 		SoundStim1P = "pilot_stimpack_activate_1P",
 		SoundStim3P = "pilot_stimpack_activate_3P",
@@ -164,7 +164,16 @@ public readonly record struct Titanfall2PilotTacticalSettings
 			var s3 = v.GetValueOrDefault( "fire_sound_1_player_3p" );
 			if ( !string.IsNullOrWhiteSpace( s1 ) ) d = d with { SoundStim1P = s1 };
 			if ( !string.IsNullOrWhiteSpace( s3 ) ) d = d with { SoundStim3P = s3 };
+			d = d with
+			{
+				StimDuration = Number( v, "fire_duration", d.StimDuration, 0.1f, 30f ),
+				StimCooldownSeconds = RechargeSeconds( v, d.StimCooldownSeconds )
+			};
 		}
+
+		var grappleText = read( GrappleScript );
+		if ( !string.IsNullOrWhiteSpace( grappleText ) )
+			d = d with { GrappleMaxRange = Number( ParseWeaponKeyValues( grappleText ), "grapple_maxLength", d.GrappleMaxRange, 32f, 12000f ) };
 
 		var phaseText = read( PhaseScript );
 		if ( !string.IsNullOrWhiteSpace( phaseText ) )
@@ -184,10 +193,26 @@ public readonly record struct Titanfall2PilotTacticalSettings
 			var s3 = v.GetValueOrDefault( "sound_throw_3p" );
 			if ( !string.IsNullOrWhiteSpace( s1 ) ) d = d with { SoundPulseThrow1P = s1 };
 			if ( !string.IsNullOrWhiteSpace( s3 ) ) d = d with { SoundPulseThrow3P = s3 };
+			d = d with
+			{
+				PulseThrowSpeed = Number( v, "projectile_launch_speed", d.PulseThrowSpeed, 1f, 12000f ),
+				PulseGravityScale = Number( v, "projectile_gravity_scale", d.PulseGravityScale, 0f, 10f ),
+				PulseDirectDamage = Number( v, "damage_near_value", d.PulseDirectDamage, 0f, 10000f ),
+				PulseTitanDamage = Number( v, "damage_near_value_titanarmor", d.PulseTitanDamage, 0f, 10000f ),
+				PulseSonarDuration = Number( v, "grenade_ignition_time", d.PulseSonarDuration, 0.1f, 60f ),
+				PulseCooldownSeconds = RechargeSeconds( v, d.PulseCooldownSeconds )
+			};
 		}
 
 		return d;
 	}
+
+	static float Number( Dictionary<string, string> values, string key, float fallback, float min, float max ) =>
+		TryNum( values, key, out var number ) ? Math.Clamp( number, min, max ) : fallback;
+
+	static float RechargeSeconds( Dictionary<string, string> values, float fallback ) =>
+		TryNum( values, "ammo_min_to_fire", out var cost ) && TryNum( values, "regen_ammo_refill_rate", out var rate ) && cost > 0 && rate > 0
+			? Math.Clamp( cost / rate, 0.1f, 300f ) : fallback;
 
 	static bool TryNum( Dictionary<string, string> values, string key, out float number )
 	{
@@ -290,6 +315,19 @@ public readonly record struct Titanfall2PilotTacticalSettings
 public static class Titanfall2PilotTacticalRules
 {
 	public const float ChargeUnitsPerUse = 100f;
+	public const float StimSpeedTailSeconds = 0.5f;
+	public const float StimSpeedFadeSeconds = 0.25f;
+
+	/// <summary>Retail status timing applied to the s&box movement multiplier, without a hard speed snap at expiry.</summary>
+	public static float ComputeStimSpeedScale( float remaining, float multiplier )
+	{
+		if ( !float.IsFinite( remaining ) || !float.IsFinite( multiplier ) ) return 1f;
+		return 1f + (MathF.Max( 1f, multiplier ) - 1f) * Math.Clamp( remaining / StimSpeedFadeSeconds, 0f, 1f );
+	}
+
+	public static bool CanEquip( bool hasEquipped, Titanfall2PilotTacticalKind current, Titanfall2PilotTacticalKind incoming ) =>
+		incoming is >= Titanfall2PilotTacticalKind.Stim and <= Titanfall2PilotTacticalKind.PulseBlade
+		&& (!hasEquipped || current != incoming);
 
 	public static Titanfall2PilotTacticalKind NextKind( Titanfall2PilotTacticalKind current ) => current switch
 	{
@@ -369,7 +407,7 @@ public static class Titanfall2PilotTacticalRules
 	}
 
 	/// <summary>
-	/// Computes proportional grapple charge refund when detaching early (retail TF2 mechanic):
+	/// s&box charge-meter adapter for early grapple detachment:
 	/// short taps keep most of the charge; full swings consume the whole 100 units.
 	/// </summary>
 	public static float ComputeGrappleEarlyDetachRefund( float activeSeconds, float maxActiveSeconds )
@@ -381,7 +419,7 @@ public static class Titanfall2PilotTacticalRules
 	}
 
 	/// <summary>
-	/// Integrates Titanfall 2 Grapple swing & pull velocity:
+	/// Integrates Grapple swing and pull in the s&box movement motor:
 	/// radial reel-in toward the anchor + directional air-strafe slingshot + reduced gravity.
 	/// </summary>
 	public static Vector3 ComputeGrappleVelocity(

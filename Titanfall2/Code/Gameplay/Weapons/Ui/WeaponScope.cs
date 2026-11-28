@@ -64,7 +64,7 @@ public sealed partial class Titanfall2Weapon
 
 /// <summary>Native scoped sight using the mounted DCOM artwork and retail zoom timing.</summary>
 [Hide]
-public sealed class Titanfall2WeaponScopeHud : PanelComponent
+public sealed class Titanfall2WeaponScopeHud : Titanfall2MountPanelComponent
 {
 	[Property] public Titanfall2Weapon Weapon { get; set; }
 	Image _reticle;

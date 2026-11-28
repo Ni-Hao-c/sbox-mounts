@@ -1,3 +1,36 @@
+/// <summary>Deterministic primary-weapon ADS zoom, FOV, and movement-scale rules for piloted Titans.</summary>
+internal static class Titanfall2TitanAdsRules
+{
+	internal const float DefaultZoomSeconds = 0.2f;
+	internal const float MinCockpitAdsFov = 42f;
+	internal const float MaxCockpitAdsFov = 78f;
+
+	internal static float StepZoom( float current, bool aiming, in Titanfall2SpreadProfile spread, float deltaTime )
+	{
+		if ( !float.IsFinite( current ) ) current = 0f;
+		if ( !float.IsFinite( deltaTime ) || deltaTime <= 0f ) return Math.Clamp( current, 0f, 1f );
+		if ( spread.Enabled ) return spread.AdvanceZoom( Math.Clamp( current, 0f, 1f ), aiming, deltaTime );
+		var step = deltaTime / DefaultZoomSeconds;
+		return aiming ? MathF.Min( 1f, current + step ) : MathF.Max( 0f, current - step );
+	}
+
+	internal static float ResolveCockpitAdsFov( float weaponAdsFov, Titanfall2TitanKit.Chassis kit, bool legionLongRange )
+	{
+		if ( kit == Titanfall2TitanKit.Chassis.Legion )
+			return legionLongRange ? 46f : 72f;
+		var raw = float.IsFinite( weaponAdsFov ) && weaponAdsFov > 0f ? weaponAdsFov : 55f;
+		return Math.Clamp( raw, MinCockpitAdsFov, MaxCockpitAdsFov );
+	}
+
+	internal static float ComputeMoveSpeedScale( float weaponAdsMoveScale, float zoomFraction )
+	{
+		var clampedZoom = float.IsFinite( zoomFraction ) ? Math.Clamp( zoomFraction, 0f, 1f ) : 0f;
+		if ( clampedZoom <= 0f ) return 1f;
+		var clampedScale = float.IsFinite( weaponAdsMoveScale ) ? Math.Clamp( weaponAdsMoveScale, 0.2f, 1f ) : 1f;
+		return float.Lerp( 1f, clampedScale, clampedZoom );
+	}
+}
+
 /// <summary>
 /// Slot 3 chassis-specific Utility/Tactical abilities for all 7 retail Titans:
 /// Monarch Rearm, Ion Laser Tripwire, Legion Mode Switch, Tone Sonar Lock,
@@ -6,6 +39,7 @@
 public sealed partial class Titanfall2TitanKit
 {
 	const int IonTripwireEnergyCost = 350;
+	const float SonarRadius = 560f;
 	const float NorthstarHoverDuration = 3.2f;
 	const float RoninPhaseDuration = 1.15f;
 	const float ThermalDrainPerSecond = 0.25f;
@@ -19,10 +53,14 @@ public sealed partial class Titanfall2TitanKit
 	[Sync( SyncFlags.FromHost )] public float ThermalShieldMeter { get; private set; } = 1f;
 	[Sync( SyncFlags.FromHost )] public bool RoninBlocking { get; private set; }
 	[Sync( SyncFlags.FromHost )] public float SiphonSlowRemaining { get; private set; }
+	[Sync( SyncFlags.FromHost )] public float PrimaryAdsFraction { get; private set; }
+	public float PrimaryZoomFraction => Kit == Chassis.Ion ? IonZoomFraction : PrimaryAdsFraction;
 	public string LastUtilityFailure { get; private set; }
 
 	bool _holdDefenseHeld;
 	GameObject _holdDefensePilot;
+	bool _primaryAdsHeld;
+	GameObject _primaryAdsPilot;
 	float _thermalRechargeDelay;
 	bool _wasPhasingHost;
 	bool _wasPhasingVisual;
@@ -58,7 +96,48 @@ public sealed partial class Titanfall2TitanKit
 	public bool IsHovering => HoverRemaining > 0;
 	public bool IsPhasing => PhaseRemaining > 0;
 	public float CurrentMoveSpeedMultiplier =>
-		(SiphonSlowRemaining > 0f ? 0.55f : 1f) * (RoninBlocking ? 0.65f : 1f);
+		(SiphonSlowRemaining > 0f ? 0.55f : 1f)
+		* (RoninBlocking ? 0.65f : 1f)
+		* Titanfall2TitanAdsRules.ComputeMoveSpeedScale( Actor.IsValid() ? Actor.AdsMoveSpeedScale : 1f, PrimaryZoomFraction );
+
+	bool CanPrimaryAds => Ready && !IsPhasing && !RoninBlocking
+		&& !(Kit == Chassis.Scorch && DefenseVolumeActive)
+		&& !Actor.Reloading
+		&& Actor.GetComponent<Titanfall2TitanCore>() is not { BlocksPrimary: true };
+
+	/// <summary>Host cockpit primary-weapon ADS input for non-Ion Titans (Ion owns ADS in TitanIon.cs).</summary>
+	internal void SetPrimaryAdsInput( PlayerController pilot, bool ads )
+	{
+		if ( Kit == Chassis.Ion || !Ready || !pilot.IsValid() || pilot.IsProxy || Actor.Seat?.GetOccupant() != pilot ) return;
+		if ( _primaryAdsPilot != pilot.GameObject ) ClearPrimaryAdsInput();
+		_primaryAdsPilot = pilot.GameObject;
+		_primaryAdsHeld = ads;
+	}
+
+	internal void ClearPrimaryAdsInput()
+	{
+		if ( !Networking.IsHost || IsProxy ) return;
+		_primaryAdsPilot = null;
+		_primaryAdsHeld = false;
+		PrimaryAdsFraction = 0f;
+		ClearChassisPrimaryAds();
+	}
+
+	void TickPrimaryAds()
+	{
+		if ( Kit == Chassis.Ion )
+		{
+			PrimaryAdsFraction = 0f;
+			ClearChassisPrimaryAds();
+			return;
+		}
+		var pilot = Actor.Seat?.GetOccupant()?.GameObject;
+		if ( _primaryAdsPilot is not null && (!_primaryAdsPilot.IsValid() || _primaryAdsPilot != pilot) )
+			ClearPrimaryAdsInput();
+		var aiming = _primaryAdsHeld && pilot.IsValid() && CanPrimaryAds;
+		PrimaryAdsFraction = Titanfall2TitanAdsRules.StepZoom( PrimaryAdsFraction, aiming, Actor.SpreadProfile, Time.Delta );
+		TickChassisPrimaryAds();
+	}
 
 	internal void ApplySiphonSlow( float durationSeconds )
 	{
@@ -88,7 +167,6 @@ public sealed partial class Titanfall2TitanKit
 			if ( !DefenseVolumeActive )
 			{
 				BeginDefenseVolume();
-				PlayUtilitySoundRpc( "heat_shield", Eye );
 			}
 			GuardRemaining = 0.25f;
 		}
@@ -145,11 +223,12 @@ public sealed partial class Titanfall2TitanKit
 
 		if ( Kit == Chassis.Scorch )
 		{
-			if ( DefenseVolumeActive && _holdDefenseHeld && _holdDefensePilot.IsValid() )
+			if ( DefenseVolumeActive )
 			{
 				ThermalShieldMeter = MathF.Max( 0f, ThermalShieldMeter - ThermalDrainPerSecond * dt );
 				_thermalRechargeDelay = ThermalRechargeDelay;
-				GuardRemaining = ThermalShieldMeter > 0f ? 0.25f : 0f;
+				if ( _holdDefenseHeld && _holdDefensePilot.IsValid() ) GuardRemaining = ThermalShieldMeter > 0f ? 0.25f : 0f;
+				else if ( ThermalShieldMeter <= 0f ) GuardRemaining = 0f;
 				if ( ThermalShieldMeter <= 0f ) ClearDefenseVolume();
 			}
 			else if ( !DefenseVolumeActive )
@@ -160,7 +239,11 @@ public sealed partial class Titanfall2TitanKit
 		}
 		else if ( Kit == Chassis.Ronin && RoninBlocking )
 		{
-			if ( !_holdDefenseHeld || !_holdDefensePilot.IsValid() )
+			if ( Actor.Seat is not { IsOccupied: true } && GuardRemaining > 0f )
+			{
+				// AI owns a bounded block; it uses the same blocking state as cockpit holds.
+			}
+			else if ( !_holdDefenseHeld || !_holdDefensePilot.IsValid() )
 			{
 				RoninBlocking = false;
 				GuardRemaining = 0f;
@@ -174,6 +257,8 @@ public sealed partial class Titanfall2TitanKit
 
 	void ClearUtilityState()
 	{
+		RearmPresentedAt = -1;
+		_rearmPilot = null;
 		HoverRemaining = 0f;
 		PhaseRemaining = 0f;
 		SiphonSlowRemaining = 0f;
@@ -206,6 +291,7 @@ public sealed partial class Titanfall2TitanKit
 		Titanfall2PhaseDimension.MarkRealspace( Actor.GameObject, inRealspace: true );
 		Titanfall2PhaseDimension.ResolveRoninExitHost( Actor, this );
 		SpawnRoninPhaseRiftRpc( Actor.WorldPosition + Vector3.Up * 90f );
+		PlayUtilitySoundRpc( "phase_end", Eye );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
@@ -216,8 +302,10 @@ public sealed partial class Titanfall2TitanKit
 	public bool TryUtility( Ray aim, GameObject attacker )
 	{
 		LastUtilityFailure = null;
-		if ( !Ready || !ValidAim( aim ) ) { LastUtilityFailure = "机体无法使用辅助技能"; return false; }
+		if ( !Ready || !ValidAim( aim ) || !CanActivateOffhand( Titanfall2TitanAiAction.Utility ) ) { LastUtilityFailure = "机体无法使用辅助技能"; return false; }
 		if ( UtilityRemaining > 0 ) { LastUtilityFailure = "辅助技能冷却中"; return false; }
+		if ( Kit == Chassis.Northstar && AiAutonomous && !HasAiFlightClearance() )
+		{ LastUtilityFailure = "悬浮起落空间不足"; return false; }
 
 		var source = attacker.IsValid() ? attacker : Actor.GameObject;
 		switch ( Kit )
@@ -228,11 +316,11 @@ public sealed partial class Titanfall2TitanKit
 				RefreshAllDashes();
 				Actor.InstantRearmReload();
 				UtilityRemaining = UtilityCooldownSeconds;
-				PlayUtilitySoundRpc( "rearm", Eye );
+				BeginRearmPresentation();
 				return true;
 
 			case Chassis.Ion:
-				if ( !_ionEnergy.Spend( IonTripwireEnergyCost ) )
+				if ( !_ionEnergy.Spend( IonTripwireEnergyCost, AiAutonomous ? AiProfile?.SharedEnergyRegenDelay ?? Titanfall2IonEnergy.RegenDelay : Titanfall2IonEnergy.RegenDelay ) )
 				{
 					LastUtilityFailure = "共享能量不足";
 					return false;
@@ -246,7 +334,7 @@ public sealed partial class Titanfall2TitanKit
 			case Chassis.Legion:
 				LegionLongRangeMode = !LegionLongRangeMode;
 				UtilityRemaining = UtilityCooldownSeconds;
-				PlayUtilitySoundRpc( "mode_switch", Eye );
+				PlayUtilitySoundRpc( LegionLongRangeMode ? "mode_long" : "mode_short", Eye );
 				return true;
 
 			case Chassis.Tone:
@@ -264,7 +352,7 @@ public sealed partial class Titanfall2TitanKit
 			case Chassis.Northstar:
 				UtilityRemaining = UtilityCooldownSeconds;
 				HoverRemaining = NorthstarHoverDuration;
-				PlayUtilitySoundRpc( "hover", Eye );
+				PlayUtilitySoundRpc( "hover_start", Eye );
 				return true;
 
 			case Chassis.Ronin:
@@ -279,7 +367,7 @@ public sealed partial class Titanfall2TitanKit
 				foreach ( var enemyKit in Scene.GetAllComponents<Titanfall2TitanKit>() )
 					if ( enemyKit.IsValid() && enemyKit != this ) enemyKit.ClearTrackerOnTarget( Actor );
 				SpawnRoninPhaseRiftRpc( Actor.WorldPosition + Vector3.Up * 90f );
-				PlayUtilitySoundRpc( "phase", Eye );
+				PlayUtilitySoundRpc( "phase_start", Eye );
 				return true;
 
 			default:
@@ -313,13 +401,12 @@ public sealed partial class Titanfall2TitanKit
 		var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( aim.Position, aim.Position + aim.Forward.Normal * 1800f )
 			.IgnoreGameObjectHierarchy( Actor.GameObject ).WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot );
 		var center = hit.EndPosition;
-		const float sonarRadius = 560f;
 		var sonarRegistry = Scene.GetSystem<Titanfall2SonarRegistry>();
 
 		foreach ( var npc in Scene.GetAllComponents<Titanfall2Npc>().ToArray() )
 		{
 			if ( !npc.IsValid() || npc == Actor || npc.Dead || !Actor.IsHostileToFaction( npc.Faction ) ) continue;
-			if ( npc.WorldPosition.Distance( center ) > sonarRadius ) continue;
+			if ( npc.WorldPosition.Distance( center ) > SonarRadius ) continue;
 			sonarRegistry?.Reveal( npc.GameObject, 6.0f );
 			if ( !_trackers.ContainsKey( npc ) && _trackers.Count >= 64 ) continue;
 			_trackers[npc] = _trackers.GetValueOrDefault( npc ).Add( Time.Now );
@@ -337,11 +424,20 @@ public sealed partial class Titanfall2TitanKit
 	[Rpc.Broadcast( NetFlags.HostOnly )]
 	void SpawnSonarVisualRpc( Vector3 center )
 	{
-		if ( Application.IsHeadless || Application.IsDedicatedServer || !Scene.IsValid() ) return;
+		if ( Application.IsHeadless || Application.IsDedicatedServer || !Actor.IsValid() || !Scene.IsValid() ) return;
+		PlayUtilityCue( "sonar_hit", center );
 		var go = new GameObject( Scene, false, "Tone Sonar Pulse" ) { WorldPosition = center };
 		go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-		Titanfall2CombatEffects.Burst( go, new Color( 1f, 0.55f, 0.18f ), 24, 90, 26, 1.0f );
-		go.AddComponent<TemporaryEffect>().DestroyAfterSeconds = 1.2f;
+		// Retail sh_sonar.gnut CP1 carries duration and scale, not an endpoint.
+		var points = go.AddComponent<Titanfall2ParticleControlPoints>();
+		points.SetControlPoint( 1, new Vector3( SonarRadius / 700f, SonarRadius / 192f, 0 ) );
+		if ( Sandbox.Mounting.Directory.Get( Actor.MountIdent ?? "titanfall2" ) is not Titanfall2Mount mount
+			|| !mount.TryPrepareWeaponParticle( Titanfall2UtilityPresentation.SonarPulse, out var definition )
+			|| !Titanfall2ParticleFactory.TryCreate( go, mount, definition, out _, out _ ) )
+			Titanfall2CombatEffects.Burst( go, new Color( 1f, 0.55f, 0.18f ), 24, 90, 26, 1.0f );
+		var cleanup = go.AddComponent<TemporaryEffect>();
+		cleanup.DestroyAfterSeconds = 1.3f;
+		cleanup.WaitForChildEffects = false;
 		go.Enabled = true;
 	}
 
@@ -349,21 +445,9 @@ public sealed partial class Titanfall2TitanKit
 	void PlayUtilitySoundRpc( string kind, Vector3 point )
 	{
 		if ( Application.IsHeadless || Application.IsDedicatedServer || !Actor.IsValid() ) return;
-		var sound = kind switch
-		{
-			"rearm" => "Titan_Monarch_Smart_Core_Activated_3P",
-			"tripwire" => "Weapon_ShoulderLaser_Fire_3P",
-			"mode_switch" => "Weapon_Predator_WindUp_3P",
-			"sonar" => "Titan_Tone_SonarLock_Fired_ShoulderPod_3P",
-			"canister" => "incendiary_trap_deploy_3p",
-			"heat_shield" => "heat_shield_3p_loop",
-			"hover" => "Jumpjet_Jump_Start_3P",
-			"phase" => "Jumpjet_Wallrun_Start_3P",
-			_ => null
-		};
-		if ( !string.IsNullOrWhiteSpace( sound ) )
-			Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, sound, point );
+		PlayUtilityCue( kind, point );
 	}
+
 }
 
 /// <summary>Proximity laser mine deployed by Ion's Slot 3 Utility ability (Laser Tripwire).</summary>
@@ -389,6 +473,15 @@ public sealed class Titanfall2IonTripwire : Component
 		_armed = ArmDelay;
 		_expiry = Lifetime;
 		if ( Application.IsHeadless || Application.IsDedicatedServer ) return;
+		var visual = new GameObject( GameObject, false, "TF2 Ion Tripwire Pylon" );
+		visual.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
+		visual.LocalTransform = global::Transform.Zero;
+		var model = Titanfall2GameplayVisuals.GetModel( $"mount://{MountIdent}/{Titanfall2UtilityPresentation.TripwireModel}.visual.vmdl" );
+		if ( model is not null && !model.IsError ) visual.AddComponent<ModelRenderer>().Model = model;
+		var particle = visual.AddComponent<Titanfall2PlasmaFlight>();
+		particle.MountIdent = MountIdent;
+		particle.EffectName = Titanfall2UtilityPresentation.TripwireBase;
+		visual.Enabled = true;
 		var light = GameObject.AddComponent<PointLight>();
 		light.LightColor = new Color( 1f, 0.25f, 0.15f ) * 2.5f;
 		light.Radius = 120f;
@@ -442,9 +535,11 @@ public sealed class Titanfall2IonTripwire : Component
 		if ( Application.IsHeadless || Application.IsDedicatedServer || !Scene.IsValid() ) return;
 		var go = new GameObject( Scene, false, "Ion Tripwire Blast" ) { WorldPosition = WorldPosition };
 		go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-		Titanfall2CombatEffects.Burst( go, new Color( 1f, 0.3f, 0.15f ), 36, 180, 28, 0.9f, smoke: true );
-		go.AddComponent<TemporaryEffect>().DestroyAfterSeconds = 1.2f;
+		go.WorldRotation = Rotation.LookAt( Vector3.Up );
+		if ( !Titanfall2RetailWeaponEffects.Spawn( go, MountIdent, Titanfall2UtilityPresentation.TripwireBlast, firstPerson: false, lifetime: 2 ) )
+			Titanfall2CombatEffects.Burst( go, new Color( 1f, 0.3f, 0.15f ), 36, 180, 28, 0.9f, smoke: true );
+		go.AddComponent<TemporaryEffect>().DestroyAfterSeconds = 2.1f;
 		go.Enabled = true;
-		Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, "Weapon_ShoulderLaser_Fire_3P", WorldPosition );
+		Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, Titanfall2UtilityPresentation.TripwireDestroyed, WorldPosition );
 	}
 }

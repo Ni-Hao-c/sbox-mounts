@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Threading;
 
-internal enum Titanfall2WeaponPrewarmKind { Event, Sound, Particle, Model, Impact, Decal, ParticleSprite, WeaponUi, FontGlyph, ParticleTexture }
+internal enum Titanfall2WeaponPrewarmKind { Event, Sound, Particle, Model, Impact, Decal, ParticleSprite, WeaponUi, FontGlyph, ParticleTexture, InteractionModel, AnimationSkeleton, AnimationClip }
 internal readonly record struct Titanfall2WeaponPrewarmItem( Titanfall2WeaponPrewarmKind Kind, string Name, bool Loop = false, string Variant = null,
 	int Sequence = 0, float FrameRate = 0, int FontId = 0, float FontSize = 0 );
 
@@ -71,6 +71,8 @@ public partial class Titanfall2Mount
 		foreach ( var request in _weaponPrewarmRequests.Values ) { request.Cancelled = true; request.Pending.Clear(); }
 		_weaponPrewarmRequests.Clear(); _weaponPrewarmQueue.Clear();
 		_weaponPrewarmedParticles.Clear();
+		_weaponPrewarmMissingSounds.Clear();
+		InteractionResources.Clear();
 		_weaponPrewarmOwner = null; _weaponPrewarmJob = null;
 		_weaponPrewarmFrame = double.NaN;
 	}
@@ -122,7 +124,8 @@ public partial class Titanfall2Mount
 			finally { RecordWeaponPrewarmStep( request, begin, item.Kind ); }
 			if ( !request.Busy && request.Pending.Count > 0 ) _weaponPrewarmQueue.Enqueue( request );
 			if ( item.Kind is Titanfall2WeaponPrewarmKind.Model or Titanfall2WeaponPrewarmKind.Decal or Titanfall2WeaponPrewarmKind.ParticleSprite
-				or Titanfall2WeaponPrewarmKind.WeaponUi or Titanfall2WeaponPrewarmKind.FontGlyph or Titanfall2WeaponPrewarmKind.ParticleTexture ) return;
+				or Titanfall2WeaponPrewarmKind.WeaponUi or Titanfall2WeaponPrewarmKind.FontGlyph or Titanfall2WeaponPrewarmKind.ParticleTexture
+				or Titanfall2WeaponPrewarmKind.InteractionModel or Titanfall2WeaponPrewarmKind.AnimationSkeleton or Titanfall2WeaponPrewarmKind.AnimationClip ) return;
 		}
 	}
 
@@ -137,6 +140,19 @@ public partial class Titanfall2Mount
 	{
 		switch ( item.Kind )
 		{
+			case Titanfall2WeaponPrewarmKind.InteractionModel:
+			case Titanfall2WeaponPrewarmKind.AnimationSkeleton:
+			case Titanfall2WeaponPrewarmKind.AnimationClip:
+				InteractionResources.Get( item.Kind, item.Name );
+				if ( item.Kind == Titanfall2WeaponPrewarmKind.InteractionModel ) request.ModelsReady++;
+				if ( item.Kind == Titanfall2WeaponPrewarmKind.AnimationClip && item.Name.LastIndexOf( "/animations/", StringComparison.Ordinal ) is var split && split > 0
+					&& GetByPath( item.Name[..split] ) is ModelLoader loader )
+					foreach ( var evt in loader.GetInteractionEvents( item.Variant ).Where( evt => evt.Name.Equals( "AE_CL_PLAYSOUND", StringComparison.OrdinalIgnoreCase ) ) )
+					{
+						var sound = evt.Options?.Split( ' ', StringSplitOptions.RemoveEmptyEntries ).FirstOrDefault();
+						if ( !string.IsNullOrWhiteSpace( sound ) ) request.Add( new( Titanfall2WeaponPrewarmKind.Event, sound ) );
+					}
+				break;
 			case Titanfall2WeaponPrewarmKind.Event:
 				if ( TryGetSoundEvent( item.Name, out var soundEvent ) )
 					foreach ( var source in soundEvent.Layers.SelectMany( layer => layer.Choice.Sources ).Distinct( StringComparer.OrdinalIgnoreCase ) )

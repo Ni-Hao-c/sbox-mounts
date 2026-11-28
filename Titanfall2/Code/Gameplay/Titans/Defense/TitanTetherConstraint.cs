@@ -32,7 +32,8 @@ public sealed class Titanfall2TetherConstraint : Component
 		var actor = GetComponent<Titanfall2Npc>();
 		if ( !actor.IsValid() || !actor.TitanCanAct || !HasTethers ) { RestoreNavigation(); return; }
 		// The seat consumes the same constraint inside its existing hull/ground sweep.
-		if ( actor.Seat is { IsOccupied: true } or { IsEmbarking: true } ) { RestoreNavigation(); return; }
+		if ( actor.Seat is { IsOccupied: true } or { IsEmbarking: true }
+			|| actor.IsTraversing || actor.GetComponent<Titanfall2TitanKit>() is { AiControlsMovement: true } ) { RestoreNavigation(); return; }
 		var agent = actor.Agent;
 		if ( agent != _agent ) RestoreNavigation();
 		if ( agent.IsValid() && !_capturedPosition )

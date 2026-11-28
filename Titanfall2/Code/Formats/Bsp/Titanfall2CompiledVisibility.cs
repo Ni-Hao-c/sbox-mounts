@@ -57,19 +57,20 @@ internal sealed class Titanfall2CompiledVisibility
 
 	internal void Write( BinaryWriter writer )
 	{
+		var wordCount = VisibilityCellMask.WordCountFor( CellCount );
 		writer.Write( PortalDepth );
 		writer.Write( CellCount );
-		foreach ( var row in _rows ) { writer.Write( row.Low ); writer.Write( row.High ); }
+		foreach ( var row in _rows ) row.Write( writer, wordCount );
 	}
 
-	internal static Titanfall2CompiledVisibility Read( BinaryReader reader, BspVisibility visibility, int portalDepth )
+	internal static Titanfall2CompiledVisibility Read( BinaryReader reader, BspVisibility visibility, int portalDepth, int wordCount )
 	{
 		if ( reader.ReadInt32() != portalDepth || reader.ReadInt32() != visibility.CellCount )
 			throw new InvalidDataException( "Compiled visibility policy or cell count mismatch." );
 		var rows = new VisibilityCellMask[visibility.CellCount];
 		for ( var cell = 0; cell < rows.Length; ++cell )
 		{
-			rows[cell] = new( reader.ReadUInt64(), reader.ReadUInt64() );
+			rows[cell] = VisibilityCellMask.Read( reader, wordCount );
 			if ( !rows[cell].Contains( cell ) || rows[cell].Union( visibility.AlwaysVisibleCells ) != rows[cell] )
 				throw new InvalidDataException( "Invalid compiled visibility row." );
 		}

@@ -87,7 +87,7 @@
 | `ui/b3wing_ammo_counter` | B3 Wingman, Wingman Elite | 256×256 | Numeric | f=19, sz=150, (128, 69.1) | — |
 | `ui/w1128_ammo_counter` | EVA-8（下屏） | 256×256 | SegmentedBar | — | 8 发霰弹格 (4, 25.6, 248×64) |
 | `ui/w1128_upper_ammo_counter` | EVA-8（上屏） | 256×256 | ContinuousBar | — | 竖向满屏条 (8, 8, 240×240) |
-| `ui/hemlok_bfr_ammo_counter` | Hemlok BF-R | 256×256 | NumericWithBar | f=9, sz=190, (150, 86) | 8 格条 (75,156,116×20) + 底条 (0,228,256×28) |
+| `ui/hemlok_bfr_ammo_counter` | Hemlok BF-R | 256×256 | NumericWithBar | f=9, sz=190, 横向缩放 0.5, (150, 86) | 8 格条 (75,156,116×20) + 底条 (0,228,256×28) |
 | `ui/mk6_ammo_counter` | Smart Pistol MK6 | 256×256 | NumericWithBar | f=9, sz=145, (192, 71.7) | 左侧 2 行 12 格 (4, 51, 112×85) |
 | `ui/epg_ammo_counter` | EPG-1 | 256×256 | DualBar | — | 上 4 格 (12.8,25.6,232×64) + 下 4 格 (12,140,104×104) |
 | `ui/lstar_screens` | L-STAR | 100×100 | HeatScreen | f=9, sz=28, (50, 44) | 过热进度条 (12,22,76×56) + 侧热条 (2,87,96×6) |

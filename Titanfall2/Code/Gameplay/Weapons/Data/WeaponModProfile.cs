@@ -12,7 +12,8 @@ internal static class Titanfall2WeaponModProfile
 		"extended_ammo" => key == "ammo_clip_size",
 		"pas_fast_reload" => key is "reload_time" or "reloadempty_time",
 		"pas_fast_ads" => key is "zoom_time_in" or "zoom_time_out",
-		"hcog" or "redline_sight" => key == "viewmodel_offset_ads" || key == "zoom_fov" || key.StartsWith( "bodygroup", StringComparison.Ordinal ),
+		"hcog" or "redline_sight" => key == "viewmodel_offset_ads" || key == "zoom_fov" || key.StartsWith( "bodygroup", StringComparison.Ordinal )
+			|| key.StartsWith( "sway_", StringComparison.Ordinal ) || key.StartsWith( "bob_", StringComparison.Ordinal ),
 		_ => false
 	};
 }

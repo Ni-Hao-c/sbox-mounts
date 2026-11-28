@@ -45,7 +45,7 @@ public sealed partial class Titanfall2Weapon
 			Sound( SmartAmmo.AcquiringSound, loop: true );
 			Sound( SmartAmmo.ConfirmedSound );
 		}
-		Sound( FireSound1P ); Sound( FireSound ); Sound( Presentation.ShellSound );
+		Sound( FireSound1P ); Sound( FireSound ); Sound( Presentation.ShellSound ); Sound( Projectile.FlightSound, loop: true );
 		foreach ( var name in new[] { Presentation.MuzzleView, Presentation.MuzzleWorld, Presentation.ShellView,
 			Presentation.ShellWorld, Presentation.Shell2View, Presentation.Shell2World, Presentation.TracerView,
 			Presentation.TracerWorld, Projectile.TrailEffect, Projectile.ScriptTrailEffect, Projectile.HazardEffect } ) Particle( name );

@@ -394,7 +394,7 @@ public sealed partial class Titanfall2StaticPropStreamer : Component
 
 		var scale = MathF.Max( prop.Scale, 0.001f );
 		var radius = model.Bounds.Size.Length * 0.5f * scale;
-		var castShadows = ShouldCastShadows( radius );
+		var castShadows = ShouldCastShadows( radius, prop.CastsShadows );
 		// Individual objects keep the exact per-cell distance/PVS decision; only a shared
 		// batch, which has one flag for every member cell, has to fall back to the cluster
 		// aggregate. Reading the state here rather than the raw mask means a prop spawned out

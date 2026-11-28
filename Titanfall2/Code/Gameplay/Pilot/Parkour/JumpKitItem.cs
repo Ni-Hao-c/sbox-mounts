@@ -70,13 +70,13 @@ public sealed class Titanfall2JumpKitItem : Component, Component.IPressable
 		if ( pilot.GameObject.GetComponent<Titanfall2PilotParkour>() is { Equipped: true } )
 		{
 			Titanfall2PilotParkour.Unequip( pilot );
-			Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, Settings.SoundWallrunEnd1P, WorldPosition );
+			Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, Settings.SoundSlideStop1P, WorldPosition );
 			return true;
 		}
 
 		var parkour = Titanfall2PilotParkour.Equip( pilot, MountIdent, Settings, PackModelPath );
 		if ( !parkour.IsValid() ) return false;
-		parkour.PlayMovementSound( Settings.SoundJumpJetStart1P, Settings.SoundJumpJetStart3P );
+		parkour.PlayJumpJetBurst();
 		GameObject.Destroy();
 		return true;
 	}

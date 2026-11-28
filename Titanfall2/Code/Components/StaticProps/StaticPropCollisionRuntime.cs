@@ -64,6 +64,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 
 		public readonly List<PropCell> Queue = new();
 		readonly List<GameObject> _groupedObjects = new();
+		readonly List<Func<GameObject>> _restoreGroupedObjects = new();
 		readonly List<PhysicsGroupDescription> _groupedPhysics = new();
 		public bool Dirty;
 		public int Cursor;
@@ -89,12 +90,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 
 		public void Clear()
 		{
-			foreach ( var obj in _groupedObjects )
-			{
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Destroy();
-			}
-			_groupedObjects.Clear();
-			_groupedPhysics.Clear();
+			DestroyGroupedObjects();
 			Queue.Clear();
 			Cursor = 0;
 			Expected = Created = MergedBodyCount = Filtered = Failures = 0;
@@ -128,7 +124,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 				if ( Dirty && !owner._releasing )
 				{
 					Dirty = false;
-					RebuildMergedResidentCollisions();
+					RepairMissingResidentCollisions();
 				}
 				return;
 			}
@@ -560,6 +556,14 @@ public sealed partial class Titanfall2StaticPropStreamer
 		void AttachMergedPhysicsGroup( PhysicsGroupDescription physics, string tagSuffix, bool hasContents, uint contents, int propCount )
 		{
 			_groupedPhysics.Add( physics );
+			_groupedObjects.Add( CreateMergedCollisionObject( physics, tagSuffix, hasContents, contents ) );
+			_restoreGroupedObjects.Add( () => CreateMergedCollisionObject( physics, tagSuffix, hasContents, contents ) );
+			MergedBodyCount++;
+			Created += propCount;
+		}
+
+		GameObject CreateMergedCollisionObject( PhysicsGroupDescription physics, string tagSuffix, bool hasContents, uint contents )
+		{
 			var obj = new GameObject( owner.GameObject, owner.Active, $"t2_prop_col_{tagSuffix}" );
 			obj.Flags |= GameObjectFlags.NotSaved;
 			obj.IsStatic = true;
@@ -579,23 +583,37 @@ public sealed partial class Titanfall2StaticPropStreamer
 			source.CollisionDestroyed = OnResidentCollisionDestroyed;
 
 			if ( hasContents ) Titanfall2CollisionQueries.Classify( obj, collider, contents );
-			_groupedObjects.Add( obj );
-			MergedBodyCount++;
-			Created += propCount;
+			return obj;
 		}
 
-		void RebuildMergedResidentCollisions()
+		void RepairMissingResidentCollisions()
 		{
-			DestroyGroupedObjects();
-			Created = MergedBodyCount = Filtered = Failures = 0;
 			ResidentReady = false;
-			var groups = new Dictionary<(bool HasContents, uint Contents), MergedContentsGroup>();
-			foreach ( var cluster in owner._clusters.Values )
+			Timer.Restart();
+			var repaired = 0;
+			// Reuse the complete load-time resources, including on the cache fast path where
+			// cell.Instances contains only render fallbacks. Never recreate an entire map
+			// from that partial render list or tear down healthy collision to repair one body.
+			for ( var index = 0; index < _groupedObjects.Count; index++ )
 			{
 				if ( !owner.IsValid() || !owner.GameObject.IsValid() ) return;
-				CollectClusterProps( cluster, groups );
+				var obj = _groupedObjects[index];
+				if ( obj.IsValid() && !obj.IsDestroyed ) continue;
+				if ( repaired >= CollisionInstancesPerFrame || (repaired > 0 && Timer.Elapsed.TotalMilliseconds >= CollisionFrameBudgetMilliseconds) )
+				{
+					Dirty = true;
+					return;
+				}
+				var replacement = _restoreGroupedObjects[index]();
+				if ( !replacement.IsValid() || replacement.IsDestroyed )
+				{
+					Failures++;
+					Log.Warning( $"Titanfall 2 could not restore resident collision body {index} ({owner.MapPath})." );
+					return;
+				}
+				_groupedObjects[index] = replacement;
+				repaired++;
 			}
-			CreateMergedGroups( groups );
 			ResidentReady = owner._failedProps == 0 && Failures == 0
 				&& Created + Filtered == Expected;
 		}
@@ -633,11 +651,21 @@ public sealed partial class Titanfall2StaticPropStreamer
 		void DestroyGroupedObjects()
 		{
 			foreach ( var obj in _groupedObjects )
-			{
-				if ( obj.IsValid() && !obj.IsDestroyed ) obj.Destroy();
-			}
+				RetireCollisionObject( obj );
 			_groupedObjects.Clear();
+			_restoreGroupedObjects.Clear();
 			_groupedPhysics.Clear();
+		}
+
+		// Destroy is deferred. Detach the scene-owned notification before requesting it:
+		// a scoped suppression flag or clearing Dirty here ends before OnDestroy runs.
+		// Unexpected external destruction still keeps its notification and requests repair.
+		static void RetireCollisionObject( GameObject obj )
+		{
+			if ( !obj.IsValid() ) return;
+			var source = obj.Components.Get<Titanfall2CollisionSource>();
+			if ( source.IsValid() ) source.CollisionDestroyed = null;
+			if ( !obj.IsDestroyed ) obj.Destroy();
 		}
 
 		int CollectClusterProps( PropCluster cluster, Dictionary<(bool HasContents, uint Contents), MergedContentsGroup> groups )
@@ -857,6 +885,17 @@ public sealed partial class Titanfall2StaticPropStreamer
 
 		bool CreateFallbackResidentCollider( PropInstance instance, Model resolvedModel )
 		{
+			var obj = CreateFallbackResidentObject( instance, resolvedModel );
+			if ( !obj.IsValid() ) return false;
+			_groupedObjects.Add( obj );
+			_restoreGroupedObjects.Add( () => CreateFallbackResidentObject( instance, resolvedModel ) );
+			MergedBodyCount++;
+			Created++;
+			return true;
+		}
+
+		GameObject CreateFallbackResidentObject( PropInstance instance, Model resolvedModel )
+		{
 			var prop = instance.Source;
 			var data = resolvedModel.GetData<Titanfall2ModelCollisionData>();
 			var hasContents = prop.SourceIndex >= 0 && data is not null;
@@ -887,13 +926,10 @@ public sealed partial class Titanfall2StaticPropStreamer
 			if ( ModelLoader.IsUsableModel( collider.Model ) && collider.Model.Physics is { Parts.Count: > 0 } )
 			{
 				source.CollisionDestroyed = OnResidentCollisionDestroyed;
-				_groupedObjects.Add( collisionObject );
-				MergedBodyCount++;
-				Created++;
-				return true;
+				return collisionObject;
 			}
 			collisionObject.Destroy();
-			return false;
+			return null;
 		}
 
 		public void SetGroupedEnabled( bool enabled )
@@ -911,7 +947,7 @@ public sealed partial class Titanfall2StaticPropStreamer
 
 		public void Release( PropInstance instance )
 		{
-			if ( instance.CollisionObject.IsValid() && !instance.CollisionObject.IsDestroyed ) instance.CollisionObject.Destroy();
+			RetireCollisionObject( instance.CollisionObject );
 			instance.CollisionObject = null;
 		}
 	}

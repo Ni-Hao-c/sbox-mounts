@@ -39,6 +39,8 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	[Property, Sync( SyncFlags.FromHost )] public Titanfall2DamageProfile DamageProfile { get; set; }
 	[Property] public int ShotPellets { get; set; } = 1;
 	[Property] public float ShotSpread { get; set; } = 4;
+	[Property, Sync( SyncFlags.FromHost )] public float AdsFov { get; set; } = 55f;
+	[Property, Sync( SyncFlags.FromHost )] public float AdsMoveSpeedScale { get; set; } = 1f;
 	[Sync( SyncFlags.FromHost )] public float Shield { get; private set; }
 	[Sync( SyncFlags.FromHost )] public int Rounds { get; private set; }
 	[Sync( SyncFlags.FromHost )] public bool Reloading { get; private set; }
@@ -77,6 +79,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	int _burst;
 	bool _chasing;
 	bool _followingLeader;
+	bool _wasPiloted;
 	[Sync( SyncFlags.FromHost )] bool Moving { get; set; }
 
 	internal static bool IsAllyFaction( string faction ) =>
@@ -88,12 +91,19 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	internal static bool IsNeutralFaction( string faction ) =>
 		string.Equals( faction, "neutral", StringComparison.OrdinalIgnoreCase );
 
+	internal static bool IsImcFaction( string faction ) =>
+		string.Equals( faction, "imc", StringComparison.OrdinalIgnoreCase )
+		|| string.Equals( faction, Factions.Enemy, StringComparison.OrdinalIgnoreCase );
+
+	internal static bool AreFactionsHostile( string faction, string otherFaction ) =>
+		!IsNeutralFaction( faction ) && !IsNeutralFaction( otherFaction )
+		&& !(IsAllyFaction( faction ) && IsAllyFaction( otherFaction ))
+		&& !(IsImcFaction( faction ) && IsImcFaction( otherFaction ))
+		&& !string.Equals( faction, otherFaction, StringComparison.OrdinalIgnoreCase );
+
 	internal bool IsHostileToFaction( string otherFaction )
 	{
-		if ( IsNeutralFaction( Faction ) || IsNeutralFaction( otherFaction ) ) return false;
-		if ( IsAllyFaction( Faction ) && IsAllyFaction( otherFaction ) ) return false;
-		if ( string.Equals( Faction, otherFaction, StringComparison.OrdinalIgnoreCase ) ) return false;
-		return true;
+		return AreFactionsHostile( Faction, otherFaction );
 	}
 
 	protected override void SetupRelationships()
@@ -182,6 +192,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 
 	protected override void OnStart()
 	{
+		InitializeAiProfile();
 		EyeHeight = BodyHeight * 0.79f;
 		FollowDistance = MathF.Max( 120f, BodyRadius * 8f );
 		if ( string.IsNullOrWhiteSpace( Faction ) ) Faction = "imc";
@@ -203,6 +214,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		if ( Renderer.Model is not { IsError: false } model ) return;
 		InitializeAnimation( model );
 		AttachGun();
+		TickNpcInteractionPrewarm( pump: false );
 	}
 
 	protected override void OnUpdate()
@@ -237,6 +249,8 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		}
 		if ( Seat.IsValid() && (Seat.IsOccupied || Seat.IsEmbarking) )
 		{
+			if ( !_wasPiloted ) CancelNpcActions( "pilot takeover" );
+			_wasPiloted = true;
 			if ( ActiveSchedule is not null ) EndCurrentSchedule();
 			if ( Movement.IsValid() ) { Movement.Stop(); if ( Movement.Enabled ) Movement.Enabled = false; }
 			if ( Agent.IsValid() ) { Agent.Stop(); if ( Agent.Enabled ) Agent.Enabled = false; }
@@ -246,7 +260,8 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 			PlayLocomotion();
 			return;
 		}
-		if ( NavigationMode == Navigation.Ground && MoveSpeed > 0 )
+		_wasPiloted = false;
+		if ( NavigationMode == Navigation.Ground && MoveSpeed > 0 && !AiOwnsMovement )
 		{
 			if ( Agent.IsValid() && !Agent.Enabled ) Agent.Enabled = true;
 			if ( Movement.IsValid() && !Movement.Enabled ) Movement.Enabled = true;
@@ -452,22 +467,28 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		return (WorldPosition - position).LengthSquared > 0.05f;
 	}
 
+	internal Vector3 PrimaryMuzzlePosition => _gun.IsValid() ? _gun.GetComponent<BaseWeaponModel>()?.GetMuzzleTransform().Position ?? Eye : Eye;
+
 	internal bool Fire( Ray aim, GameObject attacker, bool piloted )
 	{
-		if ( !Networking.IsHost || IsProxy || !TitanCanAct || !CanFight ) return false;
+		if ( !Networking.IsHost || IsProxy || !TitanCanAct || !CanFight || IsInTermination || IsTraversing ) return false;
+		if ( !piloted && GetComponent<Titanfall2TitanKit>() is { AiBlocksPrimary: true } ) return false;
 		var core = GetComponent<Titanfall2TitanCore>();
-		if ( core is { BlocksPrimary: true } ) return core.TryPrimaryAttack( aim, attacker );
+		// Autonomous Sword Core swings belong to the skill director's range and combo policy.
+		if ( core is { BlocksPrimary: true } ) return piloted && core.TryPrimaryAttack( aim, attacker );
 		var kit = GetComponent<Titanfall2TitanKit>();
 		if ( kit is { BlocksTitanPrimary: true } ) return false;
-		if ( Reloading || _meleePending || _nextShot > 0 || Rounds <= 0 && core is not { UnlimitedAmmo: true } ) return false;
+		if ( Reloading || MeleePending || _nextShot > 0 || Rounds <= 0 && core is not { UnlimitedAmmo: true } ) return false;
 		if ( !MeleeOnly && Rounds < Firing.Minimum && core is not { UnlimitedAmmo: true } ) { StartReload(); return false; }
 		var damageMultiplier = core?.PrimaryDamageMultiplier ?? 1;
 		aim = core?.AssistAim( aim ) ?? aim;
 		if ( MeleeOnly ) return TryStartMelee( aim, attacker );
 		var ionShot = default( Titanfall2IonPrimaryShot );
 		if ( kit.IsValid() && !kit.TryPrepareIonPrimary( piloted, out ionShot ) ) return false;
+		var primaryShot = default( Titanfall2TitanPrimaryShot );
+		if ( kit.IsValid() && !kit.TryPreparePrimaryShot( piloted, out primaryShot ) ) return false;
 		if ( ionShot.Enabled ) damageMultiplier *= ionShot.DamageScale;
-		var origin = _gun.IsValid() ? _gun.GetComponent<BaseWeaponModel>()?.GetMuzzleTransform().Position ?? Eye : Eye;
+		var origin = PrimaryMuzzlePosition;
 		// Aim at the point visible from the cockpit, but start the shot at the muzzle.
 		// This prevents a close wall in front of the gun being bypassed by the camera.
 		if ( piloted )
@@ -476,30 +497,38 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 				.IgnoreGameObjectHierarchy( GameObject ).UseHitboxes().WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot ).EndPosition;
 			if ( (target - origin).LengthSquared > 1f ) aim = new Ray( origin, (target - origin).Normal );
 		}
-		var spread = FiringSpread( piloted );
+		var primaryZoom = piloted && kit.IsValid() ? Math.Clamp( kit.PrimaryZoomFraction, 0f, 1f ) : 0f;
+		var spread = FiringSpread( piloted, primaryZoom );
 		var effectiveRange = AttackRange;
 		var ammoCost = Firing.Cost;
 		if ( kit is { Kit: Titanfall2TitanKit.Chassis.Legion } )
 		{
 			if ( kit.LegionLongRangeMode )
 			{
-				spread *= 0.28f;
+				spread *= float.Lerp( 0.28f, 0.12f, primaryZoom );
 				effectiveRange = MathF.Max( AttackRange * 1.45f, 3200f );
 				ammoCost = Math.Max( 2, Firing.Cost * 2 );
 			}
 		}
 		var patternDirection = Firing.HasPattern || ionShot.Enabled ? aim.Forward.WithAimCone( spread, spread ) : aim.Forward;
-		// Retail NPC callbacks use a fixed zoom fraction of 0.5.
-		var zoom = 0.5f;
+		// Retail NPC callbacks use a fixed zoom fraction of 0.5; piloted Titans use live primary ADS zoom.
+		var zoom = piloted ? primaryZoom : 0.5f;
+		var leadwallPattern = kit is { Kit: Titanfall2TitanKit.Chassis.Ronin } && !ionShot.Enabled && !Firing.HasPattern;
+		var shotDamage = (ShotDamage + primaryShot.PilotBonusDamage) * damageMultiplier;
+		var heavyDamage = (TitanShotDamage + primaryShot.TitanBonusDamage) * damageMultiplier;
 		for ( var i = 0; i < (ionShot.Enabled ? ionShot.Count : Firing.Count( ShotPellets )); i++ )
 		{
 			var direction = ionShot.Enabled ? ionShot.Bearing( patternDirection, i )
-				: Firing.HasPattern ? Firing.Bearing( patternDirection, i, zoom ) : aim.Forward.WithAimCone( spread, spread );
+				: Firing.HasPattern ? Firing.Bearing( patternDirection, i, zoom )
+				: leadwallPattern ? Titanfall2TitanPrimaryAdsRules.LeadwallPelletDirection( aim.Forward, i, zoom, Game.Random.Float( 1.2f, 1.7f ) )
+				: aim.Forward.WithAimCone( spread, spread );
 			var ray = new Ray( aim.Position, direction );
 			if ( Projectile.Enabled )
 			{
 				var flight = ionShot.Enabled ? ionShot.Flight( Projectile ) : Firing.Flight( Projectile, zoom, i );
-				Titanfall2Projectile.Launch( Scene, ray, flight, ShotDamage * damageMultiplier, TitanShotDamage * damageMultiplier, attacker, GameObject, GameObject, DamageProfile, !piloted );
+				if ( !string.IsNullOrEmpty( primaryShot.TrailOverride ) )
+					flight = flight with { TrailEffect = primaryShot.TrailOverride };
+				Titanfall2Projectile.Launch( Scene, ray, flight, shotDamage, heavyDamage, attacker, GameObject, GameObject, DamageProfile, !piloted );
 				continue;
 			}
 			var hit = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( ray, effectiveRange ).IgnoreGameObjectHierarchy( GameObject )
@@ -527,11 +556,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		if ( core is not { UnlimitedAmmo: true } ) Rounds = Math.Max( 0, Rounds - ammoCost );
 		var interval = core?.PrimaryInterval( ShotInterval ) ?? ShotInterval;
 		if ( Rounds < Firing.Minimum && core is not { UnlimitedAmmo: true } ) StartReload();
-		else if ( !piloted && Role != FrontierRole.EliteMonarch && ++_burst >= Math.Max( 1, BurstShots ) )
-		{
-			_burst = 0;
-			_nextShot = MathF.Max( interval, BurstPause );
-		}
+		else if ( !piloted && Role != FrontierRole.EliteMonarch ) _nextShot = CommitNpcBurstShot( interval );
 		else _nextShot = MathF.Max( 0.05f, interval );
 		return true;
 	}
@@ -545,6 +570,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 
 	internal void StartReload()
 	{
+		if ( IsInTermination || IsTraversing || GetComponent<Titanfall2TitanKit>() is { AiBlocksPrimary: true } ) return;
 		var core = GetComponent<Titanfall2TitanCore>();
 		if ( !TitanCanAct || Reloading || core is { UnlimitedAmmo: true } || Rounds >= (core?.MagazineCapacity ?? MagazineSize) ) return;
 		Reloading = true;
@@ -672,7 +698,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		body.Velocity = Vector3.Up * 65f - WorldRotation.Forward * 85f;
 		corpse.AddComponent<Titanfall2CorpseCleanup>();
 		corpse.Enabled = true;
-		if ( _actorClips?.Contains( ModelLoader.DeathRole ) == true && renderer.SceneModel.IsValid() )
+		if ( HasActorClip( ModelLoader.DeathRole ) && renderer.SceneModel.IsValid() )
 		{
 			renderer.Sequence.Name = ModelLoader.DeathRole;
 			renderer.Sequence.Looping = false;
@@ -685,6 +711,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 	void KillActor( bool spawnRagdoll = false )
 	{
 		if ( !Networking.IsHost || IsProxy || Dead ) return;
+		CancelNpcActions( "death" );
 		SetTitanLifeState( Titanfall2TitanLifeState.Dead );
 		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		Health = 0;
@@ -714,7 +741,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		{
 			if ( _gun.IsValid() ) _gun.Destroy();
 			_gun = null;
-			_gunBone = null;
+			ClearGunBoneBinding();
 			_triedGun = false;
 		}
 		if ( _triedGun ) { UpdateGunPose(); return; }
@@ -731,8 +758,7 @@ public sealed partial class Titanfall2Npc : BaseCombatNpc, Component.IPressable
 		{
 			if ( root.Parent is not null || body.Bones.GetBone( root.Name ) is not { } shared ) continue;
 			if ( !root.Name.Contains( "gun", StringComparison.OrdinalIgnoreCase ) && !root.Name.Contains( "prophand", StringComparison.OrdinalIgnoreCase ) ) continue;
-			_gunBone = shared;
-			_gunBindInverse = root.LocalTransform.ToLocal( global::Transform.Zero );
+			SetGunBoneBinding( shared, root.LocalTransform.ToLocal( global::Transform.Zero ) );
 			mount ??= GameObject;
 			break;
 		}

@@ -16,6 +16,7 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	[Property] public float TitanDamage { get; set; }
 	[Property] public int BurstCount { get; set; } = 1;
 	[Property] public float BurstRecovery { get; set; }
+	[Property] public float RechamberTime { get; set; }
 	int _burstRemaining;
 	TimeUntil _burstStep;
 	TimeUntil _nextProjectileRequest;
@@ -23,31 +24,57 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	internal float AdsBlend => _adsBlend;
 	internal bool IsFullyAds => _adsBlend >= 1f;
 
-	public bool IsAiming => !IsProxy && IsHeld && IsActive && !IsReloading && Input.Down( "attack2" )
+	public bool IsAiming => !IsProxy && IsHeld && IsActive && !IsReloading
+		&& (!(IsRechambering && NeedsRechamber) || string.IsNullOrEmpty( Presentation.ScopeReticle ))
+		&& (Input.Down( "attack2" ) || (Firing.AttackPressesAds && Input.Down( "attack1" ) && HasRoundAmmo()))
 		&& _parkourState is not { Equipped: true, CombatBusy: true }
 		&& ViewModel.IsValid() && ViewModel.GetComponent<Titanfall2PilotViewModel>() is { HasAds: true };
 
 	public bool IsSprinting => !IsProxy && IsHeld && IsActive && !IsReloading && !IsAiming
 		&& _parkourState is not { Equipped: true, CombatBusy: true }
 		&& TimeSinceShoot > 0.25f && Owner.IsValid()
-		&& (_parkourPose.IsWallrunning || _parkourPose.IsSliding || _parkourPose.IsMantling ? false
+		&& (_parkourPose.IsWallrunning || _parkourPose.IsWallhanging || _parkourPose.IsSliding || _parkourPose.IsMantling ? false
 			: _parkourState is { Equipped: true } ? _parkourPose.IsSprinting
 			: Owner.IsOnGround && Input.Down( "run" ) && Owner.Velocity.WithZ( 0 ).Length > 180f);
 
 	public override Vector2 CurrentSpread => SpreadProfile.Enabled ? RetailSpread( _adsBlend ) : base.CurrentSpread * float.Lerp( 1f, 0.25f, _adsBlend );
+
+	const float RetailFovAspectRatio = 4f / 3f;
 
 	protected override void ModifyCamera( CameraComponent camera, ref CameraView view )
 	{
 		base.ModifyCamera( camera, ref view );
 		if ( _adsBlend > 0.001f )
 		{
-			var targetFov = Math.Clamp( AdsFov, 15f, view.FieldOfView );
+			var adsFov = camera.IsValid() ? ResolveAdsFieldOfView( AdsFov, camera.FovAxis ) : AdsFov;
+			var targetFov = Math.Clamp( adsFov, 10f, view.FieldOfView );
 			view.FieldOfView = float.Lerp( view.FieldOfView, targetFov, _adsBlend );
 		}
 		ApplyViewKickCamera( ref view );
 	}
 
-	protected override bool WantsPrimaryAttack() => _burstRemaining == 0 && base.WantsPrimaryAttack();
+	// Retail zoom_fov (e.g. Kraber 26.26 = 3x of 70° 4:3, HCOG 35°) is authored as 4:3 horizontal FOV.
+	internal static float ResolveAdsFieldOfView( float retailHorizontalFov, CameraComponent.Axis axis )
+	{
+		var clamped = Math.Clamp( float.IsFinite( retailHorizontalFov ) ? retailHorizontalFov : 55f, 10f, 120f );
+		if ( axis != CameraComponent.Axis.Vertical ) return clamped;
+		var halfRad = clamped * (MathF.PI / 360f);
+		return MathF.Atan( MathF.Tan( halfRad ) / RetailFovAspectRatio ) * (360f / MathF.PI);
+	}
+
+	internal static float ResolveHorizontalFieldOfView( float fov, CameraComponent.Axis axis, Vector2 screenSize )
+	{
+		var clamped = Math.Clamp( float.IsFinite( fov ) ? fov : 90f, 10f, 150f );
+		if ( axis != CameraComponent.Axis.Vertical ) return clamped;
+		var aspect = screenSize.y > 1f && screenSize.x > 1f && float.IsFinite( screenSize.x / screenSize.y )
+			? screenSize.x / screenSize.y : 16f / 9f;
+		var halfRad = clamped * (MathF.PI / 360f);
+		return Math.Clamp( MathF.Atan( MathF.Tan( halfRad ) * aspect ) * (360f / MathF.PI), 15f, 150f );
+	}
+
+	protected override bool WantsPrimaryAttack() => _burstRemaining == 0
+		&& (!Firing.RequireFullAdsToFire || _adsBlend >= 0.98f)
+		&& base.WantsPrimaryAttack();
 	// Right mouse is ADS for mounted guns. The base secondary-fire path would
 	// cancel reloads because an unused secondary ammo pool is considered infinite.
 	protected override bool WantsSecondaryAttack() => Projectile.Behavior == Titanfall2ProjectileBehavior.RemoteCharge && base.WantsSecondaryAttack();
@@ -58,11 +85,12 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	public override void PrimaryAttack()
 	{
-		if ( UsesOrdnance ) { BeginOrdnanceAttack(); return; }
-		if ( UsesRetailCharge ) { BeginChargeAttack(); return; }
-		if ( UsesRetailSmartAmmo ) { BeginSmartAttack(); return; }
-		PrepareOwnerHeatShot();
-		PrepareOwnerSpinShot();
+		if ( !CanAcceptRechamberShot() ) return;
+		if ( UsesOrdnance ) { _ordnance.BeginAttack( this ); return; }
+		if ( UsesRetailCharge ) { _charge.BeginAttack( this ); return; }
+		if ( UsesRetailSmartAmmo ) { _smartAmmo.BeginAttack( this ); return; }
+		_heat.PrepareOwnerShot( this );
+		_spinUp.PrepareOwnerShot( this );
 		FireRound();
 		if ( BurstCount <= 1 || !IsHeld || !HasRoundAmmo() ) return;
 		_burstRemaining = Math.Min( BurstCount - 1, 7 );
@@ -86,13 +114,15 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		if ( UsesOrdnance ) return;
 		var owner = Owner;
 		if ( !Networking.IsHost || !Projectile.Enabled || !owner.IsValid() || Inventory?.ActiveItem != this
-			|| IsReloading || _nextProjectileRequest > 0 || !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f
-			|| !float.IsFinite( zoom ) || zoom is < 0 or > 1 ) return;
+			|| IsReloading || !CanAcceptRechamberShot() || _nextProjectileRequest > 0 || !direction.IsFinite || direction.LengthSquared is < 0.25f or > 4f
+			|| !float.IsFinite( zoom ) || zoom is < 0 or > 1
+			|| (Firing.RequireFullAdsToFire && zoom < 0.95f) ) return;
 		direction = direction.Normal;
 		if ( validateClientAim && Vector3.Dot( owner.EyeTransform.Forward, direction ) < 0.35f ) return;
-		if ( !CanAcceptHeatShot() || !TakePrimaryAmmo( Firing.Cost ) ) return;
-		AcceptHeatShot();
-		_nextProjectileRequest = MathF.Max( AcceptHostSpinShot( zoom ), 0.015f );
+		if ( !_heat.CanAcceptShot( this ) || !TakePrimaryAmmo( Firing.Cost ) ) return;
+		_heat.AcceptShot( this );
+		_nextProjectileRequest = MathF.Max( _spinUp.AcceptHostShot( this, zoom ), 0.015f );
+		if ( Clip1 > 0 ) RecordRechamberShot( _nextProjectileRequest );
 		var spread = SpreadProfile.Enabled ? RetailSpread( zoom ) : CurrentSpread;
 		TimeSinceShoot = 0;
 		var pellets = Firing.Count( Ballistics.Pellets );
@@ -118,20 +148,22 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 			Titanfall2Projectile.Launch( Scene, new Ray( origin, flightDirection ), Firing.Flight( Projectile, zoom, i ),
 				Ballistics.Damage, TitanDamage, owner.GameObject, GameObject, owner.GameObject, DamageProfile );
 		}
-		RecordSpreadShot( zoom );
-		PlayProjectileFire();
+		PlayProjectileFire( zoom );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayProjectileFire() => OnShootEffects( default );
+	void PlayProjectileFire( float zoom )
+	{
+		TimeSinceShoot = 0;
+		RecordSpreadShot( zoom );
+		OnShootEffects( default );
+	}
 
 	protected override void Think()
 	{
-		TickOrdnance();
-		TickHeat();
-		TickCharge();
-		TickSpinUp();
-		UpdateSmartLock();
+		TickRechamber();
+		TickSpreadRun();
+		TickMechanics();
 		if ( _burstRemaining == 0 ) return;
 		if ( !IsHeld || !HasRoundAmmo() || IsReloading || Input.Pressed( "reload" ) )
 		{
@@ -150,20 +182,18 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 	}
 
 	public override bool CanPrimaryAttack() => _burstRemaining == 0
+		&& !NeedsRechamber
 		&& _parkourState is not { Equipped: true, CombatBusy: true }
 		&& (!UsesOrdnance || CanBeginOrdnance)
 		&& !HeatVenting && (!UsesRetailCharge || CanBeginCharge)
-		&& (!UsesRetailSmartAmmo || SmartBurstRemaining == 0 && _smartShotTime <= 0) && base.CanPrimaryAttack();
+		&& (!UsesRetailSmartAmmo || _smartAmmo.CanStartAttack( this )) && base.CanPrimaryAttack();
 
 	protected override void OnHolstered()
 	{
-		CancelOrdnance();
-		StopHeatRun();
-		CancelCharge();
+		InterruptRechamber();
+		HolsterMechanics();
 		StopChargePresentation();
 		StopHeatPresentation();
-		ResetSmartAmmo();
-		StopSpinUp();
 		ResetViewKick();
 		GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		_burstRemaining = 0;
@@ -191,24 +221,20 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		UpdatePickup( Inventory.IsValid() );
 		UpdateAttachments();
 		BeginWeaponPrewarm();
-		InitializeCharge();
-		RegisterHeatInventory();
-		RegisterOrdnanceInventory();
+		StartMechanics();
 	}
 
 	protected override void OnUpdate()
 	{
+		TickRechamber();
+		TickSpreadRun();
 		UpdateAttachments();
 		TickWeaponPrewarm();
 		var stored = Inventory.IsValid();
 		if ( stored != _inInventory ) UpdatePickup( stored );
 		base.OnUpdate();
-		TickOrdnance();
-		TickHeat();
-		TickCharge();
+		TickMechanics();
 		UpdateChargePresentation();
-		TickSpinUp();
-		UpdateSmartLock();
 		TickRetailReloadPresentation();
 		if ( IsReloading || !IsActive ) GetComponent<Titanfall2WeaponSoundEmitter>()?.StopFiring();
 		else if ( !IsProxy && Owner is { UseInputControls: true } && _burstRemaining == 0 && SmartBurstRemaining == 0 && !Input.Down( "attack1" ) )
@@ -221,6 +247,14 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	Titanfall2PilotViewPoseState _parkourPose;
 	ITitanfall2PilotParkourState _parkourState;
+	PlayerController _firstDrawOwner;
+
+	internal bool BeginPilotDraw()
+	{
+		if ( !Owner.IsValid() || _firstDrawOwner == Owner ) return false;
+		_firstDrawOwner = Owner;
+		return true;
+	}
 
 	void UpdatePilotViewState()
 	{
@@ -233,13 +267,12 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 		ReadPilotParkourState( out _parkourPose );
 		var aiming = IsAiming;
 		var sprinting = IsSprinting;
-		var oneHanded = _parkourPose.IsWallrunning || MathF.Abs( _parkourPose.WallrunSide ) > 0.1f
-			|| (_parkourPose.IsSliding && _parkourPose.SlideBlend > 0.3f);
+		var oneHanded = _parkourPose.IsWallrunning || _parkourPose.IsWallhanging || MathF.Abs( _parkourPose.WallrunSide ) > 0.1f;
 		var rate = aiming ? 9f : 11f;
 		_adsBlend = SpreadProfile.Enabled ? SpreadProfile.AdvanceZoom( _adsBlend, aiming, Time.Delta )
 			: Math.Clamp( _adsBlend + (aiming ? 1f : -1f) * rate * Time.Delta, 0f, 1f );
 		if ( ViewModel.GetComponent<Titanfall2PilotViewModel>() is { } pilotView )
-			pilotView.SetLocomotionState( aiming, sprinting, oneHanded, _adsBlend );
+			pilotView.SetLocomotionState( aiming, sprinting, oneHanded, _adsBlend, Owner.IsValid() && Owner.IsDucking, _parkourPose.IsSliding );
 	}
 
 	void ReadPilotParkourState( out Titanfall2PilotViewPoseState pose )
@@ -261,21 +294,17 @@ public sealed partial class Titanfall2Weapon : BaseCombatWeapon
 
 	protected override void OnAdded( BaseInventoryComponent inventory )
 	{
-		InitializeCharge();
+		_charge.OnAdded( this );
 		base.OnAdded( inventory );
-		RegisterHeatInventory();
-		RegisterOrdnanceInventory();
+		_heat.OnAdded( this );
+		_ordnance.OnAdded( this );
 		UpdatePickup( true );
 		BeginWeaponPrewarm();
 	}
 
 	protected override void OnRemoved( BaseInventoryComponent inventory )
 	{
-		RemoveOrdnanceInventory();
-		StopHeatRun();
-		CancelCharge();
-		_heatInventory?.Remove( this ); _heatInventory = null;
-		_hostHeat.Recovering = false;
+		RemoveMechanics();
 		base.OnRemoved( inventory );
 		UpdatePickup( false );
 	}

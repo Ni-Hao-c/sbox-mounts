@@ -7,6 +7,10 @@ public partial class Titanfall2Mount
 	internal static string WeaponParticleLibrary( string name )
 	{
 		if ( string.IsNullOrWhiteSpace( name ) ) return null;
+		if ( name.Equals( "P_heal", StringComparison.OrdinalIgnoreCase ) || name.StartsWith( "heal_CH_", StringComparison.OrdinalIgnoreCase )
+			|| name.StartsWith( "P_pilot_stim", StringComparison.OrdinalIgnoreCase ) || name.StartsWith( "stim_", StringComparison.OrdinalIgnoreCase ) ) return "particles/human_ability_fx.pcf";
+		if ( name.StartsWith( "P_phase_shift_", StringComparison.OrdinalIgnoreCase ) || name.StartsWith( "ps_", StringComparison.OrdinalIgnoreCase ) ) return "particles/player_phase_shift.pcf";
+		if ( name.StartsWith( "wpn_grenade_sonar", StringComparison.OrdinalIgnoreCase ) ) return "particles/wpn_grenade.pcf";
 		var shotLibrary = ShotParticleLibrary( name );
 		if ( shotLibrary is not null ) return shotLibrary;
 		if ( name.StartsWith( "P_impact_exp_smll_", StringComparison.OrdinalIgnoreCase ) ) return "particles/impact_fx_exp_sm.pcf";

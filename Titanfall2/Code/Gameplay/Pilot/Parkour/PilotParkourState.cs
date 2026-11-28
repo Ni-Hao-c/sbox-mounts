@@ -14,7 +14,8 @@ public readonly record struct Titanfall2PilotViewPoseState(
 	bool IsSprinting,
 	float OffhandDip = 0f,
 	float MeleeProgress = 0f,
-	Titanfall2PilotMeleeStrikeKind MeleeStrikeKind = Titanfall2PilotMeleeStrikeKind.None );
+	Titanfall2PilotMeleeStrikeKind MeleeStrikeKind = Titanfall2PilotMeleeStrikeKind.None,
+	bool IsWallhanging = false );
 
 /// <summary>Typed state surface exposed by the Pilot Jump Kit controller for weapons and HUDs.</summary>
 public interface ITitanfall2PilotParkourState
@@ -25,6 +26,7 @@ public interface ITitanfall2PilotParkourState
 	float SlideBlend { get; }
 	float MantleProgress { get; }
 	bool IsWallrunning { get; }
+	bool IsWallhanging { get; }
 	bool IsSliding { get; }
 	bool IsMantling { get; }
 	bool IsSprinting { get; }
@@ -94,7 +96,7 @@ public sealed class Titanfall2JumpKitPersistence : GameObjectSystem<Titanfall2Ju
 
 		foreach ( var player in Scene.GetAllComponents<PlayerController>() )
 		{
-			if ( !player.IsValid() || !player.Active ) continue;
+			if ( !player.IsValid() || !player.Active || player.GameObject.IsDestroyed ) continue;
 			var key = OwnerKey( player );
 			if ( !_equipped.TryGetValue( key, out var entry ) ) continue;
 			var parkour = player.GameObject.GetComponent<Titanfall2PilotParkour>();

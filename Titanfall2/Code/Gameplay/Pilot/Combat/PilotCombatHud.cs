@@ -1,44 +1,33 @@
 using Sandbox.UI;
 using Sandbox.UI.Construct;
 
-/// <summary>
-/// Minimal bottom-right HUD widget active while the local player has the Pilot Jump Kit equipped.
-/// Displays combat/yield status, [M3] Tactical ([T] cycle), [F] Melee state, [G] Offhand Ordnance charge/cook progress,
-/// Stim/Phase screen tints, Pulse Blade sonar markers, and melee hitmarker.
-/// </summary>
+/// <summary>One retail tactical icon beside the host health readout, plus transient combat feedback.</summary>
 [Hide]
-public sealed class Titanfall2PilotCombatHud : PanelComponent
+public sealed class Titanfall2PilotCombatHud : Titanfall2MountPanelComponent
 {
 	const int MaxSonarMarkers = 12;
-
 	[Property] public Titanfall2PilotParkour Parkour { get; set; }
 	[Property] public Titanfall2PilotCombat Combat { get; set; }
 	[Property] public Titanfall2PilotTactical Tactical { get; set; }
 
 	Panel _root;
-	Panel _badge;
-	Label _badgeText;
-	Panel _tacticalCard;
-	Label _tacticalName;
+	Image _tacticalIcon;
+	Label _fallback;
 	Label _tacticalState;
+	Label _riderState;
 	Panel _tacticalFill;
-	Panel _meleeCard;
-	Label _meleeState;
-	Panel _meleeFill;
-	Panel _ordnanceCard;
-	Label _ordnanceName;
-	Label _ordnanceCharges;
-	Panel _ordnanceFill;
-	Panel _cookTrack;
-	Panel _cookFill;
 	Panel _hitmarker;
-	Panel _stimOverlay;
-	Panel _phaseOverlay;
 	readonly List<Panel> _sonarMarkers = [];
 	readonly List<GameObject> _sonarTargets = [];
-
+	string _requestedArt;
+	int _artGeneration;
 	int _lastHitSerial;
 	TimeUntil _hitFlash;
+	TimeUntil _layoutRefresh;
+	Component _vitalsOwner;
+	PropertyDescription _healthProperty;
+	PropertyDescription _armourProperty;
+	bool _vitalsResolved;
 
 	const string PilotHudStyles = """
 titanfall2pilotcombathud {
@@ -50,26 +39,50 @@ titanfall2pilotcombathud {
 	color: #e4f6ff;
 	text-shadow: 0 1px 3px #000d;
 
-	.tactical-overlay {
+	.pilot-tactical {
+		position: absolute;
+		left: 200px;
+		bottom: 38px;
+		width: 58px;
+		height: 58px;
+		background-color: #09121b99;
+		border: 1px solid #d8edff55;
+		border-radius: 3px;
+	}
+	.pilot-tactical.hidden { display: none; }
+	.pilot-tactical.cooling { opacity: 0.6; }
+	.pilot-tactical.active { border-color: #f7c773; }
+	.rider-state { position: absolute; bottom: 110px; left: 38px; font-size: 15px; color: #a8ffd0; }
+	.tactical-icon {
+		position: absolute;
+		left: 8px;
+		top: 6px;
+		width: 40px;
+		height: 40px;
+		background-size: contain;
+		background-repeat: no-repeat;
+		background-position: center;
+	}
+	.icon-fallback {
+		position: absolute;
+		width: 100%;
+		top: 19px;
+		text-align: center;
+		font-size: 11px;
+		font-weight: 700;
+	}
+	.slot-key { position: absolute; left: 3px; bottom: 5px; font-size: 11px; font-weight: 700; }
+	.slot-state { position: absolute; right: 3px; bottom: 5px; font-size: 10px; font-weight: 600; }
+	.slot-bar {
 		position: absolute;
 		left: 0;
-		top: 0;
+		bottom: 0;
 		width: 100%;
-		height: 100%;
-		opacity: 0;
-		transition: opacity 0.14s ease;
+		height: 2px;
+		background-color: #152836aa;
 	}
-	.tactical-overlay.stim {
-		border: 14px solid #3bff9a66;
-		background-color: #16ff8814;
-	}
-	.tactical-overlay.phase {
-		border: 20px solid #76e4ff99;
-		background-color: #162a3a72;
-		backdrop-filter: saturate(20%) contrast(1.1);
-	}
-	.tactical-overlay.active { opacity: 1; }
-
+	.slot-fill { height: 100%; width: 100%; background-color: #d8edff; }
+	.pilot-tactical.active .slot-fill { background-color: #f7c773; }
 	.sonar-marker {
 		position: absolute;
 		width: 16px;
@@ -82,112 +95,6 @@ titanfall2pilotcombathud {
 		display: none;
 	}
 	.sonar-marker.visible { display: flex; }
-
-	.pilot-dock {
-		position: absolute;
-		right: 2.6%;
-		bottom: 4.5%;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 6px;
-		transition: opacity 0.12s ease;
-	}
-	.pilot-dock.hidden { opacity: 0; }
-	.pilot-dock.yielded { opacity: 0.45; }
-
-	.mode-badge {
-		padding: 2px 8px;
-		background-color: #08131ccc;
-		border-left: 3px solid #59d5ff;
-		border-top: 1px solid #59d5ff44;
-		border-right: 1px solid #59d5ff44;
-		border-bottom: 1px solid #59d5ff44;
-	}
-	.pilot-dock.yielded .mode-badge {
-		border-left-color: #ffb85c;
-		border-color: #ffb85c55;
-	}
-	.mode-text {
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 1.5px;
-		color: #8ee5ff;
-	}
-	.pilot-dock.yielded .mode-text { color: #ffd089; }
-
-	.slots-row {
-		flex-direction: row;
-		gap: 8px;
-	}
-
-	.slot-card {
-		width: 118px;
-		padding: 7px 9px 9px 9px;
-		background-color: #07111ad4;
-		border: 1px solid #6ec8f055;
-		flex-direction: column;
-		gap: 3px;
-	}
-	.slot-card.cooling { opacity: 0.68; border-color: #6ec8f02a; }
-	.slot-card.active { border-color: #ffb95c; background-color: #16181ce0; }
-
-	.slot-header {
-		flex-direction: row;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.slot-key {
-		padding: 1px 5px;
-		background-color: #0d2130;
-		border: 1px solid #8bdcff88;
-		font-size: 10px;
-		font-weight: 700;
-		color: #d8f5ff;
-	}
-	.slot-card.active .slot-key {
-		border-color: #ffc56e;
-		color: #ffe0a8;
-	}
-	.slot-count {
-		font-size: 12px;
-		font-weight: 700;
-		color: #c9f1ff;
-	}
-	.slot-name {
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.6px;
-		color: #e6f7ff;
-		margin-top: 2px;
-	}
-	.slot-bar {
-		width: 100%;
-		height: 3px;
-		background-color: #152836aa;
-		margin-top: 2px;
-	}
-	.slot-fill {
-		height: 100%;
-		width: 100%;
-		background-color: #65d6ff;
-	}
-	.slot-card.cooling .slot-fill { background-color: #5d8da3; }
-	.slot-card.active .slot-fill { background-color: #ffb95c; }
-
-	.cook-track {
-		width: 100%;
-		height: 3px;
-		background-color: #241910cc;
-		margin-top: 2px;
-		display: none;
-	}
-	.cook-track.visible { display: flex; }
-	.cook-fill {
-		height: 100%;
-		width: 0%;
-		background-color: #ff9c42;
-	}
-
 	.melee-hitmarker {
 		position: absolute;
 		left: 50%;
@@ -199,12 +106,7 @@ titanfall2pilotcombathud {
 		opacity: 0;
 	}
 	.melee-hitmarker.active { opacity: 0.95; }
-	.hm-arm {
-		position: absolute;
-		width: 8px;
-		height: 2px;
-		background-color: #ffffff;
-	}
+	.hm-arm { position: absolute; width: 8px; height: 2px; background-color: #fff; }
 	.melee-hitmarker.kill .hm-arm { background-color: #ff5548; }
 	.hm-tl { left: 1px; top: 4px; transform: rotate(45deg); }
 	.hm-tr { right: 1px; top: 4px; transform: rotate(-45deg); }
@@ -217,124 +119,78 @@ titanfall2pilotcombathud {
 	{
 		base.OnEnabled();
 		if ( !Panel.IsValid() ) return;
-
+		Panel.DeleteChildren( true );
 		_sonarMarkers.Clear();
+		_requestedArt = null;
+		_artGeneration++;
+		_layoutRefresh = 0;
 		Panel.StyleSheet.AddInline( PilotHudStyles, "titanfall2:pilot-combat" );
-
-		_stimOverlay = Panel.Add.Panel( "tactical-overlay stim" );
-		_phaseOverlay = Panel.Add.Panel( "tactical-overlay phase" );
-
 		for ( var i = 0; i < MaxSonarMarkers; i++ )
 			_sonarMarkers.Add( Panel.Add.Panel( "sonar-marker" ) );
-
 		_hitmarker = Panel.Add.Panel( "melee-hitmarker" );
 		_hitmarker.Add.Panel( "hm-arm hm-tl" );
 		_hitmarker.Add.Panel( "hm-arm hm-tr" );
 		_hitmarker.Add.Panel( "hm-arm hm-bl" );
 		_hitmarker.Add.Panel( "hm-arm hm-br" );
+		_root = Panel.Add.Panel( "pilot-tactical hidden" );
+		_tacticalIcon = _root.AddChild<Image>( "tactical-icon" );
+		_fallback = _root.Add.Label( "", "icon-fallback" );
+		_root.Add.Label( "T", "slot-key" );
+		_tacticalState = _root.Add.Label( "", "slot-state" );
+		_tacticalFill = _root.Add.Panel( "slot-bar" ).Add.Panel( "slot-fill" );
+		_riderState = Panel.Add.Label( "", "rider-state" );
+	}
 
-		_root = Panel.Add.Panel( "pilot-dock" );
-		_badge = _root.Add.Panel( "mode-badge" );
-		_badgeText = _badge.Add.Label( "PILOT COMBAT · [T] 切技能", "mode-text" );
-
-		var slots = _root.Add.Panel( "slots-row" );
-
-		_tacticalCard = slots.Add.Panel( "slot-card" );
-		var tacHeader = _tacticalCard.Add.Panel( "slot-header" );
-		tacHeader.Add.Label( "M3", "slot-key" );
-		_tacticalState = tacHeader.Add.Label( "READY", "slot-count" );
-		_tacticalName = _tacticalCard.Add.Label( "STIM 兴奋剂", "slot-name" );
-		var tacBar = _tacticalCard.Add.Panel( "slot-bar" );
-		_tacticalFill = tacBar.Add.Panel( "slot-fill" );
-
-		_meleeCard = slots.Add.Panel( "slot-card" );
-		var meleeHeader = _meleeCard.Add.Panel( "slot-header" );
-		meleeHeader.Add.Label( "F", "slot-key" );
-		_meleeState = meleeHeader.Add.Label( "READY", "slot-count" );
-		_meleeCard.Add.Label( "MELEE 近战", "slot-name" );
-		var meleeBar = _meleeCard.Add.Panel( "slot-bar" );
-		_meleeFill = meleeBar.Add.Panel( "slot-fill" );
-
-		_ordnanceCard = slots.Add.Panel( "slot-card" );
-		var ordHeader = _ordnanceCard.Add.Panel( "slot-header" );
-		ordHeader.Add.Label( "G", "slot-key" );
-		_ordnanceCharges = ordHeader.Add.Label( "2/2", "slot-count" );
-		_ordnanceName = _ordnanceCard.Add.Label( "FRAG", "slot-name" );
-		var ordBar = _ordnanceCard.Add.Panel( "slot-bar" );
-		_ordnanceFill = ordBar.Add.Panel( "slot-fill" );
-		_cookTrack = _ordnanceCard.Add.Panel( "cook-track" );
-		_cookFill = _cookTrack.Add.Panel( "cook-fill" );
+	protected override void OnDisabled()
+	{
+		_artGeneration++;
+		base.OnDisabled();
 	}
 
 	protected override void OnUpdate()
 	{
 		if ( !_root.IsValid() ) return;
-
 		var valid = Parkour is { IsValid: true, Equipped: true } && Combat is { IsValid: true };
 		var controller = valid ? Parkour.GetComponent<PlayerController>() : null;
-		var inPilotMode = controller is { IsValid: true, Mode: Titanfall2PilotMoveMode };
-		_root.SetClass( "hidden", !valid || !inPilotMode );
+		var inPilotMode = controller is { IsValid: true, Mode: Titanfall2PilotMoveMode } && !controller.IsProxy;
+		if ( _riderState.IsValid() )
+		{
+			var rider = controller.IsValid() && !controller.IsProxy ? Titanfall2TitanRodeo.ForPilot( controller ) : null;
+			var carrying = controller.IsValid() && !controller.IsProxy && controller.GetComponent<Titanfall2PilotBattery>() is { HasBattery: true };
+			_riderState.Text = rider?.State switch
+			{
+				Titanfall2RodeoState.Mounting => "正在攀上泰坦",
+				Titanfall2RodeoState.StealingBattery => "正在拔取电池",
+				Titanfall2RodeoState.ThrowingGrenade => "正在向电池舱投雷",
+				Titanfall2RodeoState.InsertingBattery => "正在补给友方泰坦",
+				Titanfall2RodeoState.FriendlyIdle => "友方搭乘 · 可射击 · 跳跃键离开",
+				_ => carrying && inPilotMode ? "携带电池 · 搭乘友方泰坦进行补给" : ""
+			};
+		}
+		if ( !Tactical.IsValid() && valid ) Tactical = Parkour.Tactical ?? Parkour.GetComponent<Titanfall2PilotTactical>();
+		var showTactical = valid && inPilotMode && Tactical is { IsValid: true, HasEquippedTactical: true };
+		_root.SetClass( "hidden", !showTactical );
 		if ( !valid || !inPilotMode )
 		{
 			_hitmarker?.SetClass( "active", false );
-			_stimOverlay?.SetClass( "active", false );
-			_phaseOverlay?.SetClass( "active", false );
 			HideSonarMarkers();
 			return;
 		}
-
-		Tactical ??= Parkour.Tactical ?? Parkour.GetComponent<Titanfall2PilotTactical>();
-		var yielded = Combat.YieldedToSandbox;
-		_root.SetClass( "yielded", yielded );
-		_badgeText.Text = yielded ? "SANDBOX TOOL" : "PILOT COMBAT · [T] 切技能";
-
-		// Tactical card & screen overlays.
-		if ( Tactical.IsValid() )
+		if ( showTactical )
 		{
+			UpdateTacticalArtwork();
+			UpdatePlacement();
 			var active = Tactical.IsActive;
 			var ready = Tactical.ChargesAvailable > 0;
-			_tacticalCard.SetClass( "active", active );
-			_tacticalCard.SetClass( "cooling", !active && !ready );
-			_tacticalName.Text = Tactical.DisplayLabel;
-			_tacticalState.Text = Tactical.IsStimActive ? $"{Tactical.StimRemaining:0.0}s"
-				: Tactical.IsPhaseActive ? $"{Tactical.PhaseRemaining:0.0}s"
-				: Tactical.IsGrappling ? "HOOK"
-				: Tactical.MaxCharges > 1 ? $"{Tactical.ChargesAvailable}/{Tactical.MaxCharges}"
-				: ready ? "READY"
-				: $"{(int)MathF.Round( Tactical.ChargeFillFraction * 100f )}%";
+			_root.SetClass( "active", active );
+			_root.SetClass( "cooling", !active && !ready );
+			_tacticalState.Text = Tactical.IsStimActive ? $"{Tactical.StimRemaining:0.0}"
+				: Tactical.IsPhaseActive ? $"{Tactical.PhaseRemaining:0.0}"
+				: Tactical.IsGrappling ? ""
+				: Tactical.MaxCharges > 1 && ready ? $"{Tactical.ChargesAvailable}"
+				: ready ? "" : $"{(int)MathF.Round( Tactical.ChargeFillFraction * 100f )}%";
 			_tacticalFill.Style.Width = Length.Percent( Tactical.ChargeFillFraction * 100f );
-
-			_stimOverlay?.SetClass( "active", Tactical.IsStimActive );
-			_phaseOverlay?.SetClass( "active", Tactical.IsPhaseActive );
 		}
-		else
-		{
-			_stimOverlay?.SetClass( "active", false );
-			_phaseOverlay?.SetClass( "active", false );
-		}
-
-		// Melee card.
-		var meleeFrac = Combat.MeleeCooldownFraction;
-		_meleeCard.SetClass( "active", Combat.MeleeActive );
-		_meleeCard.SetClass( "cooling", !Combat.MeleeActive && meleeFrac < 0.999f );
-		_meleeState.Text = Combat.MeleeActive ? StrikeLabel( Combat.MeleeStrikeKind ) : meleeFrac >= 0.999f ? "READY" : $"{(int)MathF.Round( meleeFrac * 100f )}%";
-		_meleeFill.Style.Width = Length.Percent( meleeFrac * 100f );
-
-		// Ordnance card.
-		var charges = Combat.OrdnanceCharges;
-		var maxCharges = Combat.OrdnanceMaxCharges;
-		var cooking = Combat.OrdnanceCooking;
-		_ordnanceCard.SetClass( "active", cooking || Combat.OrdnanceThrowing );
-		_ordnanceCard.SetClass( "cooling", charges <= 0 && !cooking && !Combat.OrdnanceThrowing );
-		_ordnanceName.Text = Combat.OrdnanceShortLabel ?? "FRAG";
-		_ordnanceCharges.Text = $"{charges}/{maxCharges}";
-		_ordnanceFill.Style.Width = Length.Percent( Combat.OrdnanceChargeFill * 100f );
-
-		_cookTrack.SetClass( "visible", cooking && Combat.OrdnanceCookFraction > 0.001f );
-		if ( cooking )
-			_cookFill.Style.Width = Length.Percent( Combat.OrdnanceCookFraction * 100f );
-
-		// Brief melee hitmarker confirmation.
 		if ( Combat.MeleeHitSerial != _lastHitSerial )
 		{
 			_lastHitSerial = Combat.MeleeHitSerial;
@@ -343,9 +199,101 @@ titanfall2pilotcombathud {
 		var showHit = _hitFlash > 0f;
 		_hitmarker.SetClass( "active", showHit );
 		_hitmarker.SetClass( "kill", showHit && Combat.MeleeLastHitWasKill );
-
 		UpdateSonarMarkers();
 	}
+
+	void UpdateTacticalArtwork()
+	{
+		// hud_icon in retail mp_ability_heal/grapple/shifter and mp_weapon_grenade_sonar.txt.
+		var suffix = Tactical.SelectedKind switch
+		{
+			Titanfall2PilotTacticalKind.Grapple => "grapple",
+			Titanfall2PilotTacticalKind.PhaseShift => "phase_shift",
+			Titanfall2PilotTacticalKind.PulseBlade => "pulse_blade",
+			_ => "stim"
+		};
+		var uri = $"mount://{Tactical.MountIdent}/rui/pilot_loadout/tactical/pilot_tactical_{suffix}.vtex";
+		if ( _requestedArt == uri ) return;
+		_requestedArt = uri;
+		_fallback.Text = Tactical.SelectedKind switch
+		{
+			Titanfall2PilotTacticalKind.Grapple => "HOOK",
+			Titanfall2PilotTacticalKind.PhaseShift => "PHASE",
+			Titanfall2PilotTacticalKind.PulseBlade => "PULSE",
+			_ => "STIM"
+		};
+		LoadTacticalArtwork( uri, ++_artGeneration );
+	}
+
+	async void LoadTacticalArtwork( string uri, int generation )
+	{
+		_tacticalIcon.Style.Display = DisplayMode.None;
+		_fallback.Style.Display = DisplayMode.Flex;
+		if ( Sandbox.Mounting.Directory.Get( Tactical.MountIdent )?.GetByPath( uri ) is null )
+		{
+			Titanfall2Log.Warning( $"Pilot tactical HUD artwork is not mounted: '{uri}'." );
+			return;
+		}
+		try
+		{
+			var texture = await Texture.LoadAsync( uri );
+			if ( generation != _artGeneration || !_tacticalIcon.IsValid() || !_fallback.IsValid() ) return;
+			if ( !texture.IsValid() || texture == Texture.Invalid || texture == Texture.White || texture == Texture.Transparent ) return;
+			_tacticalIcon.Texture = texture;
+			_tacticalIcon.Style.Display = DisplayMode.Flex;
+			_fallback.Style.Display = DisplayMode.None;
+		}
+		catch ( Exception e )
+		{
+			Titanfall2Log.Warning( $"Cannot load Pilot tactical artwork '{uri}': {e.Message}" );
+		}
+	}
+
+	void UpdatePlacement()
+	{
+		if ( _layoutRefresh > 0f ) return;
+		_layoutRefresh = 0.25f;
+		if ( !_vitalsResolved )
+		{
+			_vitalsResolved = true;
+			foreach ( var component in Parkour.GameObject.Components.GetAll() )
+			{
+				var description = Game.TypeLibrary?.GetType( component.GetType() );
+				var health = description?.GetProperty( "Health" );
+				var armour = description?.GetProperty( "Armour" );
+				if ( health is not { CanRead: true } || armour is not { CanRead: true } ) continue;
+				_vitalsOwner = component;
+				_healthProperty = health;
+				_armourProperty = armour;
+				break;
+			}
+		}
+
+		// Sandbox's public HUD preferences and VitalsSection dimensions, without a game-assembly
+		// dependency. Other host games receive the same bottom-left fallback placement.
+		var hudScale = Math.Clamp( ReadHudNumber( "sandbox.hud_scale", 1f ), 0.5f, 3f );
+		var margin = Screen.Width * Math.Clamp( ReadHudNumber( "sandbox.hud_margin", 2f ), 0f, 20f ) / 100f;
+		var scale = MathF.Max( Panel.ScaleToScreen, 0.01f );
+		var healthValue = ReadVital( _healthProperty, 100f );
+		var armourValue = ReadVital( _armourProperty, 0f );
+		var healthWidth = StatWidth( healthValue, hudScale );
+		var armourWidth = armourValue >= 1f ? StatWidth( armourValue, hudScale ) + 10f * hudScale : 0f;
+		_root.Style.Left = Length.Pixels( margin / scale + healthWidth + armourWidth + 12f * hudScale );
+		_root.Style.Bottom = Length.Pixels( margin / scale );
+	}
+
+	float ReadVital( PropertyDescription property, float fallback )
+	{
+		if ( !_vitalsOwner.IsValid() || property is null ) return fallback;
+		return property.GetValue( _vitalsOwner ) switch { float value => value, int value => value, _ => fallback };
+	}
+
+	static float StatWidth( float value, float scale ) =>
+		(32f * Math.Max( 3, ((int)MathF.Max( 0f, value )).ToString().Length ) + 52.5f) * scale;
+
+	static float ReadHudNumber( string name, float fallback ) =>
+		float.TryParse( ConsoleSystem.GetValue( name, "" ), System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var value ) && float.IsFinite( value ) ? value : fallback;
 
 	void UpdateSonarMarkers()
 	{
@@ -383,13 +331,4 @@ titanfall2pilotcombathud {
 			m?.SetClass( "visible", false );
 	}
 
-	static string StrikeLabel( Titanfall2PilotMeleeStrikeKind kind ) => kind switch
-	{
-		Titanfall2PilotMeleeStrikeKind.AirKick => "AIR KICK",
-		Titanfall2PilotMeleeStrikeKind.SlideKick => "SLIDE KICK",
-		Titanfall2PilotMeleeStrikeKind.WallKick => "WALL KICK",
-		Titanfall2PilotMeleeStrikeKind.LeftHook => "PUNCH",
-		Titanfall2PilotMeleeStrikeKind.RightHook => "PUNCH",
-		_ => "STRIKE"
-	};
 }

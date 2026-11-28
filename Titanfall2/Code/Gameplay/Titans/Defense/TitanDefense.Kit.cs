@@ -12,7 +12,7 @@ public sealed partial class Titanfall2TitanKit
 		GameObject OriginalAttacker, GameObject OriginalWeapon );
 
 	internal bool DefenseVolumeActive => Active && !IsProxy && _defenseLive && GuardRemaining > 0
-		&& Actor.IsValid() && Actor == _defenseActor && Actor.TitanCanAct
+		&& Actor.IsValid() && Actor == _defenseActor && Actor.TitanCanAct && !Actor.IsInTermination
 		&& (Kit == Chassis.Ion || Kit == Chassis.Scorch || Kit == Chassis.Legion && GunShieldHealth > 0);
 	internal float DefenseRadius => Kit == Chassis.Ion ? Titanfall2TitanDefense.VortexRadius
 		: Kit == Chassis.Scorch ? Titanfall2TitanDefense.ThermalShieldRadius
@@ -36,7 +36,7 @@ public sealed partial class Titanfall2TitanKit
 	Ray DefenseAim()
 	{
 		if ( Actor.Seat?.GetOccupant() is { } pilot && pilot.IsValid() ) return pilot.EyeTransform.ForwardRay;
-		if ( Actor.CombatTarget is { } target && target.IsValid() )
+		if ( Actor.CombatTarget is { } target && target.IsValid() && Actor.HasLineOfSight( target ) )
 			return new Ray( Eye, (target.GetBounds().Center - Eye).Normal );
 		return new Ray( Eye, Actor.WorldRotation.Forward );
 	}
@@ -68,7 +68,7 @@ public sealed partial class Titanfall2TitanKit
 	void TickDefenseVolume()
 	{
 		if ( !_defenseLive ) return;
-		if ( !Actor.IsValid() || Actor != _defenseActor || !Actor.TitanCanAct || Kit is not (Chassis.Ion or Chassis.Legion or Chassis.Scorch) )
+		if ( !Actor.IsValid() || Actor != _defenseActor || !Actor.TitanCanAct || Actor.IsInTermination || Kit is not (Chassis.Ion or Chassis.Legion or Chassis.Scorch) )
 		{
 			ClearDefenseVolume();
 			GuardRemaining = 0;
@@ -106,7 +106,11 @@ public sealed partial class Titanfall2TitanKit
 		// Stop interception before refiring: released shots can never enter our own list.
 		ClearDefenseVolume();
 		GuardRemaining = 0;
-		if ( rounds.Length == 0 ) return;
+		if ( rounds.Length == 0 )
+		{
+			if ( refire && Kit == Chassis.Ion ) PlayVortexReleaseCue( transform.Position, threw: false );
+			return;
+		}
 		var target = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( aim, 16384 )
 			.IgnoreGameObjectHierarchy( Actor.GameObject ).UseHitboxes().WithoutTags( "trigger", "projectile" ), Titanfall2TraceMask.Shot ).EndPosition;
 		var clearance = Titanfall2CollisionQueries.Run( Scene.Trace.Ray( Eye, transform.Position )
@@ -139,14 +143,14 @@ public sealed partial class Titanfall2TitanKit
 			}
 			PlayVortexRefire( origin, new BaseCombatWeapon.ShotEffect( hit.EndPosition, hit.Hit, hit.Normal, hit.GameObject, hit.Surface ) );
 		}
-		PlayDefenseSound( "vortex_shield_throw_3P", origin );
+		PlayVortexReleaseCue( origin, threw: true );
 	}
 
 	internal void AbsorbHitscan( Titanfall2DefenseShot shot, float distance, GameObject attacker, GameObject weapon, Vector3 point )
 	{
 		if ( !Networking.IsHost || !DefenseVolumeActive ) return;
-		if ( Kit == Chassis.Legion ) { DamageGunShield( shot.At( distance, true ), point ); return; }
-		if ( Kit == Chassis.Scorch ) { PlayDefenseHit( point, false ); return; }
+		if ( Kit == Chassis.Legion ) { DamageGunShield( shot.At( distance, true ), point, projectileOrBlast: false ); return; }
+		if ( Kit == Chassis.Scorch ) { PresentDefenseImpact( point, DefenseFacing, Titanfall2DefensePresentation.Hit.Bullet ); return; }
 		if ( shot.Refire && _capturedRounds.Count < Titanfall2TitanDefense.VortexCapacity )
 		{
 			// Preserve the host damage at capture for both armor classes; do not trust
@@ -155,7 +159,7 @@ public sealed partial class Titanfall2TitanKit
 			_capturedRounds.Add( new( captured, null, attacker, weapon ) );
 			CapturedAmmo = _capturedRounds.Count;
 		}
-		PlayDefenseHit( point, false );
+		PresentDefenseImpact( point, DefenseFacing, Titanfall2DefensePresentation.Hit.Bullet );
 	}
 
 	internal void AbsorbProjectile( Titanfall2CapturedProjectile projectile, float distance, GameObject attacker, GameObject weapon, Vector3 point )
@@ -167,7 +171,7 @@ public sealed partial class Titanfall2TitanKit
 			DamageGunShield( direct + MathF.Max( 0, projectile.Settings.SplashTitanDamage > 0 ? projectile.Settings.SplashTitanDamage : projectile.Settings.SplashDamage ), point );
 			return;
 		}
-		if ( Kit == Chassis.Scorch ) { PlayDefenseHit( point, false ); return; }
+		if ( Kit == Chassis.Scorch ) { PresentDefenseImpact( point, DefenseFacing, Titanfall2DefensePresentation.Hit.ProjectileOrBlast ); return; }
 		// A remote satchel has no valid detonation controller after ownership changes;
 		// it is absorbed without a refire payload in this first-stage implementation.
 		if ( !projectile.Settings.VortexAbsorbOnly && projectile.Settings.Behavior != Titanfall2ProjectileBehavior.RemoteCharge
@@ -176,35 +180,23 @@ public sealed partial class Titanfall2TitanKit
 			_capturedRounds.Add( new( default, projectile, attacker, weapon ) );
 			CapturedAmmo = _capturedRounds.Count;
 		}
-		PlayDefenseHit( point, false );
+		PresentDefenseImpact( point, DefenseFacing, Titanfall2DefensePresentation.Hit.ProjectileOrBlast );
 	}
 
-	internal void DamageGunShield( float damage, Vector3 point )
+	internal void DamageGunShield( float damage, Vector3 point, bool projectileOrBlast = true )
 	{
 		if ( !Networking.IsHost || !DefenseVolumeActive || Kit != Chassis.Legion || !float.IsFinite( damage ) || damage <= 0 ) return;
 		GunShieldHealth = MathF.Max( 0, GunShieldHealth - damage );
 		var broken = GunShieldHealth <= 0;
-		if ( broken ) { GuardRemaining = 0; ClearDefenseVolume(); }
-		PlayDefenseHit( point, broken );
-	}
-
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayDefenseSound( string name, Vector3 point ) => Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent, name, point );
-
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayDefenseHit( Vector3 point, bool broken )
-	{
-		if ( Application.IsHeadless || Application.IsDedicatedServer || !Actor.IsValid() ) return;
-		var effect = new GameObject( Scene, false, broken ? "Gun shield broken" : "Shield interception" );
-		effect.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.NotNetworked;
-		effect.WorldPosition = point;
-		var retail = effect.AddComponent<Titanfall2PlasmaFlight>();
-		retail.MountIdent = Actor.MountIdent;
-		retail.EffectName = broken ? "P_xo_armor_break_CP" : "wpn_vortex_shield_impact_titan";
-		var cleanup = effect.AddComponent<TemporaryEffect>(); cleanup.DestroyAfterSeconds = 1.2f; cleanup.WaitForChildEffects = false;
-		effect.Enabled = true;
-		Titanfall2GameplayVisuals.PlayFireSound( Scene, Actor.MountIdent,
-			broken ? "titan_energyshield_down" : "Vortex_Shield_AbsorbBulletSmall", point );
+		if ( broken )
+		{
+			GuardRemaining = 0;
+			ClearDefenseVolume();
+			var gun = Actor.Renderer.IsValid() ? Actor.Renderer.GetAttachment( "PROPGUN" ) : null;
+			PresentDefenseImpact( gun?.Position ?? DefenseCenter, gun?.Rotation ?? DefenseFacing, Titanfall2DefensePresentation.Hit.Break );
+			return;
+		}
+		PresentDefenseImpact( point, DefenseFacing, projectileOrBlast ? Titanfall2DefensePresentation.Hit.ProjectileOrBlast : Titanfall2DefensePresentation.Hit.Bullet );
 	}
 
 	[Rpc.Broadcast( NetFlags.HostOnly )]
@@ -216,7 +208,7 @@ public sealed partial class Titanfall2TitanKit
 		beam.WorldPosition = start;
 		if ( (shot.HitPosition - start).LengthSquared > 1 ) beam.WorldRotation = Rotation.LookAt( shot.HitPosition - start );
 		var points = beam.AddComponent<Titanfall2ParticleControlPoints>(); points.SetControlPoint( 0, start ); points.SetControlPoint( 1, shot.HitPosition );
-		var retail = beam.AddComponent<Titanfall2PlasmaFlight>(); retail.MountIdent = Actor.MountIdent; retail.EffectName = "weapon_tracers_vortex";
+		var retail = beam.AddComponent<Titanfall2PlasmaFlight>(); retail.MountIdent = Actor.MountIdent; retail.EffectName = Titanfall2DefensePresentation.VortexTracer;
 		var cleanup = beam.AddComponent<TemporaryEffect>(); cleanup.DestroyAfterSeconds = 1.2f; cleanup.WaitForChildEffects = false;
 		beam.Enabled = true;
 		Titanfall2CombatEffects.Impact( Scene, shot, Actor.MountIdent, "default" );

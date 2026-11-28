@@ -23,7 +23,7 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 
 			if ( definition.Navigation == Titanfall2Npc.Navigation.Ground && definition.Role == Titanfall2Npc.FrontierRole.None )
 			{
-				var navigation = root.AddComponent<Sandbox.Npcs.Layers.NavigationLayer>();
+				var navigation = root.AddComponent<Titanfall2NpcNavigationLayer>();
 				navigation.WalkSpeed = definition.Speed * 0.65f;
 				navigation.RunSpeed = definition.Speed;
 			}
@@ -47,21 +47,32 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 		npc.MaxHealth = definition.Health;
 		npc.MaxShield = definition.Shield;
 		npc.IsTitan = definition.Titan;
+		// Faction does not imply an owner or an Auto-Titan follow/guard assignment.
+		npc.AiMode = Titanfall2NpcAiMode.EnemyMp;
+		npc.AiSettingsName = AiSettingsForActor( definition );
+		var isReaper = definition.Model.Contains( "/super_spectre/", StringComparison.OrdinalIgnoreCase )
+			|| definition.Id.StartsWith( "npc_reaper", StringComparison.OrdinalIgnoreCase );
+		var isMarvin = definition.Model.Contains( "/marvin/", StringComparison.OrdinalIgnoreCase );
+		var isDroneOrTurret = definition.Model.Contains( "/drone_air_attack/", StringComparison.OrdinalIgnoreCase )
+			|| definition.Model.Contains( "/turret_plasma/", StringComparison.OrdinalIgnoreCase )
+			|| definition.Id.StartsWith( "npc_attack_drone", StringComparison.OrdinalIgnoreCase )
+			|| definition.Id.StartsWith( "npc_plasma_turret", StringComparison.OrdinalIgnoreCase );
+
 		// Native AI settings distinguish lock class from armor. In particular
 		// Reapers are large smart-ammo targets even though IsTitan is false.
-		npc.SmartAmmoLockType = definition.Titan || definition.Id == "npc_reaper" ? Titanfall2SmartAmmoLockType.Large
-			: definition.Model.Contains( "/marvin/", StringComparison.OrdinalIgnoreCase ) ? Titanfall2SmartAmmoLockType.None
-			: definition.Id is "npc_attack_drone" or "npc_plasma_turret" ? Titanfall2SmartAmmoLockType.Any : Titanfall2SmartAmmoLockType.Small;
+		npc.SmartAmmoLockType = definition.Titan || isReaper ? Titanfall2SmartAmmoLockType.Large
+			: isMarvin ? Titanfall2SmartAmmoLockType.None
+			: isDroneOrTurret ? Titanfall2SmartAmmoLockType.Any : Titanfall2SmartAmmoLockType.Small;
 		npc.BodyHeight = definition.Height;
 		npc.BodyRadius = definition.Radius;
 		npc.NavigationMode = definition.Navigation;
 		npc.MoveSpeed = definition.Speed;
 		npc.MeleeOnly = definition.MeleeDamage > 0 && data is null;
 		npc.MeleeDamage = definition.MeleeDamage > 0 ? definition.MeleeDamage
-			: definition.Titan ? 100 : definition.Id == "npc_reaper" ? 55
-			: definition.Id.Contains( "stalker", StringComparison.Ordinal ) ? 35
-			: definition.Id.Contains( "spectre", StringComparison.Ordinal ) ? 28 : data is not null && definition.Navigation == Titanfall2Npc.Navigation.Ground ? 20 : 0;
-		npc.MeleeRange = definition.Titan ? 190 : definition.Id == "npc_reaper" ? 125 : definition.Radius + 46;
+			: definition.Titan ? 100 : isReaper ? 55
+			: definition.Id.Contains( "stalker", StringComparison.OrdinalIgnoreCase ) ? 35
+			: definition.Id.Contains( "spectre", StringComparison.OrdinalIgnoreCase ) ? 28 : data is not null && definition.Navigation == Titanfall2Npc.Navigation.Ground ? 20 : 0;
+		npc.MeleeRange = definition.Titan ? 190 : isReaper ? 125 : definition.Radius + 46;
 		npc.MeleeWindup = definition.Height > 100 ? 0.4f : 0.28f;
 		npc.MeleeInterval = definition.Height > 100 ? 1.6f : 1.15f;
 		npc.Role = definition.Role;
@@ -73,13 +84,16 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 		npc.BurstPause = npc.CombatStyle == Titanfall2Npc.CombatStyles.Pilot ? 0.2f : 0.45f;
 		npc.CanFight = data is not null || definition.MeleeDamage > 0 || definition.Role == Titanfall2Npc.FrontierRole.ArcTitan;
 		if ( definition.MeleeDamage > 0 ) npc.AttackRange = definition.Radius + 46;
-		npc.AttackPlayers = npc.CanFight && definition.Faction != "militia";
+		npc.AttackPlayers = npc.CanFight
+			&& !Titanfall2Npc.IsAllyFaction( definition.Faction )
+			&& !Titanfall2Npc.IsNeutralFaction( definition.Faction );
 	}
 
 	void ConfigureWeapon( Titanfall2Npc npc, Func<string, string> mounted )
 	{
 		if ( data is not null )
 		{
+			npc.AiWeaponScript = data.ScriptName;
 			npc.GunModelPath = mounted( data.WorldModel is null ? null : data.WorldModel + ".visual" );
 			if ( definition.Titan && data.ViewModel is not null )
 				npc.ViewModelPath = mounted( data.ViewModel + ".titanpov" );
@@ -97,6 +111,8 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 			npc.Firing = data.Firing;
 			npc.SpreadProfile = data.SpreadProfile;
 			npc.ShotSpread = data.Spread;
+			npc.AdsFov = data.AdsFov;
+			npc.AdsMoveSpeedScale = data.AdsMoveSpeedScale;
 			npc.MagazineSize = data.Magazine;
 			npc.ReloadSeconds = data.ReloadSeconds;
 			if ( definition.Titan )
@@ -148,6 +164,18 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 		root.AddComponent<Rigidbody>().MotionEnabled = false;
 	}
 
+	static string AiSettingsForActor( Titanfall2ActorCatalogEntry actor )
+	{
+		if ( actor.Titan ) return Titanfall2NpcAiProfileCatalog.SettingsFor( actor.Chassis, Titanfall2NpcAiMode.EnemyMp );
+		var model = actor.Model ?? "";
+		if ( model.Contains( "/super_spectre/", StringComparison.OrdinalIgnoreCase ) ) return "npc_super_spectre";
+		if ( model.Contains( "/spectre/", StringComparison.OrdinalIgnoreCase ) ) return "npc_spectre";
+		if ( model.Contains( "/stalker/", StringComparison.OrdinalIgnoreCase ) ) return "npc_stalker";
+		if ( model.Contains( "/grunts/", StringComparison.OrdinalIgnoreCase ) ) return "npc_soldier";
+		if ( model.Contains( "/pilots/", StringComparison.OrdinalIgnoreCase ) ) return "npc_pilot_elite";
+		return actor.Id;
+	}
+
 	void ConfigureTitanComponents( GameObject root, Titanfall2Npc npc )
 	{
 		if ( !definition.Titan ) return;
@@ -161,6 +189,7 @@ internal sealed class Titanfall2ActorPrefabLoader( Titanfall2ActorCatalogEntry d
 
 		npc.Seat = root.AddComponent<Titanfall2TitanSeat>();
 		npc.Seat.Actor = npc;
+		root.AddComponent<Titanfall2TitanRodeo>().Actor = npc;
 		npc.Seat.DriveSpeed = definition.Speed;
 		npc.Seat.TooltipTitle = definition.Title;
 		npc.Seat.TooltipDescription = "Embark";

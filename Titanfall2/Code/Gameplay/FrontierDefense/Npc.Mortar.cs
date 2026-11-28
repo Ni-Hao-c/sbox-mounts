@@ -20,248 +20,259 @@ public record struct Titanfall2MortarSnapshot
 	public float Duration { get; set; }
 }
 
-public sealed partial class Titanfall2Npc
+/// <summary>Composed Frontier Defense Mortar Titan emplacement, firing cycle, and animation controller.</summary>
+internal sealed class Titanfall2NpcMortarController
 {
-	[Property] public Titanfall2ProjectileSettings MortarProjectile { get; set; }
-	[Property] public float MortarDamage { get; set; } = 50;
-	[Property] public float MortarTitanDamage { get; set; } = 350;
-	[Sync( SyncFlags.FromHost )] public Titanfall2MortarSnapshot Mortar { get; private set; }
-	[Sync( SyncFlags.FromHost )] public int MortarShotsFired { get; private set; }
-	GameObject _mortarTarget;
-	Titanfall2MortarPosition _mortarPosition;
-	Vector3 _mortarOrigin, _mortarDestination;
-	bool _mortarInitialized, _mortarBreakArmed;
-	double _mortarSpawnTime, _mortarNextScan, _mortarNextHealthCheck, _mortarWaitUntil;
-	float _mortarMoveHealth, _mortarWaitHealth, _mortarBreakHealth, _mortarQuietSeconds;
-	int _mortarEventLoop, _mortarEventIndex;
-	int _mortarVisualSerial = -1;
+	GameObject _target;
+	Titanfall2MortarPosition _position;
+	Vector3 _origin;
+	Vector3 _destination;
+	bool _initialized;
+	bool _breakArmed;
+	double _spawnTime;
+	double _nextScan;
+	double _nextHealthCheck;
+	double _waitUntil;
+	float _moveHealth;
+	float _waitHealth;
+	float _breakHealth;
+	float _quietSeconds;
+	int _eventLoop;
+	int _eventIndex;
+	int _visualSerial = -1;
 
-	bool TickMortar()
+	internal bool Tick( Titanfall2Npc npc )
 	{
-		if ( Role != FrontierRole.MortarTitan ) return false;
-		if ( !_mortarInitialized )
+		if ( npc.Role != Titanfall2Npc.FrontierRole.MortarTitan ) return false;
+		if ( !_initialized )
 		{
-			_mortarInitialized = true;
-			_mortarOrigin = WorldPosition;
-			_mortarSpawnTime = Time.NowDouble;
+			_initialized = true;
+			_origin = npc.WorldPosition;
+			_spawnTime = Time.NowDouble;
 		}
-		if ( !CanFight || !TitanCanAct ) { StopForAbility(); return true; }
+		if ( !npc.CanFight || !npc.TitanCanAct ) { npc.StopForAbility(); return true; }
 		var now = Time.NowDouble;
-		var harvester = FindHarvester();
+		var harvester = npc.FindHarvester();
 		if ( harvester.IsValid() )
 		{
-			_mortarTarget = harvester;
+			_target = harvester;
 		}
-		else if ( !CanTarget( _mortarTarget ) )
+		else if ( !npc.CanTarget( _target ) )
 		{
 			// In Sandbox maps without a Harvester, fall back to bombarding long-range hostile targets.
-			_mortarTarget = FindTarget();
-			if ( !_mortarTarget.IsValid() )
+			_target = npc.FindTargetInternal();
+			if ( !_target.IsValid() )
 			{
-				StopForAbility();
-				if ( Mortar.State is Titanfall2MortarState.Firing or Titanfall2MortarState.Deploying ) BeginMortarRecovery();
-				else if ( Mortar.State == Titanfall2MortarState.Recovering && now - Mortar.StartedAt >= Mortar.Duration ) SetMortarState( Titanfall2MortarState.Idle );
+				npc.StopForAbility();
+				if ( npc.Mortar.State is Titanfall2MortarState.Firing or Titanfall2MortarState.Deploying ) BeginRecovery( npc );
+				else if ( npc.Mortar.State == Titanfall2MortarState.Recovering && now - npc.Mortar.StartedAt >= npc.Mortar.Duration ) SetState( npc, Titanfall2MortarState.Idle );
 				return true;
 			}
 		}
-		var targetIsHarvester = _mortarTarget.GetComponent<Titanfall2Harvester>() is { Destroyed: false };
-		if ( !targetIsHarvester && Mortar.State is Titanfall2MortarState.Idle or Titanfall2MortarState.Moving
-			&& _mortarTarget.WorldPosition.Distance( WorldPosition ) < 520f )
+		var targetIsHarvester = _target.GetComponent<Titanfall2Harvester>() is { Destroyed: false };
+		if ( !targetIsHarvester && npc.Mortar.State is Titanfall2MortarState.Idle or Titanfall2MortarState.Moving
+			&& _target.WorldPosition.Distance( npc.WorldPosition ) < 520f )
 		{
-			var deltaClose = (_mortarTarget.WorldPosition - WorldPosition).WithZ( 0 );
-			if ( deltaClose.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( deltaClose ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
-			if ( HasLineOfSight( _mortarTarget ) && _nextShot <= 0 ) Fire( new Ray( Eye, (AimAt( _mortarTarget ) - Eye).Normal ), GameObject, false );
+			var deltaClose = (_target.WorldPosition - npc.WorldPosition).WithZ( 0 );
+			if ( deltaClose.LengthSquared > 1 ) npc.WorldRotation = Rotation.Lerp( npc.WorldRotation, Rotation.LookAt( deltaClose ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
+			if ( npc.HasLineOfSight( _target ) && npc.NextShotReady )
+				npc.Fire( new Ray( npc.EyePositionInternal, (Titanfall2Npc.AimAtInternal( _target ) - npc.EyePositionInternal).Normal ), npc.GameObject, false );
 			return true;
 		}
-		if ( Mortar.State == Titanfall2MortarState.Idle )
+		if ( npc.Mortar.State == Titanfall2MortarState.Idle )
 		{
-			if ( now < _mortarNextScan ) return true;
-			_mortarNextScan = now + 5; // Retail waits for a free stationary position.
-			if ( !ChooseMortarPosition() ) return true;
-			_mortarMoveHealth = Health + Shield;
-			SetMortarState( Titanfall2MortarState.Moving );
+			if ( now < _nextScan ) return true;
+			_nextScan = now + 5; // Retail waits for a free stationary position.
+			if ( !ChoosePosition( npc ) ) return true;
+			_moveHealth = npc.Health + npc.Shield;
+			SetState( npc, Titanfall2MortarState.Moving );
 		}
-		if ( Mortar.State == Titanfall2MortarState.Moving )
+		if ( npc.Mortar.State == Titanfall2MortarState.Moving )
 		{
-			if ( WorldPosition.Distance( _mortarDestination ) > 64 )
+			if ( npc.WorldPosition.Distance( _destination ) > 64 )
 			{
-				if ( Agent.IsValid() && Scene.NavMesh.IsEnabled ) { Agent.MoveTo( _mortarDestination ); Moving = Agent.Velocity.LengthSquared > 25; }
+				if ( npc.Agent.IsValid() && npc.Scene.NavMesh.IsEnabled ) { npc.Agent.MoveTo( _destination ); npc.SetMovingHost( npc.Agent.Velocity.LengthSquared > 25 ); }
 				return true;
 			}
-			StopForAbility();
-			if ( _mortarMoveHealth > Health + Shield + 75 ) BeginMortarWait( 3 );
-			else BeginMortarDeployment();
+			npc.StopForAbility();
+			if ( _moveHealth > npc.Health + npc.Shield + 75 ) BeginWait( npc, 3 );
+			else BeginDeployment( npc );
 		}
-		if ( Mortar.State == Titanfall2MortarState.Waiting )
+		if ( npc.Mortar.State == Titanfall2MortarState.Waiting )
 		{
-			if ( now >= _mortarNextHealthCheck )
+			if ( now >= _nextHealthCheck )
 			{
-				_mortarNextHealthCheck = now + 1;
-				if ( _mortarWaitHealth > Health + Shield + 75 ) { _mortarWaitHealth = Health + Shield; _mortarWaitUntil = now + _mortarQuietSeconds; }
+				_nextHealthCheck = now + 1;
+				if ( _waitHealth > npc.Health + npc.Shield + 75 ) { _waitHealth = npc.Health + npc.Shield; _waitUntil = now + _quietSeconds; }
 			}
 			// The original falls back to ordinary combat while waiting to reengage.
-			var threat = FindTarget();
+			var threat = npc.FindTargetInternal();
 			if ( threat.IsValid() )
 			{
-				var toThreat = (threat.WorldPosition - WorldPosition).WithZ( 0 );
-				if ( toThreat.LengthSquared > 1 ) WorldRotation = Rotation.Lerp( WorldRotation, Rotation.LookAt( toThreat ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
-				if ( HasLineOfSight( threat ) && _nextShot <= 0 ) Fire( new Ray( Eye, (AimAt( threat ) - Eye).Normal ), GameObject, false );
+				var toThreat = (threat.WorldPosition - npc.WorldPosition).WithZ( 0 );
+				if ( toThreat.LengthSquared > 1 ) npc.WorldRotation = Rotation.Lerp( npc.WorldRotation, Rotation.LookAt( toThreat ), Math.Clamp( Time.Delta * 6f, 0, 1 ) );
+				if ( npc.HasLineOfSight( threat ) && npc.NextShotReady )
+					npc.Fire( new Ray( npc.EyePositionInternal, (Titanfall2Npc.AimAtInternal( threat ) - npc.EyePositionInternal).Normal ), npc.GameObject, false );
 			}
-			if ( now >= _mortarWaitUntil ) { _mortarMoveHealth = Health + Shield; SetMortarState( Titanfall2MortarState.Moving ); }
+			if ( now >= _waitUntil ) { _moveHealth = npc.Health + npc.Shield; SetState( npc, Titanfall2MortarState.Moving ); }
 		}
-		if ( Mortar.State == Titanfall2MortarState.Deploying && now - Mortar.StartedAt >= Mortar.Duration )
+		if ( npc.Mortar.State == Titanfall2MortarState.Deploying && now - npc.Mortar.StartedAt >= npc.Mortar.Duration )
 		{
-			var attack = MortarClip( ModelLoader.MortarAttackRole );
+			var attack = Clip( npc, ModelLoader.MortarAttackRole );
 			if ( attack is not { Duration: > 0, Sequence.Events.Length: > 0 } ) return true;
-			SetMortarState( Titanfall2MortarState.Firing, attack.Duration );
-			_mortarEventLoop = _mortarEventIndex = 0;
-			_mortarBreakArmed = false;
+			SetState( npc, Titanfall2MortarState.Firing, attack.Duration );
+			_eventLoop = _eventIndex = 0;
+			_breakArmed = false;
 		}
-		if ( Mortar.State == Titanfall2MortarState.Firing )
+		if ( npc.Mortar.State == Titanfall2MortarState.Firing )
 		{
-			DispatchMortarEvents();
+			DispatchEvents( npc );
 			// Damage before the mandatory five-second opening is not part of the later
 			// 90%-health break-off threshold (WaitForInteruption in the retail script).
-			if ( now - Mortar.StartedAt >= 5 )
+			if ( now - npc.Mortar.StartedAt >= 5 )
 			{
-				if ( !_mortarBreakArmed ) { _mortarBreakArmed = true; _mortarBreakHealth = (Health + Shield) * 0.9f; _mortarNextHealthCheck = now; }
-				if ( now >= _mortarNextHealthCheck )
+				if ( !_breakArmed ) { _breakArmed = true; _breakHealth = (npc.Health + npc.Shield) * 0.9f; _nextHealthCheck = now; }
+				if ( now >= _nextHealthCheck )
 				{
-					_mortarNextHealthCheck = now + 1;
-					if ( Health + Shield < _mortarBreakHealth || EnemyPilotNearMortar() ) BeginMortarRecovery();
+					_nextHealthCheck = now + 1;
+					if ( npc.Health + npc.Shield < _breakHealth || EnemyPilotNear( npc ) ) BeginRecovery( npc );
 				}
 			}
 		}
-		if ( Mortar.State == Titanfall2MortarState.Recovering && now - Mortar.StartedAt >= Mortar.Duration ) BeginMortarWait( 7 );
+		if ( npc.Mortar.State == Titanfall2MortarState.Recovering && now - npc.Mortar.StartedAt >= npc.Mortar.Duration ) BeginWait( npc, 7 );
 		return true;
 	}
 
-	bool ChooseMortarPosition()
+	bool ChoosePosition( Titanfall2Npc npc )
 	{
-		var authored = Scene.GetAllComponents<Titanfall2MortarPosition>()
-			.Where( p => p.Active && SameFaction( p.Faction ) && p.WorldPosition.Distance( _mortarOrigin ) <= 1024 ).ToArray();
+		var authored = npc.Scene.GetAllComponents<Titanfall2MortarPosition>()
+			.Where( p => p.Active && npc.SameFaction( p.Faction ) && p.WorldPosition.Distance( _origin ) <= 1024 ).ToArray();
 		if ( authored.Length > 0 )
 		{
-			if ( _mortarPosition.IsValid() && _mortarPosition.Occupant == this ) { _mortarDestination = _mortarPosition.WorldPosition; return true; }
+			if ( _position.IsValid() && _position.Occupant == npc ) { _destination = _position.WorldPosition; return true; }
 			var available = authored.Where( p => p.Available ).ToArray();
 			if ( available.Length == 0 ) return false;
-			_mortarPosition = available[Random.Shared.Next( available.Length )];
-			_mortarPosition.Occupant = this;
-			_mortarDestination = _mortarPosition.WorldPosition;
+			_position = available[Random.Shared.Next( available.Length )];
+			_position.Occupant = npc;
+			_destination = _position.WorldPosition;
 		}
 		else
 		{
 			// Sandbox maps need not contain the retail director's stationary-position
 			// database. A user-spawned mortar uses its own spawn as the emplacement.
-			_mortarDestination = _mortarOrigin;
+			_destination = _origin;
 		}
-		if ( WorldPosition.Distance( _mortarDestination ) <= 64 ) return true;
-		if ( !Agent.IsValid() || !Scene.NavMesh.IsEnabled ) return false;
-		return Scene.NavMesh.CalculatePath( new CalculatePathRequest { Start = WorldPosition, Target = _mortarDestination, Agent = Agent } ).Status == NavMeshPathStatus.Complete;
+		if ( npc.WorldPosition.Distance( _destination ) <= 64 ) return true;
+		if ( !npc.Agent.IsValid() || !npc.Scene.NavMesh.IsEnabled ) return false;
+		return npc.Scene.NavMesh.CalculatePath( new CalculatePathRequest { Start = npc.WorldPosition, Target = _destination, Agent = npc.Agent } ).Status == NavMeshPathStatus.Complete;
 	}
 
-	void BeginMortarDeployment()
+	void BeginDeployment( Titanfall2Npc npc )
 	{
-		var clip = MortarClip( ModelLoader.MortarDeployRole );
-		if ( clip is not { Duration: > 0 } || !MortarProjectile.Enabled ) return;
-		var facing = (_mortarTarget.WorldPosition - WorldPosition).WithZ( 0 );
-		if ( facing.LengthSquared > 1 ) WorldRotation = Rotation.LookAt( facing );
-		StopForAbility();
-		SetMortarState( Titanfall2MortarState.Deploying, clip.Duration );
+		var clip = Clip( npc, ModelLoader.MortarDeployRole );
+		if ( clip is not { Duration: > 0 } || !npc.MortarProjectile.Enabled ) return;
+		var facing = (_target.WorldPosition - npc.WorldPosition).WithZ( 0 );
+		if ( facing.LengthSquared > 1 ) npc.WorldRotation = Rotation.LookAt( facing );
+		npc.StopForAbility();
+		SetState( npc, Titanfall2MortarState.Deploying, clip.Duration );
 	}
-	void BeginMortarRecovery() => SetMortarState( Titanfall2MortarState.Recovering, MortarClip( ModelLoader.MortarRecoverRole )?.Duration ?? 0 );
-	void BeginMortarWait( float seconds )
+
+	void BeginRecovery( Titanfall2Npc npc ) => SetState( npc, Titanfall2MortarState.Recovering, Clip( npc, ModelLoader.MortarRecoverRole )?.Duration ?? 0 );
+
+	void BeginWait( Titanfall2Npc npc, float seconds )
 	{
-		_mortarQuietSeconds = seconds;
-		_mortarWaitUntil = Time.NowDouble + seconds;
-		_mortarWaitHealth = Health + Shield;
-		_mortarNextHealthCheck = Time.NowDouble + 1;
-		SetMortarState( Titanfall2MortarState.Waiting );
+		_quietSeconds = seconds;
+		_waitUntil = Time.NowDouble + seconds;
+		_waitHealth = npc.Health + npc.Shield;
+		_nextHealthCheck = Time.NowDouble + 1;
+		SetState( npc, Titanfall2MortarState.Waiting );
 	}
-	void SetMortarState( Titanfall2MortarState state, float duration = 0 ) => Mortar = new()
-	{
-		State = state, Duration = duration, StartedAt = Time.NowDouble, Serial = Mortar.Serial == int.MaxValue ? 1 : Mortar.Serial + 1
-	};
-	Titanfall2ActorAnimationData.Clip MortarClip( string role ) => _actorAnimationData?.Clips?.FirstOrDefault( c => c.Role == role );
 
-	bool EnemyPilotNearMortar() => Scene.GetAllComponents<PlayerController>().Any( player => player.Active
-		&& player.WorldPosition.Distance( WorldPosition ) < 256
-		&& !SameFaction( player.GetComponentInParent<Titanfall2Npc>()?.Faction ?? Sandbox.Npcs.Factions.Player ) );
-
-	void DispatchMortarEvents()
+	static void SetState( Titanfall2Npc npc, Titanfall2MortarState state, float duration = 0 ) => npc.SetMortarSnapshotHost( new()
 	{
-		var events = MortarClip( ModelLoader.MortarAttackRole )?.Sequence?.Events;
-		if ( events is null || events.Length == 0 || Mortar.Duration <= 0 ) return;
-		var elapsed = Math.Max( 0, Time.NowDouble - Mortar.StartedAt );
-		var loop = (int)(elapsed / Mortar.Duration);
+		State = state, Duration = duration, StartedAt = Time.NowDouble, Serial = npc.Mortar.Serial == int.MaxValue ? 1 : npc.Mortar.Serial + 1
+	} );
+
+	static Titanfall2ActorAnimationData.Clip Clip( Titanfall2Npc npc, string role ) => npc.AnimationData?.Clips?.FirstOrDefault( c => c.Role == role );
+
+	static bool EnemyPilotNear( Titanfall2Npc npc ) => npc.Scene.GetAllComponents<PlayerController>().Any( player => player.Active
+		&& player.WorldPosition.Distance( npc.WorldPosition ) < 256
+		&& !npc.SameFaction( player.GetComponentInParent<Titanfall2Npc>()?.Faction ?? Sandbox.Npcs.Factions.Player ) );
+
+	void DispatchEvents( Titanfall2Npc npc )
+	{
+		var events = Clip( npc, ModelLoader.MortarAttackRole )?.Sequence?.Events;
+		if ( events is null || events.Length == 0 || npc.Mortar.Duration <= 0 ) return;
+		var elapsed = Math.Max( 0, Time.NowDouble - npc.Mortar.StartedAt );
+		var loop = (int)(elapsed / npc.Mortar.Duration);
 		// Bound catch-up after a long pause; never manufacture minutes of delayed fire.
-		if ( loop - _mortarEventLoop > 1 ) { _mortarEventLoop = loop; _mortarEventIndex = 0; }
-		while ( _mortarEventLoop <= loop )
+		if ( loop - _eventLoop > 1 ) { _eventLoop = loop; _eventIndex = 0; }
+		while ( _eventLoop <= loop )
 		{
-			while ( _mortarEventIndex < events.Length )
+			while ( _eventIndex < events.Length )
 			{
-				var evt = events[_mortarEventIndex];
-				if ( (_mortarEventLoop + evt.Cycle) * Mortar.Duration > elapsed ) return;
-				_mortarEventIndex++;
-				if ( evt.Name == "AE_NPC_WEAPON_RELOAD" ) { Rounds = MagazineSize; Reloading = false; }
-				else if ( evt.Name == "AE_NPC_WEAPON_FIRE" ) LaunchMortarMissile( _mortarEventIndex - 1 );
+				var evt = events[_eventIndex];
+				if ( (_eventLoop + evt.Cycle) * npc.Mortar.Duration > elapsed ) return;
+				_eventIndex++;
+				if ( evt.Name == "AE_NPC_WEAPON_RELOAD" ) { npc.SetRoundsHost( npc.MagazineSize ); npc.SetReloadingHost( false ); }
+				else if ( evt.Name == "AE_NPC_WEAPON_FIRE" ) LaunchMissile( npc, _eventIndex - 1 );
 			}
-			_mortarEventLoop++; _mortarEventIndex = 0;
+			_eventLoop++; _eventIndex = 0;
 		}
 	}
 
-	void LaunchMortarMissile( int eventIndex )
+	void LaunchMissile( Titanfall2Npc npc, int eventIndex )
 	{
-		if ( !_mortarTarget.IsValid() || !MortarProjectile.Enabled || Rounds <= 0 ) return;
-		var eventPose = MortarClip( ModelLoader.MortarAttackRole )?.EventBonePoses?
-			.FirstOrDefault( pose => pose.EventIndex == eventIndex && pose.Bone == _gunBone?.Name );
-		var weaponModel = _gun.IsValid() ? _gun.GetComponent<BaseWeaponModel>()?.Renderer?.Model : null;
-		var muzzleBind = weaponModel?.Attachments.GetTransform( string.IsNullOrEmpty( WeaponPresentation.MuzzleAttachment ) ? "muzzle_flash" : WeaponPresentation.MuzzleAttachment );
+		if ( !_target.IsValid() || !npc.MortarProjectile.Enabled || npc.Rounds <= 0 ) return;
+		var eventPose = Clip( npc, ModelLoader.MortarAttackRole )?.EventBonePoses?
+			.FirstOrDefault( pose => pose.EventIndex == eventIndex && pose.Bone == npc.GunBone?.Name );
+		var weaponModel = npc.GunObject.IsValid() ? npc.GunObject.GetComponent<BaseWeaponModel>()?.Renderer?.Model : null;
+		var muzzleBind = weaponModel?.Attachments.GetTransform( string.IsNullOrEmpty( npc.WeaponPresentation.MuzzleAttachment ) ? "muzzle_flash" : npc.WeaponPresentation.MuzzleAttachment );
 		if ( eventPose is null || !muzzleBind.HasValue ) return;
 		// The event's gun bone is sampled from the original sequence while importing.
 		// No previous rendered frame or guessed launch elevation enters host ballistics.
-		var muzzle = WorldTransform.ToWorld( eventPose.Transform ).ToWorld( _gunBindInverse ).ToWorld( muzzleBind.Value );
+		var muzzle = npc.WorldTransform.ToWorld( eventPose.Transform ).ToWorld( npc.GunBindInverse ).ToWorld( muzzleBind.Value );
 		var origin = muzzle.Position;
 		var direction = muzzle.Rotation.Forward;
-		var radius = float.Lerp( 220, 100, Math.Clamp( (float)(Time.NowDouble - _mortarSpawnTime - 60) / 120, 0, 1 ) );
+		var radius = float.Lerp( 220, 100, Math.Clamp( (float)(Time.NowDouble - _spawnTime - 60) / 120, 0, 1 ) );
 		var targetOffset = new Vector3( (Random.Shared.NextSingle() * 2 - 1) * radius, (Random.Shared.NextSingle() * 2 - 1) * radius, 0 );
-		var missile = Titanfall2Projectile.Launch( Scene, new Ray( origin, direction ), MortarProjectile,
-			MortarDamage, MortarTitanDamage, GameObject, GameObject, GameObject, npcFired: true );
+		var missile = Titanfall2Projectile.Launch( npc.Scene, new Ray( origin, direction ), npc.MortarProjectile,
+			npc.MortarDamage, npc.MortarTitanDamage, npc.GameObject, npc.GameObject, npc.GameObject, npcFired: true );
 		if ( !missile.IsValid() ) return;
-		missile.GameObject.AddComponent<Titanfall2MortarMissile>().Initialize( missile, _mortarTarget, targetOffset );
-		Rounds--; MortarShotsFired++;
-		PlayShotSound( origin );
-		PlayMortarIncoming( _mortarTarget.WorldPosition );
+		missile.GameObject.AddComponent<Titanfall2MortarMissile>().Initialize( missile, _target, targetOffset );
+		npc.SetRoundsHost( npc.Rounds - 1 );
+		npc.IncrementMortarShotsFiredHost();
+		npc.PlayShotSoundInternal( origin );
+		npc.BroadcastMortarIncoming( _target.WorldPosition );
 	}
-	[Rpc.Broadcast( NetFlags.HostOnly )]
-	void PlayMortarIncoming( Vector3 target ) => Titanfall2GameplayVisuals.PlayFireSound( Scene, MountIdent, "Weapon_FlightCore_Incoming_Projectile", target );
 
-	bool TryPlayMortarAnimation()
+	internal bool TryPlayAnimation( Titanfall2Npc npc )
 	{
-		if ( Role != FrontierRole.MortarTitan || Dead ) return false;
-		var role = Mortar.State switch
+		if ( npc.Role != Titanfall2Npc.FrontierRole.MortarTitan || npc.Dead ) return false;
+		var role = npc.Mortar.State switch
 		{
 			Titanfall2MortarState.Deploying => ModelLoader.MortarDeployRole,
 			Titanfall2MortarState.Firing => ModelLoader.MortarAttackRole,
 			Titanfall2MortarState.Recovering => ModelLoader.MortarRecoverRole, _ => null
 		};
-		if ( role is null || Mortar.Duration <= 0 ) return false;
-		var loop = Mortar.State == Titanfall2MortarState.Firing;
-		var cycle = (float)Math.Max( 0, (Time.NowDouble - Mortar.StartedAt) / Mortar.Duration );
-		var restart = _mortarVisualSerial != Mortar.Serial;
-		_mortarVisualSerial = Mortar.Serial;
-		if ( _layeredAnimation is not null && _layeredAnimation.Has( role ) )
+		if ( role is null || npc.Mortar.Duration <= 0 ) return false;
+		var loop = npc.Mortar.State == Titanfall2MortarState.Firing;
+		var cycle = (float)Math.Max( 0, (Time.NowDouble - npc.Mortar.StartedAt) / npc.Mortar.Duration );
+		var restart = _visualSerial != npc.Mortar.Serial;
+		_visualSerial = npc.Mortar.Serial;
+		var layered = npc.LayeredAnimation;
+		if ( layered is not null && layered.Has( role ) )
 		{
-			_layeredAnimation.ClearOverlays();
-			_layeredAnimation.Play( role, loop: loop, restart: restart );
-			_layeredAnimation.SetCycle( loop ? cycle : MathF.Min( cycle, 1 ) );
-			_layeredAnimation.Tick();
+			layered.ClearOverlays();
+			layered.Play( role, loop: loop, restart: restart );
+			layered.SetCycle( loop ? cycle : MathF.Min( cycle, 1 ) );
+			layered.Tick();
 		}
-		else if ( _actorClips?.Contains( role ) == true )
+		else if ( npc.HasActorClip( role ) )
 		{
-			PlaySequence( role, looping: loop, restart: restart );
-			Renderer.Sequence.PlaybackRate = 0;
-			Renderer.Sequence.TimeNormalized = loop ? cycle % 1 : Math.Clamp( cycle, 0, 1 );
+			npc.PlaySequence( role, looping: loop, restart: restart );
+			npc.Renderer.Sequence.PlaybackRate = 0;
+			npc.Renderer.Sequence.TimeNormalized = loop ? cycle % 1 : Math.Clamp( cycle, 0, 1 );
 		}
 		return true;
 	}
